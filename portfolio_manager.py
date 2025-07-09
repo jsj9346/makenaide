@@ -123,96 +123,98 @@ class PortfolioManager:
             logging.error(f"❌ 보유 자산 조회 중 오류 발생: {str(e)}")
             return []
 
-    def allocate_funds(self, recommendations):
-        """
-        recommendations: [{'ticker': 'KRW-ETH', 'action': 'BUY'}, ...]
-        - 매수 대상 종목 수만큼 비중을 나눠 자금 할당
-        """
-        total_balance = self.get_total_balance()
-        buy_targets = [r for r in recommendations if r['action'] == 'BUY']
-        num_targets = len(buy_targets)
+    # UNUSED: 호출되지 않는 함수
+    # def allocate_funds(self, recommendations):
+    #     """
+    #     recommendations: [{'ticker': 'KRW-ETH', 'action': 'BUY'}, ...]
+    #     - 매수 대상 종목 수만큼 비중을 나눠 자금 할당
+    #     """
+    #     total_balance = self.get_total_balance()
+    #     buy_targets = [r for r in recommendations if r['action'] == 'BUY']
+    #     num_targets = len(buy_targets)
+    # 
+    #     if num_targets == 0:
+    #         print("✅ 매수할 종목 없음")
+    #         return
+    # 
+    #     unit_amount = total_balance * 0.98 / num_targets  # 수수료 고려
+    # 
+    #     for rec in buy_targets:
+    #         ticker = rec['ticker']
+    #         # ⚠️ buy_asset는 현재 시장가 매수로 동작하며, 단가를 직접 입력하지 않음
+    #         buy_asset(ticker, price=0, ratio=unit_amount / self.get_total_balance())
+    #         now = datetime.datetime.now().isoformat()
+    #         current_price = pyupbit.get_current_price(ticker)
+    #         self.purchase_info[ticker] = {'price': current_price, 'timestamp': now}
 
-        if num_targets == 0:
-            print("✅ 매수할 종목 없음")
-            return
-
-        unit_amount = total_balance * 0.98 / num_targets  # 수수료 고려
-
-        for rec in buy_targets:
-            ticker = rec['ticker']
-            # ⚠️ buy_asset는 현재 시장가 매수로 동작하며, 단가를 직접 입력하지 않음
-            buy_asset(ticker, price=0, ratio=unit_amount / self.get_total_balance())
-            now = datetime.datetime.now().isoformat()
-            current_price = pyupbit.get_current_price(ticker)
-            self.purchase_info[ticker] = {'price': current_price, 'timestamp': now}
-
-    def calculate_position_amount(self, ticker, custom_total=None):
-        """
-        Kelly 비율과 swing_score를 활용한 포지션 사이징 계산
-        """
-        try:
-            # 전략 성과 데이터 조회
-            strategy_performance = self.db_mgr.execute_query("""
-                SELECT 
-                    win_rate,
-                    avg_return,
-                    mdd,
-                    kelly_ratio,
-                    swing_score
-                FROM strategy_performance 
-                WHERE strategy_combo = (
-                    SELECT strategy_combo 
-                    FROM trade_log 
-                    WHERE ticker = %s 
-                    ORDER BY executed_at DESC 
-                    LIMIT 1
-                )
-            """, (ticker,))
-
-            if not strategy_performance:
-                # 기본값 설정
-                win_rate = 0.5
-                avg_return = 0.02
-                mdd = 0.1
-                kelly_ratio = 0.1
-                swing_score = 0.5
-            else:
-                win_rate = strategy_performance[0][0]
-                avg_return = strategy_performance[0][1]
-                mdd = strategy_performance[0][2]
-                kelly_ratio = strategy_performance[0][3]
-                swing_score = strategy_performance[0][4]
-
-            # Kelly 비율 계산
-            kelly = (win_rate * avg_return - (1 - win_rate) * mdd) / avg_return
-            kelly = max(0, min(kelly, 0.5))  # 0~0.5 사이로 제한
-
-            # swing_score 반영
-            position_ratio = kelly * swing_score
-
-            # 총 자산 계산
-            total_balance = custom_total or self.get_total_balance()
-            
-            # 최종 매수 금액 계산
-            position_amount = total_balance * position_ratio
-            
-            # 최소 주문 금액 체크
-            if position_amount < 5000:  # 업비트 최소 주문 금액
-                return 0, 0
-
-            # 현재가 조회
-            current_price = pyupbit.get_current_price(ticker)
-            if not current_price:
-                return 0, 0
-
-            # 매수 수량 계산
-            quantity = position_amount / current_price
-
-            return position_ratio, quantity
-
-        except Exception as e:
-            logging.error(f"❌ 포지션 사이징 계산 중 오류 발생: {str(e)}")
-            return 0, 0
+    # UNUSED: 호출되지 않는 함수
+    # def calculate_position_amount(self, ticker, custom_total=None):
+    #     """
+    #     Kelly 비율과 swing_score를 활용한 포지션 사이징 계산
+    #     """
+    #     try:
+    #         # 전략 성과 데이터 조회
+    #         strategy_performance = self.db_mgr.execute_query("""
+    #         SELECT 
+    #             win_rate,
+    #             avg_return,
+    #             mdd,
+    #             kelly_ratio,
+    #             swing_score
+    #         FROM strategy_performance 
+    #         WHERE strategy_combo = (
+    #             SELECT strategy_combo 
+    #             FROM trade_log 
+    #             WHERE ticker = %s 
+    #             ORDER BY executed_at DESC 
+    #             LIMIT 1
+    #         )
+    #     """, (ticker,))
+    # 
+    #         if not strategy_performance:
+    #             # 기본값 설정
+    #             win_rate = 0.5
+    #             avg_return = 0.02
+    #             mdd = 0.1
+    #             kelly_ratio = 0.1
+    #             swing_score = 0.5
+    #         else:
+    #             win_rate = strategy_performance[0][0]
+    #             avg_return = strategy_performance[0][1]
+    #             mdd = strategy_performance[0][2]
+    #             kelly_ratio = strategy_performance[0][3]
+    #             swing_score = strategy_performance[0][4]
+    # 
+    #         # Kelly 비율 계산
+    #         kelly = (win_rate * avg_return - (1 - win_rate) * mdd) / avg_return
+    #         kelly = max(0, min(kelly, 0.5))  # 0~0.5 사이로 제한
+    # 
+    #         # swing_score 반영
+    #         position_ratio = kelly * swing_score
+    # 
+    #         # 총 자산 계산
+    #         total_balance = custom_total or self.get_total_balance()
+    #             
+    #         # 최종 매수 금액 계산
+    #         position_amount = total_balance * position_ratio
+    #             
+    #         # 최소 주문 금액 체크
+    #         if position_amount < 5000:  # 업비트 최소 주문 금액
+    #             return 0, 0
+    # 
+    #         # 현재가 조회
+    #         current_price = pyupbit.get_current_price(ticker)
+    #         if not current_price:
+    #             return 0, 0
+    # 
+    #         # 매수 수량 계산
+    #         quantity = position_amount / current_price
+    # 
+    #         return position_ratio, quantity
+    # 
+    #     except Exception as e:
+    #         logging.error(f"❌ 포지션 사이징 계산 중 오류 발생: {str(e)}")
+    #         return 0, 0
 
     def check_pyramiding(self, ticker):
         """
@@ -560,197 +562,201 @@ class PortfolioManager:
         except Exception as e:
             logging.error(f"❌ {ticker} 피라미딩 거래 로그 기록 실패: {e}")
     
-    def get_pyramiding_status(self, ticker):
-        """피라미딩 상태 조회"""
-        try:
-            info = self.purchase_info.get(ticker)
-            if not info or not info.get('initialized'):
-                return None
-            
-            current_price = pyupbit.get_current_price(ticker)
-            if not current_price:
-                return None
-            
-            # 수익률 계산
-            avg_entry_price = info.get('avg_entry_price', info.get('entry_price', current_price))
-            total_return_pct = (current_price - avg_entry_price) / avg_entry_price * 100
-            
-            return {
-                'ticker': ticker,
-                'pyramid_count': info.get('pyramid_count', 0),
-                'max_pyramids': info.get('max_pyramids', 3),
-                'avg_entry_price': avg_entry_price,
-                'current_price': current_price,
-                'total_return_pct': total_return_pct,
-                'total_quantity': info.get('total_quantity', 0),
-                'total_investment': info.get('total_investment', 0),
-                'high_water_mark': info.get('high_water_mark', current_price),
-                'last_pyramid_price': info.get('last_pyramid_price', avg_entry_price)
-            }
-            
-        except Exception as e:
-            logging.error(f"❌ {ticker} 피라미딩 상태 조회 실패: {e}")
-            return None
+    # UNUSED: 호출되지 않는 함수
+    # def get_pyramiding_status(self, ticker):
+    #     """피라미딩 상태 조회"""
+    #     try:
+    #         info = self.purchase_info.get(ticker)
+    #         if not info or not info.get('initialized'):
+    #             return None
+    #             
+    #         current_price = pyupbit.get_current_price(ticker)
+    #         if not current_price:
+    #             return None
+    #             
+    #         # 수익률 계산
+    #         avg_entry_price = info.get('avg_entry_price', info.get('entry_price', current_price))
+    #         total_return_pct = (current_price - avg_entry_price) / avg_entry_price * 100
+    #             
+    #         return {
+    #             'ticker': ticker,
+    #             'pyramid_count': info.get('pyramid_count', 0),
+    #             'max_pyramids': info.get('max_pyramids', 3),
+    #             'avg_entry_price': avg_entry_price,
+    #             'current_price': current_price,
+    #             'total_return_pct': total_return_pct,
+    #             'total_quantity': info.get('total_quantity', 0),
+    #             'total_investment': info.get('total_investment', 0),
+    #             'high_water_mark': info.get('high_water_mark', current_price),
+    #             'last_pyramid_price': info.get('last_pyramid_price', avg_entry_price)
+    #         }
+    #             
+    #     except Exception as e:
+    #         logging.error(f"❌ {ticker} 피라미딩 상태 조회 실패: {e}")
+    #         return None
 
-    def get_portfolio_breakdown(self):
-        """
-        현재 포트폴리오 내 각 자산(코인 및 현금)의 평가금액 및 비중을 계산하여 출력
-        """
-        balances = self.upbit.get_balances()
-        print("[DEBUG] balances:", balances)
-        breakdown = []
-        total_value = 0
+    # UNUSED: 호출되지 않는 함수
+    # def get_portfolio_breakdown(self):
+    #     """
+    #     현재 포트폴리오 내 각 자산(코인 및 현금)의 평가금액 및 비중을 계산하여 출력
+    #     """
+    #     balances = self.upbit.get_balances()
+    #     print("[DEBUG] balances:", balances)
+    #     breakdown = []
+    #     total_value = 0
+    # 
+    #     # 1차: 전체 평가금액 계산
+    #     for item in balances:
+    #         currency = item['currency']
+    #         balance = float(item['balance'])
+    #         avg_price = float(item['avg_buy_price'])
+    # 
+    #         if currency == "KRW":
+    #             value = balance
+    #         else:
+    #             value = balance * avg_price
+    # 
+    #         total_value += value
+    # 
+    #     # 2차: 비중 계산 및 출력
+    #     print("📊 포트폴리오 현황:")
+    #     for item in balances:
+    #         currency = item['currency']
+    #         balance = float(item['balance'])
+    #         avg_price = float(item['avg_buy_price'])
+    # 
+    #         if currency == "KRW":
+    #             value = balance
+    #             ticker = "KRW"
+    #         else:
+    #             value = balance * avg_price
+    #             ticker = f"KRW-{currency}"
+    # 
+    #         if total_value > 0:
+    #             percent = (value / total_value) * 100
+    #         else:
+    #             percent = 0
+    # 
+    #         print(f"[{ticker}] 비중: {percent:.2f}%, 평가금액: {value:,.0f}원")
 
-        # 1차: 전체 평가금액 계산
-        for item in balances:
-            currency = item['currency']
-            balance = float(item['balance'])
-            avg_price = float(item['avg_buy_price'])
+    # UNUSED: 호출되지 않는 함수
+    # def rebalance(self):
+    #     # TODO: 리밸런싱 전략 추후 구현
+    #     pass
 
-            if currency == "KRW":
-                value = balance
-            else:
-                value = balance * avg_price
-
-            total_value += value
-
-        # 2차: 비중 계산 및 출력
-        print("📊 포트폴리오 현황:")
-        for item in balances:
-            currency = item['currency']
-            balance = float(item['balance'])
-            avg_price = float(item['avg_buy_price'])
-
-            if currency == "KRW":
-                value = balance
-                ticker = "KRW"
-            else:
-                value = balance * avg_price
-                ticker = f"KRW-{currency}"
-
-            if total_value > 0:
-                percent = (value / total_value) * 100
-            else:
-                percent = 0
-
-            print(f"[{ticker}] 비중: {percent:.2f}%, 평가금액: {value:,.0f}원")
-
-    def rebalance(self):
-        # TODO: 리밸런싱 전략 추후 구현
-        pass
-
-    def show_portfolio_summary(self):
-        """
-        현재 포트폴리오 상태를 요약하여 터미널에 출력
-        - 현재 보유 종목별 티커, 수량, 평균단가, 현재가, 평가금액, 손익률, 손익금액, 자산 비중 표시
-        - 현금 보유량과 비중 표시
-        - 전체 자산 = 현금 + 모든 종목 평가금액의 합계
-        """
-        # 함수 실행 시작 로그 - 명확한 표시
-        logging.info("===== PORTFOLIO_SUMMARY_START =====")
-        
-        summary_lines = ["\n======== 포트폴리오 요약 ========"]
-        
-        # 현재 보유 종목 정보 가져오기
-        balances = self.upbit.get_balances()
-        
-        # 블랙리스트 로드
-        try:
-            blacklist = load_blacklist()
-            if not blacklist:
-                logging.warning("⚠️ 블랙리스트가 비어있습니다.")
-        except Exception as e:
-            logging.error(f"❌ 블랙리스트 로드 중 오류 발생: {str(e)}")
-            blacklist = []
-        
-        # 전체 평가 금액 계산
-        total_value = 0
-        positions = []
-        cash = 0
-        
-        # 각 종목별 정보 수집 및 전체 평가 금액 계산
-        for item in balances:
-            currency = item['currency']
-            balance = float(item['balance'])
-            avg_price = float(item['avg_buy_price'])
-            
-            if currency == "KRW":
-                cash = balance
-                total_value += cash
-                continue
-            
-            ticker = f"KRW-{currency}"
-            
-            # 블랙리스트에 포함된 종목 필터링
-            if ticker in blacklist:
-                logging.info(f"⏭️ {ticker}는 블랙리스트에 포함되어 요약에서 제외됩니다.")
-                continue
-                
-            current_price = pyupbit.get_current_price(ticker)
-            
-            if not current_price:
-                logging.warning(f"⚠️ {ticker} 현재가 조회 실패")
-                continue
-                
-            # 평가 금액 계산
-            evaluation = balance * current_price
-            total_value += evaluation
-            
-            # 손익률, 손익금액 계산
-            profit_loss = evaluation - (balance * avg_price)
-            profit_loss_pct = (current_price / avg_price - 1) * 100
-            
-            positions.append({
-                'ticker': ticker,
-                'balance': balance,
-                'avg_price': avg_price,
-                'current_price': current_price,
-                'evaluation': evaluation,
-                'profit_loss': profit_loss,
-                'profit_loss_pct': profit_loss_pct
-            })
-        
-        # 정보 출력 - 보유 종목
-        if positions:
-            summary_lines.append("\n[보유 종목]")
-            summary_lines.append(f"{'티커':>10} | {'수량':>12} | {'평균단가':>12} | {'현재가':>12} | {'평가금액':>12} | {'손익률':>8} | {'손익금액':>12} | {'비중':>6}")
-            summary_lines.append("-" * 100)
-            
-            for pos in positions:
-                ticker = pos['ticker']
-                balance = pos['balance']
-                avg_price = pos['avg_price']
-                current_price = pos['current_price']
-                evaluation = pos['evaluation']
-                profit_loss = pos['profit_loss']
-                profit_loss_pct = pos['profit_loss_pct']
-                weight = (evaluation / total_value) * 100 if total_value > 0 else 0
-                
-                # 부호 표시
-                profit_loss_sign = "+" if profit_loss >= 0 else ""
-                profit_loss_pct_sign = "+" if profit_loss_pct >= 0 else ""
-                
-                summary_lines.append(f"{ticker:>10} | {balance:>12,.8f} | {avg_price:>12,.2f} | {current_price:>12,.2f} | {evaluation:>12,.2f} | {profit_loss_pct_sign}{profit_loss_pct:>6.2f}% | {profit_loss_sign}{profit_loss:>10,.2f} | {weight:>5.2f}%")
-        else:
-            summary_lines.append("\n보유 종목이 없습니다.")
-        
-        # 정보 출력 - 현금
-        cash_weight = (cash / total_value) * 100 if total_value > 0 else 0
-        summary_lines.append("\n[현금]")
-        summary_lines.append(f"{'보유현금':>10} | {cash:>12,.2f}원 | {'비중':>6} | {cash_weight:>5.2f}%")
-        
-        # 정보 출력 - 전체 자산
-        summary_lines.append("\n[전체 자산]")
-        summary_lines.append(f"{'총 평가금액':>10} | {total_value:>12,.2f}원")
-        summary_lines.append("\n===============================\n")
-        
-        # 로그로 출력하고 동시에 터미널에도 출력
-        for line in summary_lines:
-            logging.info(line)
-            print(line)
-            
-        # 함수 실행 종료 로그 - 명확한 표시
-        logging.info("===== PORTFOLIO_SUMMARY_END =====")
+    # UNUSED: 호출되지 않는 함수
+    # def show_portfolio_summary(self):
+    #     """
+    #     현재 포트폴리오 상태를 요약하여 터미널에 출력
+    #     - 현재 보유 종목별 티커, 수량, 평균단가, 현재가, 평가금액, 손익률, 손익금액, 자산 비중 표시
+    #     - 현금 보유량과 비중 표시
+    #     - 전체 자산 = 현금 + 모든 종목 평가금액의 합계
+    #     """
+    #     # 함수 실행 시작 로그 - 명확한 표시
+    #     logging.info("===== PORTFOLIO_SUMMARY_START =====")
+    #         
+    #     summary_lines = ["\n======== 포트폴리오 요약 ========"]
+    #         
+    #     # 현재 보유 종목 정보 가져오기
+    #     balances = self.upbit.get_balances()
+    #         
+    #     # 블랙리스트 로드
+    #     try:
+    #         blacklist = load_blacklist()
+    #         if not blacklist:
+    #             logging.warning("⚠️ 블랙리스트가 비어있습니다.")
+    #     except Exception as e:
+    #         logging.error(f"❌ 블랙리스트 로드 중 오류 발생: {str(e)}")
+    #         blacklist = []
+    #         
+    #     # 전체 평가 금액 계산
+    #     total_value = 0
+    #     positions = []
+    #     cash = 0
+    #         
+    #     # 각 종목별 정보 수집 및 전체 평가 금액 계산
+    #     for item in balances:
+    #         currency = item['currency']
+    #         balance = float(item['balance'])
+    #         avg_price = float(item['avg_buy_price'])
+    #             
+    #         if currency == "KRW":
+    #             cash = balance
+    #             total_value += cash
+    #             continue
+    #             
+    #         ticker = f"KRW-{currency}"
+    #             
+    #         # 블랙리스트에 포함된 종목 필터링
+    #         if ticker in blacklist:
+    #             logging.info(f"⏭️ {ticker}는 블랙리스트에 포함되어 요약에서 제외됩니다.")
+    #             continue
+    #                 
+    #         current_price = pyupbit.get_current_price(ticker)
+    #             
+    #         if not current_price:
+    #             logging.warning(f"⚠️ {ticker} 현재가 조회 실패")
+    #             continue
+    #                 
+    #         # 평가 금액 계산
+    #         evaluation = balance * current_price
+    #         total_value += evaluation
+    #             
+    #         # 손익률, 손익금액 계산
+    #         profit_loss = evaluation - (balance * avg_price)
+    #         profit_loss_pct = (current_price / avg_price - 1) * 100
+    #             
+    #         positions.append({
+    #             'ticker': ticker,
+    #             'balance': balance,
+    #             'avg_price': avg_price,
+    #             'current_price': current_price,
+    #             'evaluation': evaluation,
+    #             'profit_loss': profit_loss,
+    #             'profit_loss_pct': profit_loss_pct
+    #         })
+    #         
+    #     # 정보 출력 - 보유 종목
+    #     if positions:
+    #         summary_lines.append("\n[보유 종목]")
+    #         summary_lines.append(f"{'티커':>10} | {'수량':>12} | {'평균단가':>12} | {'현재가':>12} | {'평가금액':>12} | {'손익률':>8} | {'손익금액':>12} | {'비중':>6}")
+    #         summary_lines.append("-" * 100)
+    #             
+    #         for pos in positions:
+    #             ticker = pos['ticker']
+    #             balance = pos['balance']
+    #             avg_price = pos['avg_price']
+    #             current_price = pos['current_price']
+    #             evaluation = pos['evaluation']
+    #             profit_loss = pos['profit_loss']
+    #             profit_loss_pct = pos['profit_loss_pct']
+    #             weight = (evaluation / total_value) * 100 if total_value > 0 else 0
+    #                 
+    #             # 부호 표시
+    #             profit_loss_sign = "+" if profit_loss >= 0 else ""
+    #             profit_loss_pct_sign = "+" if profit_loss_pct >= 0 else ""
+    #                 
+    #             summary_lines.append(f"{ticker:>10} | {balance:>12,.8f} | {avg_price:>12,.2f} | {current_price:>12,.2f} | {evaluation:>12,.2f} | {profit_loss_pct_sign}{profit_loss_pct:>6.2f}% | {profit_loss_sign}{profit_loss:>10,.2f} | {weight:>5.2f}%")
+    #     else:
+    #         summary_lines.append("\n보유 종목이 없습니다.")
+    #         
+    #     # 정보 출력 - 현금
+    #     cash_weight = (cash / total_value) * 100 if total_value > 0 else 0
+    #     summary_lines.append("\n[현금]")
+    #     summary_lines.append(f"{'보유현금':>10} | {cash:>12,.2f}원 | {'비중':>6} | {cash_weight:>5.2f}%")
+    #         
+    #     # 정보 출력 - 전체 자산
+    #     summary_lines.append("\n[전체 자산]")
+    #     summary_lines.append(f"{'총 평가금액':>10} | {total_value:>12,.2f}원")
+    #     summary_lines.append("\n===============================\n")
+    #         
+    #     # 로그로 출력하고 동시에 터미널에도 출력
+    #     for line in summary_lines:
+    #         logging.info(line)
+    #         print(line)
+    #             
+    #     # 함수 실행 종료 로그 - 명확한 표시
+    #     logging.info("===== PORTFOLIO_SUMMARY_END =====")
 
     def simple_portfolio_summary(self):
         """
@@ -889,100 +895,102 @@ class PortfolioManager:
             import traceback
             logging.error(traceback.format_exc())
 
-    def evaluate_exit_conditions(self, market_df, gpt_results=None):
-        """
-        현재 보유 종목들에 대해 청산 조건을 평가하고 매도 실행
-        """
-        from trade_executor import should_exit_trade, sell_asset
+    # UNUSED: 호출되지 않는 함수
+    # def evaluate_exit_conditions(self, market_df, gpt_results=None):
+    #     """
+    #     현재 보유 종목들에 대해 청산 조건을 평가하고 매도 실행
+    #     """
+    #     from trade_executor import should_exit_trade, sell_asset
+    # 
+    #     positions = self.get_current_positions()
+    #     for item in positions:
+    #         symbol = item['currency']
+    #         if symbol == "KRW":
+    #             continue
+    #         ticker = f"KRW-{symbol}"
+    #         if ticker not in market_df.index:
+    #             print(f"⚠️ {ticker}의 시장 데이터 없음 → 청산 평가 생략")
+    #             continue
+    # 
+    #         market_data = market_df.loc[ticker]
+    #         gpt_analysis = gpt_results.get(ticker, "") if gpt_results else None
+    # 
+    #         if should_exit_trade(ticker, market_data, gpt_analysis):
+    #             print(f"🟥 {ticker} 청산 실행")
+    #             sell_asset(ticker)
+    #         else:
+    #             print(f"✅ {ticker} 청산 조건 미충족 → 유지")
 
-        positions = self.get_current_positions()
-        for item in positions:
-            symbol = item['currency']
-            if symbol == "KRW":
-                continue
-            ticker = f"KRW-{symbol}"
-            if ticker not in market_df.index:
-                print(f"⚠️ {ticker}의 시장 데이터 없음 → 청산 평가 생략")
-                continue
-
-            market_data = market_df.loc[ticker]
-            gpt_analysis = gpt_results.get(ticker, "") if gpt_results else None
-
-            if should_exit_trade(ticker, market_data, gpt_analysis):
-                print(f"🟥 {ticker} 청산 실행")
-                sell_asset(ticker)
-            else:
-                print(f"✅ {ticker} 청산 조건 미충족 → 유지")
-
-    def upsert_performance_summary(self, period='daily'):
-        """
-        performance_summary 테이블에 일간/주간 성과 요약을 INSERT 또는 UPDATE.
-        """
-        # 기간 계산
-        today = datetime.date.today()
-        if period == 'daily':
-            start_date = today
-            end_date = today
-        elif period == 'weekly':
-            start_date = today - datetime.timedelta(days=today.weekday())
-            end_date = start_date + datetime.timedelta(days=6)
-        else:
-            raise ValueError(f"Unsupported period: {period}")
-
-        # 현재 계좌 가치
-        final_valuation = self.get_total_balance()
-
-        # 이전 초기 자산 조회 (있으면 유지, 없으면 final 기준 설정)
-        conn = psycopg2.connect(
-            host=os.getenv("PG_HOST"),
-            port=os.getenv("PG_PORT"),
-            dbname=os.getenv("PG_DATABASE"),
-            user=os.getenv("PG_USER"),
-            password=os.getenv("PG_PASSWORD")
-        )
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT initial_cash FROM performance_summary WHERE period_start = %s AND period_end = %s",
-            (start_date, end_date)
-        )
-        row = cur.fetchone()
-        initial_cash = row[0] if row and row[0] is not None else final_valuation
-
-        # 순이익 계산
-        net_profit = final_valuation - initial_cash
-
-        # 거래 횟수 계산
-        cur.execute(
-            "SELECT COUNT(*) FROM portfolio_history WHERE timestamp::date BETWEEN %s AND %s",
-            (start_date, end_date)
-        )
-        num_trades = cur.fetchone()[0] or 0
-
-        # 간단한 win_rate, profit_factor, max_drawdown 자리 표시자
-        win_rate = None
-        profit_factor = None
-        max_drawdown = None
-
-        # UPSERT 성과 요약
-        cur.execute("""
-            INSERT INTO performance_summary (
-                period_start, period_end, initial_cash,
-                final_valuation, net_profit, win_rate,
-                profit_factor, max_drawdown, num_trades
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (period_start, period_end) DO UPDATE SET
-                initial_cash = performance_summary.initial_cash,
-                final_valuation = EXCLUDED.final_valuation,
-                net_profit = EXCLUDED.net_profit,
-                num_trades = EXCLUDED.num_trades
-        """, (
-            start_date, end_date, initial_cash,
-            final_valuation, net_profit, win_rate,
-            profit_factor, max_drawdown, num_trades
-        ))
-        conn.commit()
-        cur.close()
-        conn.close()
+    # UNUSED: 호출되지 않는 함수
+    # def upsert_performance_summary(self, period='daily'):
+    #     """
+    #     performance_summary 테이블에 일간/주간 성과 요약을 INSERT 또는 UPDATE.
+    #     """
+    #     # 기간 계산
+    #     today = datetime.date.today()
+    #     if period == 'daily':
+    #         start_date = today
+    #         end_date = today
+    #     elif period == 'weekly':
+    #         start_date = today - datetime.timedelta(days=today.weekday())
+    #         end_date = start_date + datetime.timedelta(days=6)
+    #     else:
+    #         raise ValueError(f"Unsupported period: {period}")
+    # 
+    #     # 현재 계좌 가치
+    #     final_valuation = self.get_total_balance()
+    # 
+    #     # 이전 초기 자산 조회 (있으면 유지, 없으면 final 기준 설정)
+    #     conn = psycopg2.connect(
+    #         host=os.getenv("PG_HOST"),
+    #         port=os.getenv("PG_PORT"),
+    #         dbname=os.getenv("PG_DATABASE"),
+    #         user=os.getenv("PG_USER"),
+    #         password=os.getenv("PG_PASSWORD")
+    #     )
+    #     cur = conn.cursor()
+    #     cur.execute(
+    #         "SELECT initial_cash FROM performance_summary WHERE period_start = %s AND period_end = %s",
+    #         (start_date, end_date)
+    #     )
+    #     row = cur.fetchone()
+    #     initial_cash = row[0] if row and row[0] is not None else final_valuation
+    # 
+    #     # 순이익 계산
+    #     net_profit = final_valuation - initial_cash
+    # 
+    #     # 거래 횟수 계산
+    #     cur.execute(
+    #         "SELECT COUNT(*) FROM portfolio_history WHERE timestamp::date BETWEEN %s AND %s",
+    #         (start_date, end_date)
+    #     )
+    #     num_trades = cur.fetchone()[0] or 0
+    # 
+    #     # 간단한 win_rate, profit_factor, max_drawdown 자리 표시자
+    #     win_rate = None
+    #     profit_factor = None
+    #     max_drawdown = None
+    # 
+    #     # UPSERT 성과 요약
+    #     cur.execute("""
+    #         INSERT INTO performance_summary (
+    #             period_start, period_end, initial_cash,
+    #             final_valuation, net_profit, win_rate,
+    #             profit_factor, max_drawdown, num_trades
+    #         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    #         ON CONFLICT (period_start, period_end) DO UPDATE SET
+    #             initial_cash = performance_summary.initial_cash,
+    #             final_valuation = EXCLUDED.final_valuation,
+    #             net_profit = EXCLUDED.net_profit,
+    #             num_trades = EXCLUDED.num_trades
+    #     """, (
+    #         start_date, end_date, initial_cash,
+    #         final_valuation, net_profit, win_rate,
+    #         profit_factor, max_drawdown, num_trades
+    #     ))
+    #     conn.commit()
+    #     cur.close()
+    #     conn.close()
 
     # 매도 실행은 trade_executor.py의 sell_asset 함수를 사용
 
@@ -1594,77 +1602,79 @@ class PortfolioManager:
         except Exception as e:
             logging.error(f"❌ 수동 개입 기록 실패: {e}")
     
-    def get_manual_intervention_summary(self, days=7):
-        """최근 수동 개입 요약 조회"""
-        try:
-            query = """
-                SELECT ticker, detection_type, COUNT(*) as count,
-                       SUM(ABS(quantity_diff)) as total_quantity_diff,
-                       MAX(detected_at) as last_detected
-                FROM manual_override_log
-                WHERE detected_at >= NOW() - INTERVAL '%s days'
-                GROUP BY ticker, detection_type
-                ORDER BY last_detected DESC
-            """
-            
-            results = self.db_mgr.execute_query(query, (days,))
-            
-            summary = {
-                'period_days': days,
-                'total_interventions': len(results),
-                'interventions_by_type': {},
-                'details': []
-            }
-            
-            for row in results:
-                ticker, detection_type, count, total_diff, last_detected = row
-                
-                if detection_type not in summary['interventions_by_type']:
-                    summary['interventions_by_type'][detection_type] = 0
-                summary['interventions_by_type'][detection_type] += count
-                
-                summary['details'].append({
-                    'ticker': ticker,
-                    'detection_type': detection_type,
-                    'count': count,
-                    'total_quantity_diff': float(total_diff),
-                    'last_detected': last_detected
-                })
-            
-            return summary
-            
-        except Exception as e:
-            logging.error(f"❌ 수동 개입 요약 조회 실패: {e}")
-            return {'error': str(e)}
+    # UNUSED: 호출되지 않는 함수
+    # def get_manual_intervention_summary(self, days=7):
+    #     """최근 수동 개입 요약 조회"""
+    #     try:
+    #         query = """
+    #         SELECT ticker, detection_type, COUNT(*) as count,
+    #                SUM(ABS(quantity_diff)) as total_quantity_diff,
+    #                MAX(detected_at) as last_detected
+    #         FROM manual_override_log
+    #         WHERE detected_at >= NOW() - INTERVAL '%s days'
+    #         GROUP BY ticker, detection_type
+    #         ORDER BY last_detected DESC
+    #     """
+    #             
+    #         results = self.db_mgr.execute_query(query, (days,))
+    #             
+    #         summary = {
+    #             'period_days': days,
+    #             'total_interventions': len(results),
+    #             'interventions_by_type': {},
+    #             'details': []
+    #         }
+    #             
+    #         for row in results:
+    #             ticker, detection_type, count, total_diff, last_detected = row
+    #                 
+    #             if detection_type not in summary['interventions_by_type']:
+    #                 summary['interventions_by_type'][detection_type] = 0
+    #             summary['interventions_by_type'][detection_type] += count
+    #                 
+    #             summary['details'].append({
+    #                 'ticker': ticker,
+    #                 'detection_type': detection_type,
+    #                 'count': count,
+    #                 'total_quantity_diff': float(total_diff),
+    #                 'last_detected': last_detected
+    #             })
+    #             
+    #         return summary
+    #             
+    #     except Exception as e:
+    #         logging.error(f"❌ 수동 개입 요약 조회 실패: {e}")
+    #         return {'error': str(e)}
 
-def create_performance_summary_table():
-    conn = psycopg2.connect(
-        host=os.getenv("PG_HOST"),
-        port=os.getenv("PG_PORT"),
-        dbname=os.getenv("PG_DATABASE"),
-        user=os.getenv("PG_USER"),
-        password=os.getenv("PG_PASSWORD")
-    )
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS performance_summary (
-            id SERIAL PRIMARY KEY,
-            period_start DATE,
-            period_end DATE,
-            initial_cash REAL,
-            final_valuation REAL,
-            net_profit REAL,
-            win_rate REAL,
-            profit_factor REAL,
-            max_drawdown REAL,
-            num_trades INTEGER,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE (period_start, period_end)
-        )
-    """)
-    # Placeholder for future implementation
-    # INSERT INTO performance_summary (...) ON CONFLICT (period_start, period_end) DO UPDATE SET ...
-    conn.commit()
-    conn.close()
+# UNUSED: 호출되지 않는 함수
+# def create_performance_summary_table():
+#     conn = psycopg2.connect(
+#         host=os.getenv("PG_HOST"),
+#         port=os.getenv("PG_PORT"),
+#         dbname=os.getenv("PG_DATABASE"),
+#         user=os.getenv("PG_USER"),
+#         password=os.getenv("PG_PASSWORD")
+#     )
+#     cursor = conn.cursor()
+#     cursor.execute("""
+#         CREATE TABLE IF NOT EXISTS performance_summary (
+#             id SERIAL PRIMARY KEY,
+#             period_start DATE,
+#             period_end DATE,
+#             initial_cash REAL,
+#             final_valuation REAL,
+#             net_profit REAL,
+#             win_rate REAL,
+#             profit_factor REAL,
+#             max_drawdown REAL,
+#             num_trades INTEGER,
+#             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+#             UNIQUE (period_start, period_end)
+#         )
+#     """)
+#     # Placeholder for future implementation
+#     # INSERT INTO performance_summary (...) ON CONFLICT (period_start, period_end) DO UPDATE SET ...
+#     conn.commit()
+#     conn.close()
 
-create_performance_summary_table()
+# create_performance_summary_table()

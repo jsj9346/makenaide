@@ -916,25 +916,26 @@ def generate_filter_report(filter_report: dict, config: dict):
     except Exception as e:
         logger.error(f"❌ 필터링 리포트 생성 중 오류 발생: {e}")
 
-def clean_old_data(days=400):
-    conn = psycopg2.connect(
-        host=os.getenv("PG_HOST"),
-        port=os.getenv("PG_PORT"),
-        dbname=os.getenv("PG_DATABASE"),
-        user=os.getenv("PG_USER"),
-        password=os.getenv("PG_PASSWORD")
-    )
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        DELETE FROM ohlcv
-        WHERE date < (
-            SELECT MAX(date) FROM ohlcv t2 WHERE t2.ticker = ohlcv.ticker
-        ) - INTERVAL %s
-    """, (f'{days} days',))
-
-    conn.commit()
-    conn.close()
+# UNUSED: 오래된 OHLCV 데이터 삭제 함수 - 현재 파이프라인에서 사용되지 않음
+# def clean_old_data(days=400):
+#     conn = psycopg2.connect(
+#         host=os.getenv("PG_HOST"),
+#         port=os.getenv("PG_PORT"),
+#         dbname=os.getenv("PG_DATABASE"),
+#         user=os.getenv("PG_USER"),
+#         password=os.getenv("PG_PASSWORD")
+#     )
+#     cursor = conn.cursor()
+# 
+#     cursor.execute("""
+#         DELETE FROM ohlcv
+#         WHERE date < (
+#             SELECT MAX(date) FROM ohlcv t2 WHERE t2.ticker = ohlcv.ticker
+#         ) - INTERVAL %s
+#     """, (f'{days} days',))
+# 
+#     conn.commit()
+#     conn.close()
 
 def fetch_market_data_4h():
     """

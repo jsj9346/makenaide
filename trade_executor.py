@@ -20,143 +20,145 @@ MAKER_FEE_RATE = 0.0005   # 0.05% (Maker 수수료)
 
 DB_PATH = "makenaide.db"
 
-# 매매가 추천된 티커 조회
-def get_trade_candidates():
-    conn = psycopg2.connect(
-        host=os.getenv("PG_HOST"),
-        port=os.getenv("PG_PORT"),
-        dbname=os.getenv("PG_DATABASE"),
-        user=os.getenv("PG_USER"),
-        password=os.getenv("PG_PASSWORD")
-    )
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT t.ticker, t.action, s.price, NULL as position_avg_price
-        FROM trend_analysis t
-        LEFT JOIN static_indicators s ON t.ticker = s.ticker
-        WHERE t.action IN ('BUY', 'SELL')
-    """)
-    rows = cursor.fetchall()
-    conn.close()
-    return rows
+# UNUSED: 호출되지 않는 함수
+# # 매매가 추천된 티커 조회
+# def get_trade_candidates():
+#     conn = psycopg2.connect(
+#         host=os.getenv("PG_HOST"),
+#         port=os.getenv("PG_PORT"),
+#         dbname=os.getenv("PG_DATABASE"),
+#         user=os.getenv("PG_USER"),
+#         password=os.getenv("PG_PASSWORD")
+#     )
+#     cursor = conn.cursor()
+#     cursor.execute("""
+#         SELECT t.ticker, t.action, s.price, NULL as position_avg_price
+#         FROM trend_analysis t
+#         LEFT JOIN static_indicators s ON t.ticker = s.ticker
+#         WHERE t.action IN ('BUY', 'SELL')
+#     """)
+#     rows = cursor.fetchall()
+#     conn.close()
+#     return rows
 
-# 데이터베이스에 평균 매수가 갱신 - static_indicators 테이블 기반으로 복구
-def update_position(ticker, avg_price):
-    """
-    포지션 정보를 static_indicators와 ohlcv 테이블에서 조회하여 업데이트
-    
-    Args:
-        ticker (str): 업데이트할 티커
-        avg_price (float): 평균 매수가
-    
-    Returns:
-        dict: 포지션 정보 (price, atr, ma_200, current_close 등)
-    """
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("PG_HOST"),
-            port=os.getenv("PG_PORT"),
-            dbname=os.getenv("PG_DATABASE"),
-            user=os.getenv("PG_USER"),
-            password=os.getenv("PG_PASSWORD")
-        )
-        cursor = conn.cursor()
-        
-        # 1. static_indicators에서 기본 정보 조회
-        cursor.execute("""
-            SELECT price, pivot, s1, r1, updated_at
-            FROM static_indicators 
-            WHERE ticker = %s
-        """, (ticker,))
-        
-        static_data = cursor.fetchone()
-        if not static_data:
-            logging.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
-            return None
-            
-        price, pivot, s1, r1, updated_at = static_data
-        
-        # 2. ohlcv에서 최신 OHLC 및 기술적 지표 조회
-        cursor.execute("""
-            SELECT open, high, low, close, volume, 
-                   atr, ma_50, ma_200, rsi_14, macd_histogram,
-                   bb_upper, bb_lower, date
-            FROM ohlcv 
-            WHERE ticker = %s 
-            ORDER BY date DESC 
-            LIMIT 1
-        """, (ticker,))
-        
-        ohlcv_data = cursor.fetchone()
-        if not ohlcv_data:
-            logging.warning(f"⚠️ {ticker} ohlcv 데이터 없음")
-            return None
-            
-        open_price, high, low, close, volume, atr, ma_50, ma_200, rsi_14, macd_histogram, bb_upper, bb_lower, date = ohlcv_data
-        
-        # 3. 포지션 정보 구성
-        position_info = {
-            'ticker': ticker,
-            'avg_price': avg_price,
-            'current_price': price or close,  # static_indicators의 price 우선, 없으면 ohlcv의 close
-            'open': open_price,
-            'high': high,
-            'low': low,
-            'close': close,
-            'volume': volume,
-            'atr': atr,
-            'ma_50': ma_50,
-            'ma_200': ma_200,
-            'rsi_14': rsi_14,
-            'macd_histogram': macd_histogram,
-            'bb_upper': bb_upper,
-            'bb_lower': bb_lower,
-            'pivot': pivot,
-            'support': s1,
-            'resistance': r1,
-            'last_update': updated_at,
-            'ohlcv_date': date
-        }
-        
-        # 4. 수익률 계산
-        if avg_price and position_info['current_price']:
-            pnl_rate = ((position_info['current_price'] - avg_price) / avg_price) * 100
-            position_info['pnl_rate'] = pnl_rate
-        else:
-            position_info['pnl_rate'] = 0.0
-            
-        # 5. portfolio_history에 포지션 업데이트 기록
-        cursor.execute("""
-            INSERT INTO portfolio_history (ticker, action, qty, price, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-        """, (
-            ticker,
-            'POSITION_UPDATE',
-            0,  # 수량은 실제 거래가 아니므로 0
-            avg_price,
-            datetime.now()
-        ))
-        
-        conn.commit()
-        
-        logging.info(f"✅ {ticker} 포지션 정보 업데이트 완료")
-        logging.info(f"   - 평균가: {avg_price:,.2f}, 현재가: {position_info['current_price']:,.2f}")
-        logging.info(f"   - 수익률: {position_info['pnl_rate']:+.2f}%")
-        logging.info(f"   - ATR: {atr}, 지지/저항: {s1:.2f}/{r1:.2f}")
-        
-        return position_info
-        
-    except Exception as e:
-        logging.error(f"❌ {ticker} 포지션 업데이트 실패: {str(e)}")
-        if 'conn' in locals():
-            conn.rollback()
-        return None
-        
-    finally:
-        if 'cursor' in locals():
-            cursor.close()
-        if 'conn' in locals():
-            conn.close()
+# UNUSED: 호출되지 않는 함수
+# # 데이터베이스에 평균 매수가 갱신 - static_indicators 테이블 기반으로 복구
+# def update_position(ticker, avg_price):
+#     """
+#     포지션 정보를 static_indicators와 ohlcv 테이블에서 조회하여 업데이트
+#     
+#     Args:
+#         ticker (str): 업데이트할 티커
+#         avg_price (float): 평균 매수가
+#     
+#     Returns:
+#         dict: 포지션 정보 (price, atr, ma_200, current_close 등)
+#     """
+#     try:
+#         conn = psycopg2.connect(
+#             host=os.getenv("PG_HOST"),
+#             port=os.getenv("PG_PORT"),
+#             dbname=os.getenv("PG_DATABASE"),
+#             user=os.getenv("PG_USER"),
+#             password=os.getenv("PG_PASSWORD")
+#         )
+#         cursor = conn.cursor()
+#         
+#         # 1. static_indicators에서 기본 정보 조회
+#         cursor.execute("""
+#             SELECT price, pivot, s1, r1, updated_at
+#             FROM static_indicators 
+#             WHERE ticker = %s
+#         """, (ticker,))
+#         
+#         static_data = cursor.fetchone()
+#         if not static_data:
+#             logging.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
+#             return None
+#             
+#         price, pivot, s1, r1, updated_at = static_data
+#         
+#         # 2. ohlcv에서 최신 OHLC 및 기술적 지표 조회
+#         cursor.execute("""
+#             SELECT open, high, low, close, volume, 
+#                    atr, ma_50, ma_200, rsi_14, macd_histogram,
+#                    bb_upper, bb_lower, date
+#             FROM ohlcv 
+#             WHERE ticker = %s 
+#             ORDER BY date DESC 
+#             LIMIT 1
+#         """, (ticker,))
+#         
+#         ohlcv_data = cursor.fetchone()
+#         if not ohlcv_data:
+#             logging.warning(f"⚠️ {ticker} ohlcv 데이터 없음")
+#             return None
+#             
+#         open_price, high, low, close, volume, atr, ma_50, ma_200, rsi_14, macd_histogram, bb_upper, bb_lower, date = ohlcv_data
+#         
+#         # 3. 포지션 정보 구성
+#         position_info = {
+#             'ticker': ticker,
+#             'avg_price': avg_price,
+#             'current_price': price or close,  # static_indicators의 price 우선, 없으면 ohlcv의 close
+#             'open': open_price,
+#             'high': high,
+#             'low': low,
+#             'close': close,
+#             'volume': volume,
+#             'atr': atr,
+#             'ma_50': ma_50,
+#             'ma_200': ma_200,
+#             'rsi_14': rsi_14,
+#             'macd_histogram': macd_histogram,
+#             'bb_upper': bb_upper,
+#             'bb_lower': bb_lower,
+#             'pivot': pivot,
+#             'support': s1,
+#             'resistance': r1,
+#             'last_update': updated_at,
+#             'ohlcv_date': date
+#         }
+#         
+#         # 4. 수익률 계산
+#         if avg_price and position_info['current_price']:
+#             pnl_rate = ((position_info['current_price'] - avg_price) / avg_price) * 100
+#             position_info['pnl_rate'] = pnl_rate
+#         else:
+#             position_info['pnl_rate'] = 0.0
+#             
+#         # 5. portfolio_history에 포지션 업데이트 기록
+#         cursor.execute("""
+#             INSERT INTO portfolio_history (ticker, action, qty, price, created_at)
+#             VALUES (%s, %s, %s, %s, %s)
+#         """, (
+#             ticker,
+#             'POSITION_UPDATE',
+#             0,  # 수량은 실제 거래가 아니므로 0
+#             avg_price,
+#             datetime.now()
+#         ))
+#         
+#         conn.commit()
+#         
+#         logging.info(f"✅ {ticker} 포지션 정보 업데이트 완료")
+#         logging.info(f"   - 평균가: {avg_price:,.2f}, 현재가: {position_info['current_price']:,.2f}")
+#         logging.info(f"   - 수익률: {position_info['pnl_rate']:+.2f}%")
+#         logging.info(f"   - ATR: {atr}, 지지/저항: {s1:.2f}/{r1:.2f}")
+#         
+#         return position_info
+#         
+#     except Exception as e:
+#         logging.error(f"❌ {ticker} 포지션 업데이트 실패: {str(e)}")
+#         if 'conn' in locals():
+#             conn.rollback()
+#         return None
+#         
+#     finally:
+#         if 'cursor' in locals():
+#             cursor.close()
+#         if 'conn' in locals():
+#             conn.close()
 
 @retry(max_attempts=3, initial_delay=1, backoff=2)
 def buy_asset(upbit_client, ticker: str, current_price: float, trade_amount_krw: float, 
@@ -554,27 +556,28 @@ class TrailingStopManager:
             return True
         return False
 
-def should_enter_trade(ticker, market_data, gpt_analysis=None):
-    """
-    GPT 분석 결과와 기술적 분석을 결합하여 매수 여부 판단
-    """
-    # 기술적 조건: Supertrend 상단 돌파 + MACD histogram 양전환 + ADX 강세
-    tech_cond = (
-        market_data.get("supertrend") is not None and
-        market_data.get("price") > market_data.get("supertrend") and
-        market_data.get("macd_histogram", 0) > 0 and
-        market_data.get("adx", 0) > 25
-    )
-
-    # GPT 분석 결과 확인 (buy 라는 키워드 포함 여부)
-    gpt_cond = gpt_analysis and "buy" in gpt_analysis.lower()
-
-    if tech_cond and gpt_cond:
-        print(f"🟢 {ticker} 매수 조건 충족 (기술적 + GPT 분석)")
-        return True
-
-    print(f"⚪ {ticker} 매수 조건 미충족")
-    return False
+# UNUSED: 호출되지 않는 함수
+# def should_enter_trade(ticker, market_data, gpt_analysis=None):
+#     """
+#     GPT 분석 결과와 기술적 분석을 결합하여 매수 여부 판단
+#     """
+#     # 기술적 조건: Supertrend 상단 돌파 + MACD histogram 양전환 + ADX 강세
+#     tech_cond = (
+#         market_data.get("supertrend") is not None and
+#         market_data.get("price") > market_data.get("supertrend") and
+#         market_data.get("macd_histogram", 0) > 0 and
+#         market_data.get("adx", 0) > 25
+#     )
+# 
+#     # GPT 분석 결과 확인 (buy 라는 키워드 포함 여부)
+#     gpt_cond = gpt_analysis and "buy" in gpt_analysis.lower()
+# 
+#     if tech_cond and gpt_cond:
+#         print(f"🟢 {ticker} 매수 조건 충족 (기술적 + GPT 분석)")
+#         return True
+# 
+#     print(f"⚪ {ticker} 매수 조건 미충족")
+#     return False
 
 def should_exit_trade(ticker, market_data, gpt_analysis=None):
     """

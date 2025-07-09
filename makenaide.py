@@ -202,7 +202,7 @@ from db_manager import DBManager
 from config_loader import load_config
 # === 스윗스팟/백테스트 모듈 import ===
 from backtester import backtest_combo, SPOT_COMBOS, generate_strategy_report
-from parallel_processor import process_tickers_parallel, process_data_parallel
+# from parallel_processor import process_tickers_parallel, process_data_parallel
 from filter_tickers import filter_breakout_candidates, filter_by_monthly_data_length, apply_timing_filter_4h
 
 # 디버깅을 위한 import 경로 출력

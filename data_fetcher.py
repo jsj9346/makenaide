@@ -360,23 +360,24 @@ def delete_old_ohlcv(ticker: str, cutoff_days: int = 451):
         logger.error(f"❌ {ticker} 오래된 OHLCV 삭제 실패: {e}")
 
 
-def delete_old_ohlcv_4h(ticker: str, cutoff_days: int = 93):
-    """지정된 일수보다 오래된 4시간봉 OHLCV 데이터를 삭제합니다."""
-    cutoff_datetime = datetime.now() - timedelta(days=cutoff_days)
-    
-    try:
-        with db_manager.get_connection_context() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    DELETE FROM ohlcv_4h
-                    WHERE ticker = %s AND date < %s
-                """, (ticker, cutoff_datetime))
-                deleted = cursor.rowcount
-                # 컨텍스트 매니저가 자동으로 commit 처리
-        
-        logger.info(f"✅ {ticker}: {cutoff_days}일 이전 4시간봉 OHLCV {deleted}건 삭제됨")
-    except Exception as e:
-        logger.error(f"❌ {ticker} 오래된 4시간봉 OHLCV 삭제 실패: {e}")
+# UNUSED: 4시간봉 오래된 데이터 삭제 함수 - 현재 파이프라인에서 사용되지 않음
+# def delete_old_ohlcv_4h(ticker: str, cutoff_days: int = 93):
+#     """지정된 일수보다 오래된 4시간봉 OHLCV 데이터를 삭제합니다."""
+#     cutoff_datetime = datetime.now() - timedelta(days=cutoff_days)
+#     
+#     try:
+#         with db_manager.get_connection_context() as conn:
+#             with conn.cursor() as cursor:
+#                 cursor.execute("""
+#                     DELETE FROM ohlcv_4h
+#                     WHERE ticker = %s AND date < %s
+#                 """, (ticker, cutoff_datetime))
+#                 deleted = cursor.rowcount
+#                 # 컨텍스트 매니저가 자동으로 commit 처리
+#         
+#         logger.info(f"✅ {ticker}: {cutoff_days}일 이전 4시간봉 OHLCV {deleted}건 삭제됨")
+#     except Exception as e:
+#         logger.error(f"❌ {ticker} 오래된 4시간봉 OHLCV 삭제 실패: {e}")
 
 def validate_indicator(df, indicator_name, min_valid_ratio=0.2):
     """
@@ -2738,56 +2739,57 @@ def safe_pyupbit_get_ohlcv(ticker, interval="day", count=200, to=None, period=1)
         logger.error(f"❌ {ticker} safe_pyupbit_get_ohlcv 실패: {str(e)}")
         return None
 
-def fix_datetime_index(df, ticker):
-    """
-    DataFrame의 잘못된 날짜 인덱스를 올바르게 수정
-    
-    Args:
-        df (pd.DataFrame): 수정할 DataFrame
-        ticker (str): 티커 심볼 (로깅용)
-    
-    Returns:
-        pd.DataFrame: 날짜 인덱스가 수정된 DataFrame
-    """
-    if df is None or df.empty:
-        return df
-    
-    # 4단계: pyupbit API 응답의 원본 인덱스 정보 로깅
-    logger.debug(f"🔍 {ticker} 원본 API 응답 인덱스 정보:")
-    logger.debug(f"   - Index 타입: {type(df.index)}")
-    logger.debug(f"   - 데이터 개수: {len(df)}")
-    if len(df) > 0:
-        logger.debug(f"   - 첫 번째 index: {df.index[0]} (타입: {type(df.index[0])})")
-        logger.debug(f"   - 마지막 index: {df.index[-1]} (타입: {type(df.index[-1])})")
-        
-    # 1970-01-01 인덱스 감지
-    if hasattr(df.index, 'year') and len(df.index) > 0 and df.index[0].year == 1970:
-        logger.warning(f"🔧 {ticker} 잘못된 날짜 인덱스 감지, 복구 시작...")
-        
-        # 4단계: 날짜 변환 전후 비교
-        original_start = df.index[0] if len(df) > 0 else None
-        original_end = df.index[-1] if len(df) > 0 else None
-        
-        # 현재 날짜부터 역산하여 올바른 날짜 생성
-        end_date = datetime.now().date()
-        date_range = pd.date_range(
-            end=end_date, 
-            periods=len(df), 
-            freq='D'
-        )
-        
-        # 주말 제외 없음 (암호화폐는 24/7 거래)
-        df.index = date_range
-        
-        # 4단계: 변환 후 로깅
-        new_start = df.index[0] if len(df) > 0 else None
-        new_end = df.index[-1] if len(df) > 0 else None
-        
-        logger.info(f"✅ {ticker} 날짜 인덱스 복구 완료:")
-        logger.info(f"   - 복구 전: {original_start} ~ {original_end}")
-        logger.info(f"   - 복구 후: {new_start.date()} ~ {new_end.date()}")
-    
-    return df
+# UNUSED: 데이터프레임 인덱스 변환 함수 - 현재 파이프라인에서 사용되지 않음
+# def fix_datetime_index(df, ticker):
+#     """
+#     DataFrame의 잘못된 날짜 인덱스를 올바르게 수정
+#     
+#     Args:
+#         df (pd.DataFrame): 수정할 DataFrame
+#         ticker (str): 티커 심볼 (로깅용)
+#     
+#     Returns:
+#         pd.DataFrame: 날짜 인덱스가 수정된 DataFrame
+#     """
+#     if df is None or df.empty:
+#         return df
+#     
+#     # 4단계: pyupbit API 응답의 원본 인덱스 정보 로깅
+#     logger.debug(f"🔍 {ticker} 원본 API 응답 인덱스 정보:")
+#     logger.debug(f"   - Index 타입: {type(df.index)}")
+#     logger.debug(f"   - 데이터 개수: {len(df)}")
+#     if len(df) > 0:
+#         logger.debug(f"   - 첫 번째 index: {df.index[0]} (타입: {type(df.index[0])})")
+#         logger.debug(f"   - 마지막 index: {df.index[-1]} (타입: {type(df.index[-1])})")
+#         
+#     # 1970-01-01 인덱스 감지
+#     if hasattr(df.index, 'year') and len(df.index) > 0 and df.index[0].year == 1970:
+#         logger.warning(f"🔧 {ticker} 잘못된 날짜 인덱스 감지, 복구 시작...")
+#         
+#         # 4단계: 날짜 변환 전후 비교
+#         original_start = df.index[0] if len(df) > 0 else None
+#         original_end = df.index[-1] if len(df) > 0 else None
+#         
+#         # 현재 날짜부터 역산하여 올바른 날짜 생성
+#         end_date = datetime.now().date()
+#         date_range = pd.date_range(
+#             end=end_date, 
+#             periods=len(df), 
+#             freq='D'
+#         )
+#         
+#         # 주말 제외 없음 (암호화폐는 24/7 거래)
+#         df.index = date_range
+#         
+#         # 4단계: 변환 후 로깅
+#         new_start = df.index[0] if len(df) > 0 else None
+#         new_end = df.index[-1] if len(df) > 0 else None
+#         
+#         logger.info(f"✅ {ticker} 날짜 인덱스 복구 완료:")
+#         logger.info(f"   - 복구 전: {original_start} ~ {original_end}")
+#         logger.info(f"   - 복구 후: {new_start.date()} ~ {new_end.date()}")
+#     
+#     return df
 
 def get_ohlcv_d(ticker, interval="day", count=450, force_fetch=False, fetch_latest_only=False):
     """
@@ -3730,63 +3732,65 @@ def is_indicator_valid(df, indicator_name, row_index):
         
     return True
 
-def get_valid_indicators_for_period(df, row_index):
-    """
-    2단계: 특정 기간에서 계산 가능한 지표 목록 반환
-    
-    Args:
-        df (pd.DataFrame): 데이터프레임
-        row_index (int): 확인할 행 인덱스
-        
-    Returns:
-        list: 해당 기간에서 유효한 지표 목록
-    """
-    valid_indicators = []
-    
-    for indicator_name in INDICATOR_MIN_PERIODS.keys():
-        if is_indicator_valid(df, indicator_name, row_index):
-            valid_indicators.append(indicator_name)
-            
-    return valid_indicators
+# UNUSED: 특정 기간에서 계산 가능한 지표 목록 반환 함수 - 현재 파이프라인에서 사용되지 않음
+# def get_valid_indicators_for_period(df, row_index):
+#     """
+#     2단계: 특정 기간에서 계산 가능한 지표 목록 반환
+#     
+#     Args:
+#         df (pd.DataFrame): 데이터프레임
+#         row_index (int): 확인할 행 인덱스
+#         
+#     Returns:
+#         list: 해당 기간에서 유효한 지표 목록
+#     """
+#     valid_indicators = []
+#     
+#     for indicator_name in INDICATOR_MIN_PERIODS.keys():
+#         if is_indicator_valid(df, indicator_name, row_index):
+#             valid_indicators.append(indicator_name)
+#             
+#     return valid_indicators
 
-def smart_date_validation(date_str, original_index, ticker):
-    """
-    날짜 문자열의 유효성을 지능적으로 판단
-    
-    Args:
-        date_str (str): 변환된 날짜 문자열
-        original_index: 원본 DataFrame 인덱스
-        ticker (str): 티커명 (로깅용)
-    
-    Returns:
-        tuple: (corrected_date_str, is_valid)
-    """
-    # 4단계: 날짜 검증 과정 상세 로깅
-    logger.debug(f"🔍 {ticker} 날짜 검증: {date_str} (원본: {original_index})")
-    
-    # 1970-01-01이지만 원본 인덱스가 유효한 경우 복구 시도
-    if date_str == "1970-01-01" and hasattr(original_index, 'date'):
-        try:
-            # 현재 날짜 기준으로 역산
-            days_ago = (datetime.now().date() - original_index.date()).days
-            logger.debug(f"🔍 {ticker} 1970-01-01 복구 시도: {days_ago}일 전 데이터")
-            
-            if 0 <= days_ago <= 3650:  # 10년 이내 데이터만 허용
-                corrected_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
-                logger.info(f"🔧 {ticker} 날짜 복구 성공: {date_str} → {corrected_date} ({days_ago}일 전)")
-                return corrected_date, True
-            else:
-                logger.warning(f"⚠️ {ticker} 날짜 복구 실패: {days_ago}일 전 데이터는 범위 초과 (10년 이내만 허용)")
-        except Exception as e:
-            logger.debug(f"⚠️ {ticker} 날짜 복구 중 오류: {str(e)}")
-    
-    # 기본 검증
-    if date_str in ["N/A", "Invalid Date"]:
-        logger.debug(f"❌ {ticker} 무효한 날짜 형식: {date_str}")
-        return None, False
-        
-    logger.debug(f"✅ {ticker} 날짜 검증 통과: {date_str}")
-    return date_str, True
+# UNUSED: 날짜 문자열 유효성 검증 함수 - 현재 파이프라인에서 사용되지 않음
+# def smart_date_validation(date_str, original_index, ticker):
+#     """
+#     날짜 문자열의 유효성을 지능적으로 판단
+#     
+#     Args:
+#         date_str (str): 변환된 날짜 문자열
+#         original_index: 원본 DataFrame 인덱스
+#         ticker (str): 티커명 (로깅용)
+#     
+#     Returns:
+#         tuple: (corrected_date_str, is_valid)
+#     """
+#     # 4단계: 날짜 검증 과정 상세 로깅
+#     logger.debug(f"🔍 {ticker} 날짜 검증: {date_str} (원본: {original_index})")
+#     
+#     # 1970-01-01이지만 원본 인덱스가 유효한 경우 복구 시도
+#     if date_str == "1970-01-01" and hasattr(original_index, 'date'):
+#         try:
+#             # 현재 날짜 기준으로 역산
+#             days_ago = (datetime.now().date() - original_index.date()).days
+#             logger.debug(f"🔍 {ticker} 1970-01-01 복구 시도: {days_ago}일 전 데이터")
+#             
+#             if 0 <= days_ago <= 3650:  # 10년 이내 데이터만 허용
+#                 corrected_date = (datetime.now() - timedelta(days=days_ago)).strftime('%Y-%m-%d')
+#                 logger.info(f"🔧 {ticker} 날짜 복구 성공: {date_str} → {corrected_date} ({days_ago}일 전)")
+#                 return corrected_date, True
+#             else:
+#                 logger.warning(f"⚠️ {ticker} 날짜 복구 실패: {days_ago}일 전 데이터는 범위 초과 (10년 이내만 허용)")
+#         except Exception as e:
+#             logger.debug(f"⚠️ {ticker} 날짜 복구 중 오류: {str(e)}")
+#     
+#     # 기본 검증
+#     if date_str in ["N/A", "Invalid Date"]:
+#         logger.debug(f"❌ {ticker} 무효한 날짜 형식: {date_str}")
+#         return None, False
+#         
+#     logger.debug(f"✅ {ticker} 날짜 검증 통과: {date_str}")
+#     return date_str, True
 
 
 
@@ -3937,89 +3941,90 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
         logger.warning(f"⚠️ {ticker} {column_name} 대체 계산 실패: {e}")
     return None
 
-def get_safe_static_value(latest_row, column_name, ticker):
-    """
-    정적 지표 안전한 값 추출 - 트레이딩 의미 기반 개선
-    
-    🎯 개선사항:
-    - 기본값 사용을 최후 수단으로 제한
-    - 트레이딩 전략에 의미있는 대체 계산 우선
-    - 계산 불가능한 경우 None 반환으로 해당 종목 제외 고려
-    
-    Args:
-        latest_row: DataFrame의 최신 행
-        column_name: 컬럼명
-        ticker: 티커명 (로깅용)
-        
-    Returns:
-        안전한 값 또는 None (계산 불가능한 경우)
-    """
-    import pandas as pd
-    import numpy as np
-    
-    value = latest_row.get(column_name)
-    current_price = latest_row.get('close', 1000.0)  # 기본 가격
-    
-    # 🔧 [개선] 유효한 값 검증 강화
-    if value is not None and not pd.isna(value):
-        # 문자열 타입인 경우 (supertrend_signal)
-        if isinstance(value, str) and value.strip() != '':
-            return value
-        # 숫자 타입인 경우 - 극값 및 무한대 제거
-        elif isinstance(value, (int, float)):
-            if not np.isinf(value) and not np.isnan(value):
-                # 극값 제거 (지표별 합리적 범위 확인)
-                if column_name == 'ma200_slope' and abs(value) < 50:  # ±50% 이내
-                    return value
-                elif column_name == 'volume_change_7_30' and 0.01 <= value <= 100:  # 0.01배~100배
-                    return value
-                elif column_name == 'nvt_relative' and 0.1 <= value <= 1000:  # 0.1~1000배
-                    return value
-                elif column_name == 'adx' and 0 <= value <= 100:  # ADX는 0~100
-                    return value
-                elif column_name not in ['ma200_slope', 'volume_change_7_30', 'nvt_relative', 'adx']:
-                    return value  # 기타 지표는 유효성 검증만
-        # 기타 유효한 값
-        elif not isinstance(value, str):
-            try:
-                float_val = float(value)
-                if not np.isinf(float_val) and not np.isnan(float_val):
-                    return float_val
-            except (ValueError, TypeError):
-                pass
-    
-    # 🚀 [핵심 개선] 트레이딩 의미 기반 대체 계산 시도
-    logger.info(f"🔄 {ticker} {column_name}: 대체 계산 시도")
-    
-    # 대체 계산 로직
-    alternative_value = _calculate_alternative_indicator(latest_row, column_name, ticker)
-    if alternative_value is not None:
-        logger.info(f"✅ {ticker} {column_name}: 대체 계산 성공 ({alternative_value})")
-        return alternative_value
-    
-    # 🚨 [최후 수단] 의미있는 기본값 또는 None
-    meaningful_fallbacks = {
-        'ma200_slope': None,  # 🎯 계산 불가 시 해당 종목 제외 고려
-        'nvt_relative': None,  # 🎯 수급 분석 불가 시 제외
-        'volume_change_7_30': None,  # 🎯 VCP 분석 불가 시 제외
-        'adx': None,  # 🎯 추세 강도 불확실 시 제외
-        'supertrend_signal': 0.5,  # 🎯 신호 불명확 시 중립 (0.5)
-        # 가격 관련은 현재가 기반 추정값 사용
-        'high_60': current_price * 1.02,  # 보수적 추정
-        'low_60': current_price * 0.98,   # 보수적 추정
-        'resistance': current_price * 1.01,  # 보수적 저항선
-        'support': current_price * 0.99,     # 보수적 지지선
-        'atr': current_price * 0.015,  # 보수적 ATR (1.5%)
-    }
-    
-    fallback = meaningful_fallbacks.get(column_name, None)
-    
-    if fallback is None:
-        logger.warning(f"🚨 {ticker} {column_name}: 계산 불가능 - 해당 지표 제외 권장")
-    else:
-        logger.warning(f"⚠️ {ticker} {column_name}: 최후 수단 기본값 {fallback} 적용")
-    
-    return fallback
+# UNUSED: 정적 지표 안전한 값 추출 함수 - 현재 파이프라인에서 사용되지 않음
+# def get_safe_static_value(latest_row, column_name, ticker):
+#     """
+#     정적 지표 안전한 값 추출 - 트레이딩 의미 기반 개선
+#     
+#     🎯 개선사항:
+#     - 기본값 사용을 최후 수단으로 제한
+#     - 트레이딩 전략에 의미있는 대체 계산 우선
+#     - 계산 불가능한 경우 None 반환으로 해당 종목 제외 고려
+#     
+#     Args:
+#         latest_row: DataFrame의 최신 행
+#         column_name: 컬럼명
+#         ticker: 티커명 (로깅용)
+#         
+#     Returns:
+#         안전한 값 또는 None (계산 불가능한 경우)
+#     """
+#     import pandas as pd
+#     import numpy as np
+#     
+#     value = latest_row.get(column_name)
+#     current_price = latest_row.get('close', 1000.0)  # 기본 가격
+#     
+#     # 🔧 [개선] 유효한 값 검증 강화
+#     if value is not None and not pd.isna(value):
+#         # 문자열 타입인 경우 (supertrend_signal)
+#         if isinstance(value, str) and value.strip() != '':
+#             return value
+#         # 숫자 타입인 경우 - 극값 및 무한대 제거
+#         elif isinstance(value, (int, float)):
+#             if not np.isinf(value) and not np.isnan(value):
+#                 # 극값 제거 (지표별 합리적 범위 확인)
+#                 if column_name == 'ma200_slope' and abs(value) < 50:  # ±50% 이내
+#                     return value
+#                 elif column_name == 'volume_change_7_30' and 0.01 <= value <= 100:  # 0.01배~100배
+#                     return value
+#                 elif column_name == 'nvt_relative' and 0.1 <= value <= 1000:  # 0.1~1000배
+#                     return value
+#                 elif column_name == 'adx' and 0 <= value <= 100:  # ADX는 0~100
+#                     return value
+#                 elif column_name not in ['ma200_slope', 'volume_change_7_30', 'nvt_relative', 'adx']:
+#                     return value  # 기타 지표는 유효성 검증만
+#         # 기타 유효한 값
+#         elif not isinstance(value, str):
+#             try:
+#                 float_val = float(value)
+#                 if not np.isinf(float_val) and not np.isnan(float_val):
+#                     return float_val
+#             except (ValueError, TypeError):
+#                 pass
+#     
+#     # 🚀 [핵심 개선] 트레이딩 의미 기반 대체 계산 시도
+#     logger.info(f"🔄 {ticker} {column_name}: 대체 계산 시도")
+#     
+#     # 대체 계산 로직
+#     alternative_value = _calculate_alternative_indicator(latest_row, column_name, ticker)
+#     if alternative_value is not None:
+#         logger.info(f"✅ {ticker} {column_name}: 대체 계산 성공 ({alternative_value})")
+#         return alternative_value
+#     
+#     # 🚨 [최후 수단] 의미있는 기본값 또는 None
+#     meaningful_fallbacks = {
+#         'ma200_slope': None,  # 🎯 계산 불가 시 해당 종목 제외 고려
+#         'nvt_relative': None,  # 🎯 수급 분석 불가 시 제외
+#         'volume_change_7_30': None,  # 🎯 VCP 분석 불가 시 제외
+#         'adx': None,  # 🎯 추세 강도 불확실 시 제외
+#         'supertrend_signal': 0.5,  # 🎯 신호 불명확 시 중립 (0.5)
+#         # 가격 관련은 현재가 기반 추정값 사용
+#         'high_60': current_price * 1.02,  # 보수적 추정
+#         'low_60': current_price * 0.98,   # 보수적 추정
+#         'resistance': current_price * 1.01,  # 보수적 저항선
+#         'support': current_price * 0.99,     # 보수적 지지선
+#         'atr': current_price * 0.015,  # 보수적 ATR (1.5%)
+#     }
+#     
+#     fallback = meaningful_fallbacks.get(column_name, None)
+#     
+#     if fallback is None:
+#         logger.warning(f"🚨 {ticker} {column_name}: 계산 불가능 - 해당 지표 제외 권장")
+#     else:
+#         logger.warning(f"⚠️ {ticker} {column_name}: 최후 수단 기본값 {fallback} 적용")
+#     
+#     return fallback
 
 def save_static_indicators(conn, ticker, latest_row):
     """

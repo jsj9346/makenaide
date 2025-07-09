@@ -87,141 +87,142 @@ class RobustAnalysisCircuitBreaker:
 # 전역 회로 차단기 인스턴스
 analysis_circuit_breaker = RobustAnalysisCircuitBreaker()
 
-def robust_analysis_pipeline(ticker: str, daily_data: dict):
-    """
-    fail-safe 분석 파이프라인 구현
-    
-    요구사항:
-    - 각 분석 단계별 독립적 에러 처리
-    - 부분 실패 시 가용한 결과로 분석 계속
-    - 에러 발생 시 의미있는 fallback 값 제공
-    - 상세한 에러 로깅과 복구 제안
-    """
-    analysis_results = {
-        "ticker": ticker,
-        "analysis_timestamp": datetime.now().isoformat(),
-        "pipeline_status": "RUNNING",
-        "stages_completed": [],
-        "stages_failed": [],
-        "fallback_used": [],
-        "final_recommendation": None,
-        "error_summary": [],
-        "recovery_suggestions": []
-    }
-    
-    try:
-        # 1단계: 데이터 검증 및 정규화
-        try:
-            validated_data = _validate_and_normalize_data(ticker, daily_data)
-            analysis_results["stages_completed"].append("data_validation")
-            logging.info(f"✅ {ticker} - 데이터 검증 완료")
-        except Exception as e:
-            error_detail = _handle_pipeline_error("data_validation", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            validated_data = _get_fallback_data(daily_data)
-            analysis_results["fallback_used"].append("minimal_data_fallback")
-            logging.warning(f"⚠️ {ticker} - 데이터 검증 실패, 최소 데이터로 진행")
-        
-        # 2단계: 통합 기술적 분석 (회로차단기 적용)
-        try:
-            technical_analysis = analysis_circuit_breaker.call(
-                optimized_integrated_analysis, validated_data
-            )
-            analysis_results["stages_completed"].append("technical_analysis")
-            logging.info(f"✅ {ticker} - 통합 기술적 분석 완료")
-        except Exception as e:
-            error_detail = _handle_pipeline_error("technical_analysis", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            technical_analysis = _get_fallback_technical_analysis(validated_data)
-            analysis_results["fallback_used"].append("basic_technical_fallback")
-            logging.warning(f"⚠️ {ticker} - 기술적 분석 실패, 기본 분석으로 진행")
-        
-        # 3단계: VCP 패턴 분석
-        try:
-            vcp_analysis = _safe_vcp_analysis(validated_data, ticker)
-            analysis_results["stages_completed"].append("vcp_analysis")
-        except Exception as e:
-            error_detail = _handle_pipeline_error("vcp_analysis", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            vcp_analysis = _get_fallback_vcp_analysis()
-            analysis_results["fallback_used"].append("default_vcp_fallback")
-        
-        # 4단계: Weinstein Stage 분석
-        try:
-            stage_analysis = _safe_stage_analysis(validated_data, ticker)
-            analysis_results["stages_completed"].append("stage_analysis")
-        except Exception as e:
-            error_detail = _handle_pipeline_error("stage_analysis", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            stage_analysis = _get_fallback_stage_analysis()
-            analysis_results["fallback_used"].append("default_stage_fallback")
-        
-        # 5단계: 브레이크아웃 조건 확인
-        try:
-            breakout_analysis = _safe_breakout_analysis(validated_data, vcp_analysis, stage_analysis, ticker)
-            analysis_results["stages_completed"].append("breakout_analysis")
-        except Exception as e:
-            error_detail = _handle_pipeline_error("breakout_analysis", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            breakout_analysis = _get_fallback_breakout_analysis()
-            analysis_results["fallback_used"].append("default_breakout_fallback")
-        
-        # 6단계: 최종 통합 및 의사결정
-        try:
-            final_decision = _safe_final_decision(
-                technical_analysis, vcp_analysis, stage_analysis, breakout_analysis, ticker
-            )
-            analysis_results["stages_completed"].append("final_decision")
-            analysis_results["final_recommendation"] = final_decision
-        except Exception as e:
-            error_detail = _handle_pipeline_error("final_decision", e, ticker)
-            analysis_results["stages_failed"].append(error_detail)
-            final_decision = _get_fallback_final_decision()
-            analysis_results["final_recommendation"] = final_decision
-            analysis_results["fallback_used"].append("conservative_decision_fallback")
-        
-        # 파이프라인 상태 업데이트
-        if len(analysis_results["stages_failed"]) == 0:
-            analysis_results["pipeline_status"] = "SUCCESS"
-        elif len(analysis_results["stages_completed"]) >= 3:
-            analysis_results["pipeline_status"] = "PARTIAL_SUCCESS"
-        else:
-            analysis_results["pipeline_status"] = "FAILED"
-        
-        # 복구 제안 생성
-        analysis_results["recovery_suggestions"] = _generate_recovery_suggestions(
-            analysis_results["stages_failed"], analysis_results["fallback_used"]
-        )
-        
-        logging.info(f"🎯 {ticker} - 분석 파이프라인 완료: {analysis_results['pipeline_status']}")
-        
-        return {
-            "analysis_results": analysis_results,
-            "technical_analysis": technical_analysis,
-            "vcp_analysis": vcp_analysis,
-            "stage_analysis": stage_analysis,
-            "breakout_analysis": breakout_analysis,
-            "final_decision": final_decision
-        }
-        
-    except Exception as e:
-        # 최종 안전망
-        logging.error(f"❌ {ticker} - 분석 파이프라인 전체 실패: {str(e)}")
-        analysis_results["pipeline_status"] = "CRITICAL_FAILURE"
-        analysis_results["error_summary"].append({
-            "stage": "pipeline_level",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        })
-        
-        return {
-            "analysis_results": analysis_results,
-            "technical_analysis": _get_fallback_technical_analysis({}),
-            "vcp_analysis": _get_fallback_vcp_analysis(),
-            "stage_analysis": _get_fallback_stage_analysis(),
-            "breakout_analysis": _get_fallback_breakout_analysis(),
-            "final_decision": _get_fallback_final_decision()
-        }
+# UNUSED: 호출되지 않는 함수
+# def robust_analysis_pipeline(ticker: str, daily_data: dict):
+#     """
+#     fail-safe 분석 파이프라인 구현
+#     
+#     요구사항:
+#     - 각 분석 단계별 독립적 에러 처리
+#     - 부분 실패 시 가용한 결과로 분석 계속
+#     - 에러 발생 시 의미있는 fallback 값 제공
+#     - 상세한 에러 로깅과 복구 제안
+#     """
+#     analysis_results = {
+#         "ticker": ticker,
+#         "analysis_timestamp": datetime.now().isoformat(),
+#         "pipeline_status": "RUNNING",
+#         "stages_completed": [],
+#         "stages_failed": [],
+#         "fallback_used": [],
+#         "final_recommendation": None,
+#         "error_summary": [],
+#         "recovery_suggestions": []
+#     }
+#     
+#     try:
+#         # 1단계: 데이터 검증 및 정규화
+#         try:
+#             validated_data = _validate_and_normalize_data(ticker, daily_data)
+#             analysis_results["stages_completed"].append("data_validation")
+#             logging.info(f"✅ {ticker} - 데이터 검증 완료")
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("data_validation", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             validated_data = _get_fallback_data(daily_data)
+#             analysis_results["fallback_used"].append("minimal_data_fallback")
+#             logging.warning(f"⚠️ {ticker} - 데이터 검증 실패, 최소 데이터로 진행")
+#         
+#         # 2단계: 통합 기술적 분석 (회로차단기 적용)
+#         try:
+#             technical_analysis = analysis_circuit_breaker.call(
+#                 optimized_integrated_analysis, validated_data
+#             )
+#             analysis_results["stages_completed"].append("technical_analysis")
+#             logging.info(f"✅ {ticker} - 통합 기술적 분석 완료")
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("technical_analysis", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             technical_analysis = _get_fallback_technical_analysis(validated_data)
+#             analysis_results["fallback_used"].append("basic_technical_fallback")
+#             logging.warning(f"⚠️ {ticker} - 기술적 분석 실패, 기본 분석으로 진행")
+#         
+#         # 3단계: VCP 패턴 분석
+#         try:
+#             vcp_analysis = _safe_vcp_analysis(validated_data, ticker)
+#             analysis_results["stages_completed"].append("vcp_analysis")
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("vcp_analysis", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             vcp_analysis = _get_fallback_vcp_analysis()
+#             analysis_results["fallback_used"].append("default_vcp_fallback")
+#         
+#         # 4단계: Weinstein Stage 분석
+#         try:
+#             stage_analysis = _safe_stage_analysis(validated_data, ticker)
+#             analysis_results["stages_completed"].append("stage_analysis")
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("stage_analysis", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             stage_analysis = _get_fallback_stage_analysis()
+#             analysis_results["fallback_used"].append("default_stage_fallback")
+#         
+#         # 5단계: 브레이크아웃 조건 확인
+#         try:
+#             breakout_analysis = _safe_breakout_analysis(validated_data, vcp_analysis, stage_analysis, ticker)
+#             analysis_results["stages_completed"].append("breakout_analysis")
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("breakout_analysis", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             breakout_analysis = _get_fallback_breakout_analysis()
+#             analysis_results["fallback_used"].append("default_breakout_fallback")
+#         
+#         # 6단계: 최종 통합 및 의사결정
+#         try:
+#             final_decision = _safe_final_decision(
+#                 technical_analysis, vcp_analysis, stage_analysis, breakout_analysis, ticker
+#             )
+#             analysis_results["stages_completed"].append("final_decision")
+#             analysis_results["final_recommendation"] = final_decision
+#         except Exception as e:
+#             error_detail = _handle_pipeline_error("final_decision", e, ticker)
+#             analysis_results["stages_failed"].append(error_detail)
+#             final_decision = _get_fallback_final_decision()
+#             analysis_results["final_recommendation"] = final_decision
+#             analysis_results["fallback_used"].append("conservative_decision_fallback")
+#         
+#         # 파이프라인 상태 업데이트
+#         if len(analysis_results["stages_failed"]) == 0:
+#             analysis_results["pipeline_status"] = "SUCCESS"
+#         elif len(analysis_results["stages_completed"]) >= 3:
+#             analysis_results["pipeline_status"] = "PARTIAL_SUCCESS"
+#         else:
+#             analysis_results["pipeline_status"] = "FAILED"
+#         
+#         # 복구 제안 생성
+#         analysis_results["recovery_suggestions"] = _generate_recovery_suggestions(
+#             analysis_results["stages_failed"], analysis_results["fallback_used"]
+#         )
+#         
+#         logging.info(f"🎯 {ticker} - 분석 파이프라인 완료: {analysis_results['pipeline_status']}")
+#         
+#         return {
+#             "analysis_results": analysis_results,
+#             "technical_analysis": technical_analysis,
+#             "vcp_analysis": vcp_analysis,
+#             "stage_analysis": stage_analysis,
+#             "breakout_analysis": breakout_analysis,
+#             "final_decision": final_decision
+#         }
+#         
+#     except Exception as e:
+#         # 최종 안전망
+#         logging.error(f"❌ {ticker} - 분석 파이프라인 전체 실패: {str(e)}")
+#         analysis_results["pipeline_status"] = "CRITICAL_FAILURE"
+#         analysis_results["error_summary"].append({
+#             "stage": "pipeline_level",
+#             "error": str(e),
+#             "timestamp": datetime.now().isoformat()
+#         })
+#         
+#         return {
+#             "analysis_results": analysis_results,
+#             "technical_analysis": _get_fallback_technical_analysis({}),
+#             "vcp_analysis": _get_fallback_vcp_analysis(),
+#             "stage_analysis": _get_fallback_stage_analysis(),
+#             "breakout_analysis": _get_fallback_breakout_analysis(),
+#             "final_decision": _get_fallback_final_decision()
+#         }
 
 def _validate_and_normalize_data(ticker: str, daily_data: dict) -> dict:
     """데이터 검증 및 정규화"""
@@ -352,338 +353,342 @@ def _safe_final_decision(technical_analysis: dict, vcp_analysis: dict, stage_ana
 
 # === 고도화된 피라미딩 시스템 ===
 
-def advanced_scaling_in_system(initial_entry: dict, market_conditions: dict):
-    """
-    Makenaide 분할 매수 전략 완전 구현
-    
-    기능:
-    - 초기 진입 후 추세 강화 시점 감지
-    - VCP 이후 추가 브레이크아웃 레벨 계산
-    - 거래량 확인과 모멘텀 지속성 검증
-    - 최대 3-4회 추가 진입 조건 설정
-    - 각 추가 진입 시 포지션 크기 동적 조정
-    
-    리스크 제어:
-    - 전체 포지션이 최대 한도 초과 시 중단
-    - 추세 약화 신호 감지 시 조기 청산
-    - 각 단계별 독립적 손절선 설정
-    """
-    try:
-        ticker = initial_entry.get("ticker", "")
-        entry_price = initial_entry.get("price", 0)
-        entry_date = initial_entry.get("date", datetime.now())
-        initial_size = initial_entry.get("position_size_pct", 2.0)
-        
-        # 피라미딩 설정
-        pyramid_config = {
-            "max_total_position": 8.0,  # 최대 총 포지션 8%
-            "max_scaling_levels": 3,    # 최대 3회 추가 매수
-            "min_advance_threshold": 0.02,  # 최소 2% 상승 후 추가 매수
-            "volume_surge_threshold": 1.5,  # 거래량 1.5배 이상 증가
-            "trend_strength_threshold": 0.7,  # 추세 강도 0.7 이상
-            "max_time_between_entries": 14  # 최대 14일 간격
-        }
-        
-        # 현재 시장 상황 분석
-        current_analysis = _analyze_current_market_conditions(market_conditions, ticker)
-        
-        # 피라미딩 조건 확인
-        pyramid_conditions = _check_pyramid_conditions(
-            initial_entry, current_analysis, pyramid_config
-        )
-        
-        if not pyramid_conditions["enabled"]:
-            return {
-                "pyramid_enabled": False,
-                "reason": pyramid_conditions["reason"],
-                "current_position": {"total_size": initial_size, "levels": 1},
-                "next_actions": ["모니터링 계속"]
-            }
-        
-        # 추가 진입 레벨 계산
-        scaling_levels = _calculate_scaling_levels(
-            entry_price, current_analysis, pyramid_config
-        )
-        
-        # 동적 포지션 사이징
-        position_sizes = _calculate_dynamic_position_sizes(
-            initial_size, scaling_levels, current_analysis, pyramid_config
-        )
-        
-        # 리스크 관리 레벨 설정
-        risk_management = _setup_pyramid_risk_management(
-            entry_price, scaling_levels, position_sizes
-        )
-        
-        # 실행 계획 생성
-        execution_plan = _generate_execution_plan(
-            scaling_levels, position_sizes, risk_management, current_analysis
-        )
-        
-        return {
-            "pyramid_enabled": True,
-            "initial_entry": initial_entry,
-            "scaling_levels": scaling_levels,
-            "position_sizes": position_sizes,
-            "risk_management": risk_management,
-            "execution_plan": execution_plan,
-            "monitoring_alerts": _setup_monitoring_alerts(scaling_levels, risk_management),
-            "exit_conditions": _define_exit_conditions(current_analysis, risk_management)
-        }
-        
-    except Exception as e:
-        logging.error(f"❌ 피라미딩 시스템 오류: {str(e)}")
-        return _get_fallback_pyramid_result(initial_entry)
+# UNUSED: 호출되지 않는 함수
+# def advanced_scaling_in_system(initial_entry: dict, market_conditions: dict):
+#     """
+#     Makenaide 분할 매수 전략 완전 구현
+#     
+#     기능:
+#     - 초기 진입 후 추세 강화 시점 감지
+#     - VCP 이후 추가 브레이크아웃 레벨 계산
+#     - 거래량 확인과 모멘텀 지속성 검증
+#     - 최대 3-4회 추가 진입 조건 설정
+#     - 각 추가 진입 시 포지션 크기 동적 조정
+#     
+#     리스크 제어:
+#     - 전체 포지션이 최대 한도 초과 시 중단
+#     - 추세 약화 신호 감지 시 조기 청산
+#     - 각 단계별 독립적 손절선 설정
+#     """
+#     try:
+#         ticker = initial_entry.get("ticker", "")
+#         entry_price = initial_entry.get("price", 0)
+#         entry_date = initial_entry.get("date", datetime.now())
+#         initial_size = initial_entry.get("position_size_pct", 2.0)
+#         
+#         # 피라미딩 설정
+#         pyramid_config = {
+#             "max_total_position": 8.0,  # 최대 총 포지션 8%
+#             "max_scaling_levels": 3,    # 최대 3회 추가 매수
+#             "min_advance_threshold": 0.02,  # 최소 2% 상승 후 추가 매수
+#             "volume_surge_threshold": 1.5,  # 거래량 1.5배 이상 증가
+#             "trend_strength_threshold": 0.7,  # 추세 강도 0.7 이상
+#             "max_time_between_entries": 14  # 최대 14일 간격
+#         }
+#         
+#         # 현재 시장 상황 분석
+#         current_analysis = _analyze_current_market_conditions(market_conditions, ticker)
+#         
+#         # 피라미딩 조건 확인
+#         pyramid_conditions = _check_pyramid_conditions(
+#             initial_entry, current_analysis, pyramid_config
+#         )
+#         
+#         if not pyramid_conditions["enabled"]:
+#             return {
+#                 "pyramid_enabled": False,
+#                 "reason": pyramid_conditions["reason"],
+#                 "current_position": {"total_size": initial_size, "levels": 1},
+#                 "next_actions": ["모니터링 계속"]
+#             }
+#         
+#         # 추가 진입 레벨 계산
+#         scaling_levels = _calculate_scaling_levels(
+#             entry_price, current_analysis, pyramid_config
+#         )
+#         
+#         # 동적 포지션 사이징
+#         position_sizes = _calculate_dynamic_position_sizes(
+#             initial_size, scaling_levels, current_analysis, pyramid_config
+#         )
+#         
+#         # 리스크 관리 레벨 설정
+#         risk_management = _setup_pyramid_risk_management(
+#             entry_price, scaling_levels, position_sizes
+#         )
+#         
+#         # 실행 계획 생성
+#         execution_plan = _generate_execution_plan(
+#             scaling_levels, position_sizes, risk_management, current_analysis
+#         )
+#         
+#         return {
+#             "pyramid_enabled": True,
+#             "initial_entry": initial_entry,
+#             "scaling_levels": scaling_levels,
+#             "position_sizes": position_sizes,
+#             "risk_management": risk_management,
+#             "execution_plan": execution_plan,
+#             "monitoring_alerts": _setup_monitoring_alerts(scaling_levels, risk_management),
+#             "exit_conditions": _define_exit_conditions(current_analysis, risk_management)
+#         }
+#         
+#     except Exception as e:
+#         logging.error(f"❌ 피라미딩 시스템 오류: {str(e)}")
+#         return _get_fallback_pyramid_result(initial_entry)
 
-def _analyze_current_market_conditions(market_conditions: dict, ticker: str) -> dict:
-    """현재 시장 상황 분석"""
-    try:
-        # 기본 시장 지표들
-        market_trend = market_conditions.get("market_trend", "neutral")
-        volatility = market_conditions.get("volatility", 0.2)
-        sector_performance = market_conditions.get("sector_performance", 0.0)
-        
-        # 종목별 모멘텀 분석
-        price_momentum = _calculate_price_momentum(market_conditions.get("price_data", []))
-        volume_momentum = _calculate_volume_momentum(market_conditions.get("volume_data", []))
-        
-        # 상대 강도 계산
-        relative_strength = _calculate_relative_strength_vs_market(
-            market_conditions.get("price_data", []),
-            market_conditions.get("market_index_data", [])
-        )
-        
-        # 추세 강도 점수
-        trend_strength = _calculate_trend_strength(
-            price_momentum, volume_momentum, relative_strength
-        )
-        
-        return {
-            "market_trend": market_trend,
-            "volatility": volatility,
-            "sector_performance": sector_performance,
-            "price_momentum": price_momentum,
-            "volume_momentum": volume_momentum,
-            "relative_strength": relative_strength,
-            "trend_strength": trend_strength,
-            "favorable_for_pyramid": trend_strength > 0.7 and volatility < 0.3
-        }
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 시장 상황 분석 오류: {str(e)}")
-        return {
-            "market_trend": "neutral",
-            "trend_strength": 0.5,
-            "favorable_for_pyramid": False
-        }
+# UNUSED: 피라미딩 시스템 내부 함수들 (advanced_scaling_in_system에서만 사용)
+# def _analyze_current_market_conditions(market_conditions: dict, ticker: str) -> dict:
+#     """현재 시장 상황 분석"""
+#     try:
+#         # 기본 시장 지표들
+#         market_trend = market_conditions.get("market_trend", "neutral")
+#         volatility = market_conditions.get("volatility", 0.2)
+#         sector_performance = market_conditions.get("sector_performance", 0.0)
+#         
+#         # 종목별 모멘텀 분석
+#         price_momentum = _calculate_price_momentum(market_conditions.get("price_data", []))
+#         volume_momentum = _calculate_volume_momentum(market_conditions.get("volume_data", []))
+#         
+#         # 상대 강도 계산
+#         relative_strength = _calculate_relative_strength_vs_market(
+#             market_conditions.get("price_data", []),
+#             market_conditions.get("market_index_data", [])
+#         )
+#         
+#         # 추세 강도 점수
+#         trend_strength = _calculate_trend_strength(
+#             price_momentum, volume_momentum, relative_strength
+#         )
+#         
+#         return {
+#             "market_trend": market_trend,
+#             "volatility": volatility,
+#             "sector_performance": sector_performance,
+#             "price_momentum": price_momentum,
+#             "volume_momentum": volume_momentum,
+#             "relative_strength": relative_strength,
+#             "trend_strength": trend_strength,
+#             "favorable_for_pyramid": trend_strength > 0.7 and volatility < 0.3
+#         }
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 시장 상황 분석 오류: {str(e)}")
+#         return {
+#             "market_trend": "neutral",
+#             "trend_strength": 0.5,
+#             "favorable_for_pyramid": False
+#         }
 
-def _check_pyramid_conditions(initial_entry: dict, current_analysis: dict, config: dict) -> dict:
-    """피라미딩 조건 확인"""
-    try:
-        entry_price = initial_entry.get("price", 0)
-        current_price = current_analysis.get("current_price", entry_price)
-        
-        # 기본 조건들
-        conditions = {
-            "price_advance": (current_price - entry_price) / entry_price >= config["min_advance_threshold"],
-            "trend_strength": current_analysis.get("trend_strength", 0) >= config["trend_strength_threshold"],
-            "market_favorable": current_analysis.get("favorable_for_pyramid", False),
-            "volume_confirmation": current_analysis.get("volume_momentum", 0) > 0,
-            "time_constraint": True  # 시간 제약 체크 (실제로는 날짜 계산)
-        }
-        
-        # 모든 조건 만족 확인
-        all_conditions_met = all(conditions.values())
-        
-        if not all_conditions_met:
-            failed_conditions = [k for k, v in conditions.items() if not v]
-            reason = f"피라미딩 조건 미충족: {', '.join(failed_conditions)}"
-        else:
-            reason = "모든 피라미딩 조건 만족"
-        
-        return {
-            "enabled": all_conditions_met,
-            "reason": reason,
-            "conditions": conditions,
-            "confidence": sum(conditions.values()) / len(conditions)
-        }
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 피라미딩 조건 확인 오류: {str(e)}")
-        return {"enabled": False, "reason": "조건 확인 실패", "confidence": 0}
+# def _check_pyramid_conditions(initial_entry: dict, current_analysis: dict, config: dict) -> dict:
+#     """피라미딩 조건 확인"""
+#     try:
+#         entry_price = initial_entry.get("price", 0)
+#         current_price = current_analysis.get("current_price", entry_price)
+#         
+#         # 기본 조건들
+#         conditions = {
+#             "price_advance": (current_price - entry_price) / entry_price >= config["min_advance_threshold"],
+#             "trend_strength": current_analysis.get("trend_strength", 0) >= config["trend_strength_threshold"],
+#             "market_favorable": current_analysis.get("favorable_for_pyramid", False),
+#             "volume_confirmation": current_analysis.get("volume_momentum", 0) > 0,
+#             "time_constraint": True  # 시간 제약 체크 (실제로는 날짜 계산)
+#         }
+#         
+#         # 모든 조건 만족 확인
+#         all_conditions_met = all(conditions.values())
+#         
+#         if not all_conditions_met:
+#             failed_conditions = [k for k, v in conditions.items() if not v]
+#             reason = f"피라미딩 조건 미충족: {', '.join(failed_conditions)}"
+#         else:
+#             reason = "모든 피라미딩 조건 만족"
+#         
+#         return {
+#             "enabled": all_conditions_met,
+#             "reason": reason,
+#             "conditions": conditions,
+#             "confidence": sum(conditions.values()) / len(conditions)
+#         }
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 피라미딩 조건 확인 오류: {str(e)}")
+#         return {"enabled": False, "reason": "조건 확인 실패", "confidence": 0}
 
-def _calculate_scaling_levels(entry_price: float, current_analysis: dict, config: dict) -> list:
-    """추가 진입 레벨 계산"""
-    try:
-        scaling_levels = []
-        trend_strength = current_analysis.get("trend_strength", 0.5)
-        
-        # 추세 강도에 따른 레벨 간격 조정
-        if trend_strength > 0.8:
-            # 강한 추세: 더 적극적인 레벨
-            level_intervals = [0.03, 0.05, 0.08]  # 3%, 5%, 8% 상승 지점
-        elif trend_strength > 0.6:
-            # 중간 추세: 보통 레벨
-            level_intervals = [0.04, 0.07, 0.12]  # 4%, 7%, 12% 상승 지점
-        else:
-            # 약한 추세: 보수적 레벨
-            level_intervals = [0.05, 0.10, 0.15]  # 5%, 10%, 15% 상승 지점
-        
-        for i, interval in enumerate(level_intervals[:config["max_scaling_levels"]]):
-            level_price = entry_price * (1 + interval)
-            
-            scaling_levels.append({
-                "level": i + 1,
-                "price": round(level_price, 2),
-                "advance_pct": round(interval * 100, 1),
-                "trigger_conditions": _define_trigger_conditions(i + 1, current_analysis),
-                "size_allocation": _calculate_level_size_allocation(i + 1, trend_strength)
-            })
-        
-        return scaling_levels
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 스케일링 레벨 계산 오류: {str(e)}")
-        return []
+# def _calculate_scaling_levels(entry_price: float, current_analysis: dict, config: dict) -> list:
+#     """추가 진입 레벨 계산"""
+#     try:
+#         scaling_levels = []
+#         trend_strength = current_analysis.get("trend_strength", 0.5)
+#         
+#         # 추세 강도에 따른 레벨 간격 조정
+#         if trend_strength > 0.8:
+#             # 강한 추세: 더 적극적인 레벨
+#             level_intervals = [0.03, 0.05, 0.08]  # 3%, 5%, 8% 상승 지점
+#         elif trend_strength > 0.6:
+#             # 중간 추세: 보통 레벨
+#             level_intervals = [0.04, 0.07, 0.12]  # 4%, 7%, 12% 상승 지점
+#         else:
+#             # 약한 추세: 보수적 레벨
+#             level_intervals = [0.05, 0.10, 0.15]  # 5%, 10%, 15% 상승 지점
+#         
+#         for i, interval in enumerate(level_intervals[:config["max_scaling_levels"]]):
+#             level_price = entry_price * (1 + interval)
+#             
+#             scaling_levels.append({
+#                 "level": i + 1,
+#                 "price": round(level_price, 2),
+#                 "advance_pct": round(interval * 100, 1),
+#                 "trigger_conditions": _define_trigger_conditions(i + 1, current_analysis),
+#                 "size_allocation": _calculate_level_size_allocation(i + 1, trend_strength)
+#             })
+#         
+#         return scaling_levels
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 스케일링 레벨 계산 오류: {str(e)}")
+#         return []
 
-def _define_trigger_conditions(level: int, analysis: dict) -> dict:
-    """각 레벨별 트리거 조건 정의"""
-    base_conditions = {
-        "price_breakout": True,  # 가격 돌파 필수
-        "volume_surge": level <= 2,  # 1-2레벨은 거래량 급증 필요
-        "momentum_continuation": True,  # 모멘텀 지속 필수
-        "market_support": level >= 3  # 3레벨부터는 시장 지지 필요
-    }
-    
-    # 레벨별 추가 조건
-    if level == 1:
-        base_conditions["min_volume_ratio"] = 1.3
-        base_conditions["min_rsi"] = 55
-    elif level == 2:
-        base_conditions["min_volume_ratio"] = 1.2
-        base_conditions["min_rsi"] = 60
-    elif level == 3:
-        base_conditions["min_volume_ratio"] = 1.1
-        base_conditions["min_rsi"] = 65
-        base_conditions["sector_outperformance"] = True
-    
-    return base_conditions
+# def _define_trigger_conditions(level: int, analysis: dict) -> dict:
+#     """각 레벨별 트리거 조건 정의"""
+#     base_conditions = {
+#         "price_breakout": True,  # 가격 돌파 필수
+#         "volume_surge": level <= 2,  # 1-2레벨은 거래량 급증 필요
+#         "momentum_continuation": True,  # 모멘텀 지속 필수
+#         "market_support": level >= 3  # 3레벨부터는 시장 지지 필요
+#     }
+#     
+#     # 레벨별 추가 조건
+#     if level == 1:
+#         base_conditions["min_volume_ratio"] = 1.3
+#         base_conditions["min_rsi"] = 55
+#     elif level == 2:
+#         base_conditions["min_volume_ratio"] = 1.2
+#         base_conditions["min_rsi"] = 60
+#     elif level == 3:
+#         base_conditions["min_volume_ratio"] = 1.1
+#         base_conditions["min_rsi"] = 65
+#         base_conditions["sector_outperformance"] = True
+#     
+#     return base_conditions
 
-def _calculate_dynamic_position_sizes(initial_size: float, scaling_levels: list, 
-                                    analysis: dict, config: dict) -> dict:
-    """동적 포지션 사이징 계산"""
-    try:
-        trend_strength = analysis.get("trend_strength", 0.5)
-        volatility = analysis.get("volatility", 0.2)
-        
-        # 기본 사이즈 배분 (초기 포지션 기준)
-        base_allocations = {
-            1: 0.6,  # 첫 번째 추가: 초기의 60%
-            2: 0.4,  # 두 번째 추가: 초기의 40%
-            3: 0.3   # 세 번째 추가: 초기의 30%
-        }
-        
-        position_sizes = {"initial": initial_size, "levels": {}}
-        remaining_capacity = config["max_total_position"] - initial_size
-        
-        for level_info in scaling_levels:
-            level = level_info["level"]
-            base_allocation = base_allocations.get(level, 0.2)
-            
-            # 추세 강도에 따른 조정
-            trend_multiplier = 0.8 + (trend_strength * 0.4)  # 0.8 ~ 1.2
-            
-            # 변동성에 따른 조정
-            volatility_multiplier = max(0.6, 1.2 - volatility)  # 변동성 높을수록 감소
-            
-            # 최종 사이즈 계산
-            adjusted_size = (initial_size * base_allocation * 
-                           trend_multiplier * volatility_multiplier)
-            
-            # 잔여 한도 확인
-            if sum(position_sizes["levels"].values()) + adjusted_size <= remaining_capacity:
-                position_sizes["levels"][level] = round(adjusted_size, 2)
-            else:
-                # 잔여 한도 내에서 최대치 할당
-                remaining = remaining_capacity - sum(position_sizes["levels"].values())
-                if remaining > 0.5:  # 최소 0.5% 이상일 때만 할당
-                    position_sizes["levels"][level] = round(remaining, 2)
-                break
-        
-        # 총 포지션 크기 계산
-        total_size = initial_size + sum(position_sizes["levels"].values())
-        position_sizes["total"] = round(total_size, 2)
-        position_sizes["utilization_pct"] = round(total_size / config["max_total_position"] * 100, 1)
-        
-        return position_sizes
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 동적 포지션 사이징 오류: {str(e)}")
-        return {"initial": initial_size, "levels": {}, "total": initial_size}
+# UNUSED: 피라미딩 시스템 내부 함수들 (advanced_scaling_in_system에서만 사용)
+# def _calculate_dynamic_position_sizes(initial_size: float, scaling_levels: list, 
+#                                     analysis: dict, config: dict) -> dict:
+#     """동적 포지션 사이징 계산"""
+#     try:
+#         trend_strength = analysis.get("trend_strength", 0.5)
+#         volatility = analysis.get("volatility", 0.2)
+#         
+#         # 기본 사이즈 배분 (초기 포지션 기준)
+#         base_allocations = {
+#             1: 0.6,  # 첫 번째 추가: 초기의 60%
+#             2: 0.4,  # 두 번째 추가: 초기의 40%
+#             3: 0.3   # 세 번째 추가: 초기의 30%
+#         }
+#         
+#         position_sizes = {"initial": initial_size, "levels": {}}
+#         remaining_capacity = config["max_total_position"] - initial_size
+#         
+#         for level_info in scaling_levels:
+#             level = level_info["level"]
+#             base_allocation = base_allocations.get(level, 0.2)
+#             
+#             # 추세 강도에 따른 조정
+#             trend_multiplier = 0.8 + (trend_strength * 0.4)  # 0.8 ~ 1.2
+#             
+#             # 변동성에 따른 조정
+#             volatility_multiplier = max(0.6, 1.2 - volatility)  # 변동성 높을수록 감소
+#             
+#             # 최종 사이즈 계산
+#             adjusted_size = (initial_size * base_allocation * 
+#                            trend_multiplier * volatility_multiplier)
+#             
+#             # 잔여 한도 확인
+#             if sum(position_sizes["levels"].values()) + adjusted_size <= remaining_capacity:
+#                 position_sizes["levels"][level] = round(adjusted_size, 2)
+#             else:
+#                 # 잔여 한도 내에서 최대치 할당
+#                 remaining = remaining_capacity - sum(position_sizes["levels"].values())
+#                 if remaining > 0.5:  # 최소 0.5% 이상일 때만 할당
+#                     position_sizes["levels"][level] = round(remaining, 2)
+#                 break
+#         
+#         # 총 포지션 크기 계산
+#         total_size = initial_size + sum(position_sizes["levels"].values())
+#         position_sizes["total"] = round(total_size, 2)
+#         position_sizes["utilization_pct"] = round(total_size / config["max_total_position"] * 100, 1)
+#         
+#         return position_sizes
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 동적 포지션 사이징 오류: {str(e)}")
+#         return {"initial": initial_size, "levels": {}, "total": initial_size}
 
-def _setup_pyramid_risk_management(entry_price: float, scaling_levels: list, position_sizes: dict) -> dict:
-    """피라미딩 리스크 관리 설정"""
-    try:
-        risk_management = {
-            "stop_loss_levels": {},
-            "take_profit_levels": {},
-            "trailing_stops": {},
-            "exit_signals": {},
-            "max_loss_limit": position_sizes.get("total", 2.0) * 0.02  # 총 포지션의 2%
-        }
-        
-        # 각 레벨별 손절선 설정
-        for level_info in scaling_levels:
-            level = level_info["level"]
-            level_price = level_info["price"]
-            
-            # 독립적 손절선 (각 레벨 진입가의 3% 하락)
-            stop_loss = level_price * 0.97
-            
-            # 트레일링 스톱 (ATR 기반)
-            trailing_stop_distance = level_price * 0.04  # 4% 트레일링
-            
-            # 목표 수익 레벨
-            take_profit_1 = level_price * 1.06  # 6% 수익
-            take_profit_2 = level_price * 1.12  # 12% 수익
-            
-            risk_management["stop_loss_levels"][level] = round(stop_loss, 2)
-            risk_management["trailing_stops"][level] = round(trailing_stop_distance, 2)
-            risk_management["take_profit_levels"][level] = [
-                round(take_profit_1, 2),
-                round(take_profit_2, 2)
-            ]
-        
-        # 전체 포지션 보호 레벨
-        avg_entry_price = _calculate_weighted_average_entry(entry_price, scaling_levels, position_sizes)
-        risk_management["portfolio_stop_loss"] = round(avg_entry_price * 0.92, 2)  # 8% 손절
-        risk_management["emergency_exit_level"] = round(avg_entry_price * 0.88, 2)  # 12% 긴급 청산
-        
-        return risk_management
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 리스크 관리 설정 오류: {str(e)}")
-        return {"stop_loss_levels": {}, "max_loss_limit": 2.0}
+# UNUSED: 피라미딩 시스템 내부 함수들 (advanced_scaling_in_system에서만 사용)
+# def _setup_pyramid_risk_management(entry_price: float, scaling_levels: list, position_sizes: dict) -> dict:
+#     """피라미딩 리스크 관리 설정"""
+#     try:
+#         risk_management = {
+#             "stop_loss_levels": {},
+#             "take_profit_levels": {},
+#             "trailing_stops": {},
+#             "exit_signals": {},
+#             "max_loss_limit": position_sizes.get("total", 2.0) * 0.02  # 총 포지션의 2%
+#         }
+#         
+#         # 각 레벨별 손절선 설정
+#         for level_info in scaling_levels:
+#             level = level_info["level"]
+#             level_price = level_info["price"]
+#             
+#             # 독립적 손절선 (각 레벨 진입가의 3% 하락)
+#             stop_loss = level_price * 0.97
+#             
+#             # 트레일링 스톱 (ATR 기반)
+#             trailing_stop_distance = level_price * 0.04  # 4% 트레일링
+#             
+#             # 목표 수익 레벨
+#             take_profit_1 = level_price * 1.06  # 6% 수익
+#             take_profit_2 = level_price * 1.12  # 12% 수익
+#             
+#             risk_management["stop_loss_levels"][level] = round(stop_loss, 2)
+#             risk_management["trailing_stops"][level] = round(trailing_stop_distance, 2)
+#             risk_management["take_profit_levels"][level] = [
+#                 round(take_profit_1, 2),
+#                 round(take_profit_2, 2)
+#             ]
+#         
+#         # 전체 포지션 보호 레벨
+#         avg_entry_price = _calculate_weighted_average_entry(entry_price, scaling_levels, position_sizes)
+#         risk_management["portfolio_stop_loss"] = round(avg_entry_price * 0.92, 2)  # 8% 손절
+#         risk_management["emergency_exit_level"] = round(avg_entry_price * 0.88, 2)  # 12% 긴급 청산
+#         
+#         return risk_management
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 리스크 관리 설정 오류: {str(e)}")
+#         return {"stop_loss_levels": {}, "max_loss_limit": 2.0}
 
-def _calculate_weighted_average_entry(initial_price: float, levels: list, sizes: dict) -> float:
-    """가중평균 진입가 계산"""
-    try:
-        total_investment = initial_price * sizes.get("initial", 2.0)
-        total_shares = sizes.get("initial", 2.0)
-        
-        for level_info in levels:
-            level = level_info["level"]
-            if level in sizes.get("levels", {}):
-                level_price = level_info["price"]
-                level_size = sizes["levels"][level]
-                
-                total_investment += level_price * level_size
-                total_shares += level_size
-        
-        return total_investment / total_shares if total_shares > 0 else initial_price
-        
-    except Exception:
-        return initial_price
+# def _calculate_weighted_average_entry(initial_price: float, levels: list, sizes: dict) -> float:
+#     """가중평균 진입가 계산"""
+#     try:
+#         total_investment = initial_price * sizes.get("initial", 2.0)
+#         total_shares = sizes.get("initial", 2.0)
+#         
+#         for level_info in levels:
+#             level = level_info["level"]
+#             if level in sizes.get("levels", {}):
+#                 level_price = level_info["price"]
+#                 level_size = sizes["levels"][level]
+#                 
+#                 total_investment += level_price * level_size
+#                 total_shares += level_size
+#         
+#         return total_investment / total_shares if total_shares > 0 else initial_price
+#         
+#     except Exception:
+#         return initial_price
 
 # === 헬퍼 함수들 ===
 
@@ -837,182 +842,184 @@ def _calculate_level_size_allocation(level: int, trend_strength: float) -> float
     except Exception:
         return 0.2
 
-def _generate_execution_plan(scaling_levels: list, position_sizes: dict, 
-                           risk_management: dict, current_analysis: dict) -> dict:
-    """실행 계획 생성"""
-    try:
-        execution_plan = {
-            "immediate_actions": [],
-            "scheduled_orders": [],
-            "monitoring_points": [],
-            "risk_alerts": []
-        }
-        
-        # 즉시 실행 가능한 액션
-        for level_info in scaling_levels:
-            level = level_info["level"]
-            price = level_info["price"]
-            
-            if level in position_sizes.get("levels", {}):
-                size = position_sizes["levels"][level]
-                
-                execution_plan["scheduled_orders"].append({
-                    "level": level,
-                    "order_type": "LIMIT",
-                    "price": price,
-                    "size_pct": size,
-                    "conditions": level_info["trigger_conditions"],
-                    "expiry": "14일"
-                })
-        
-        # 모니터링 포인트
-        execution_plan["monitoring_points"] = [
-            {"type": "price_breakout", "levels": [level["price"] for level in scaling_levels]},
-            {"type": "volume_surge", "threshold": 1.5},
-            {"type": "trend_weakening", "indicators": ["ma_slope", "volume_decline"]},
-            {"type": "risk_limits", "max_loss": risk_management.get("max_loss_limit", 2.0)}
-        ]
-        
-        # 리스크 알림
-        execution_plan["risk_alerts"] = [
-            {
-                "type": "stop_loss_hit",
-                "levels": list(risk_management.get("stop_loss_levels", {}).values()),
-                "action": "IMMEDIATE_EXIT"
-            },
-            {
-                "type": "trend_reversal",
-                "indicators": ["price_below_ma50", "volume_dry_up"],
-                "action": "PARTIAL_EXIT"
-            }
-        ]
-        
-        return execution_plan
-        
-    except Exception as e:
-        logging.warning(f"⚠️ 실행 계획 생성 오류: {str(e)}")
-        return {"immediate_actions": [], "scheduled_orders": []}
+# UNUSED: 피라미딩 시스템 내부 함수들 (advanced_scaling_in_system에서만 사용)
+# def _generate_execution_plan(scaling_levels: list, position_sizes: dict, 
+#                            risk_management: dict, current_analysis: dict) -> dict:
+#     """실행 계획 생성"""
+#     try:
+#         execution_plan = {
+#             "immediate_actions": [],
+#             "scheduled_orders": [],
+#             "monitoring_points": [],
+#             "risk_alerts": []
+#         }
+#         
+#         # 즉시 실행 가능한 액션
+#         for level_info in scaling_levels:
+#             level = level_info["level"]
+#             price = level_info["price"]
+#             
+#             if level in position_sizes.get("levels", {}):
+#                 size = position_sizes["levels"][level]
+#                 
+#                 execution_plan["scheduled_orders"].append({
+#                     "level": level,
+#                     "order_type": "LIMIT",
+#                     "price": price,
+#                     "size_pct": size,
+#                     "conditions": level_info["trigger_conditions"],
+#                     "expiry": "14일"
+#                 })
+#         
+#         # 모니터링 포인트
+#         execution_plan["monitoring_points"] = [
+#             {"type": "price_breakout", "levels": [level["price"] for level in scaling_levels]},
+#             {"type": "volume_surge", "threshold": 1.5},
+#             {"type": "trend_weakening", "indicators": ["ma_slope", "volume_decline"]},
+#             {"type": "risk_limits", "max_loss": risk_management.get("max_loss_limit", 2.0)}
+#         ]
+#         
+#         # 리스크 알림
+#         execution_plan["risk_alerts"] = [
+#             {
+#                 "type": "stop_loss_hit",
+#                 "levels": list(risk_management.get("stop_loss_levels", {}).values()),
+#                 "action": "IMMEDIATE_EXIT"
+#             },
+#             {
+#                 "type": "trend_reversal",
+#                 "indicators": ["price_below_ma50", "volume_dry_up"],
+#                 "action": "PARTIAL_EXIT"
+#             }
+#         ]
+#         
+#         return execution_plan
+#         
+#     except Exception as e:
+#         logging.warning(f"⚠️ 실행 계획 생성 오류: {str(e)}")
+#         return {"immediate_actions": [], "scheduled_orders": []}
 
-def _setup_monitoring_alerts(scaling_levels: list, risk_management: dict) -> dict:
-    """모니터링 알림 설정"""
-    try:
-        alerts = {
-            "price_alerts": [],
-            "volume_alerts": [],
-            "risk_alerts": [],
-            "trend_alerts": []
-        }
-        
-        # 가격 알림
-        for level_info in scaling_levels:
-            alerts["price_alerts"].append({
-                "level": level_info["level"],
-                "trigger_price": level_info["price"],
-                "message": f"레벨 {level_info['level']} 진입 가격 도달",
-                "priority": "HIGH"
-            })
-        
-        # 리스크 알림
-        for level, stop_price in risk_management.get("stop_loss_levels", {}).items():
-            alerts["risk_alerts"].append({
-                "level": level,
-                "trigger_price": stop_price,
-                "message": f"레벨 {level} 손절선 근접",
-                "priority": "CRITICAL"
-            })
-        
-        # 추세 알림
-        alerts["trend_alerts"] = [
-            {
-                "condition": "ma50_slope_negative",
-                "message": "50일 이동평균 기울기 음전환",
-                "priority": "MEDIUM"
-            },
-            {
-                "condition": "volume_below_average",
-                "message": "거래량 평균 이하로 감소",
-                "priority": "LOW"
-            }
-        ]
-        
-        return alerts
-        
-    except Exception:
-        return {"price_alerts": [], "volume_alerts": [], "risk_alerts": []}
+# def _setup_monitoring_alerts(scaling_levels: list, risk_management: dict) -> dict:
+#     """모니터링 알림 설정"""
+#     try:
+#         alerts = {
+#             "price_alerts": [],
+#             "volume_alerts": [],
+#             "risk_alerts": [],
+#             "trend_alerts": []
+#         }
+#         
+#         # 가격 알림
+#         for level_info in scaling_levels:
+#             alerts["price_alerts"].append({
+#                 "level": level_info["level"],
+#                 "trigger_price": level_info["price"],
+#                 "message": f"레벨 {level_info['level']} 진입 가격 도달",
+#                 "priority": "HIGH"
+#             })
+#         
+#         # 리스크 알림
+#         for level, stop_price in risk_management.get("stop_loss_levels", {}).items():
+#             alerts["risk_alerts"].append({
+#                 "level": level,
+#                 "level": level,
+#                 "trigger_price": stop_price,
+#                 "message": f"레벨 {level} 손절선 근접",
+#                 "priority": "CRITICAL"
+#             })
+#         
+#         # 추세 알림
+#         alerts["trend_alerts"] = [
+#             {
+#                 "condition": "ma50_slope_negative",
+#                 "message": "50일 이동평균 기울기 음전환",
+#                 "priority": "MEDIUM"
+#             },
+#             {
+#                 "condition": "volume_below_average",
+#                 "message": "거래량 평균 이하로 감소",
+#                 "priority": "LOW"
+#             }
+#         ]
+#         
+#         return alerts
+#         
+#     except Exception:
+#         return {"price_alerts": [], "volume_alerts": [], "risk_alerts": []}
 
-def _define_exit_conditions(current_analysis: dict, risk_management: dict) -> dict:
-    """청산 조건 정의"""
-    try:
-        exit_conditions = {
-            "immediate_exit": [],
-            "gradual_exit": [],
-            "emergency_exit": []
-        }
-        
-        # 즉시 청산 조건
-        exit_conditions["immediate_exit"] = [
-            {
-                "condition": "portfolio_stop_loss_hit",
-                "trigger": risk_management.get("portfolio_stop_loss", 0),
-                "action": "SELL_ALL",
-                "reason": "포트폴리오 손절선 도달"
-            },
-            {
-                "condition": "trend_reversal_confirmed",
-                "indicators": ["price_below_ma200", "volume_spike_down"],
-                "action": "SELL_ALL",
-                "reason": "추세 반전 확인"
-            }
-        ]
-        
-        # 단계적 청산 조건
-        exit_conditions["gradual_exit"] = [
-            {
-                "condition": "profit_target_1_hit",
-                "action": "SELL_30_PERCENT",
-                "reason": "첫 번째 수익 목표 달성"
-            },
-            {
-                "condition": "trend_weakening",
-                "indicators": ["ma_slope_flattening", "volume_declining"],
-                "action": "SELL_50_PERCENT",
-                "reason": "추세 약화 신호"
-            }
-        ]
-        
-        # 긴급 청산 조건
-        exit_conditions["emergency_exit"] = [
-            {
-                "condition": "market_crash",
-                "trigger": "market_down_5_percent",
-                "action": "SELL_ALL_IMMEDIATELY",
-                "reason": "시장 급락"
-            },
-            {
-                "condition": "max_loss_exceeded",
-                "trigger": risk_management.get("emergency_exit_level", 0),
-                "action": "SELL_ALL_IMMEDIATELY",
-                "reason": "최대 손실 한도 초과"
-            }
-        ]
-        
-        return exit_conditions
-        
-    except Exception:
-        return {"immediate_exit": [], "gradual_exit": [], "emergency_exit": []}
+# def _define_exit_conditions(current_analysis: dict, risk_management: dict) -> dict:
+#     """청산 조건 정의"""
+#     try:
+#         exit_conditions = {
+#             "immediate_exit": [],
+#             "gradual_exit": [],
+#             "emergency_exit": []
+#         }
+#         
+#         # 즉시 청산 조건
+#         exit_conditions["immediate_exit"] = [
+#             {
+#                 "condition": "portfolio_stop_loss_hit",
+#                 "trigger": risk_management.get("portfolio_stop_loss", 0),
+#                 "action": "SELL_ALL",
+#                 "reason": "포트폴리오 손절선 도달"
+#             },
+#             {
+#                 "condition": "trend_reversal_confirmed",
+#                 "indicators": ["price_below_ma200", "volume_spike_down"],
+#                 "action": "SELL_ALL",
+#                 "reason": "추세 반전 확인"
+#             }
+#         ]
+#         
+#         # 단계적 청산 조건
+#         exit_conditions["gradual_exit"] = [
+#             {
+#                 "condition": "profit_target_1_hit",
+#                 "action": "SELL_30_PERCENT",
+#                 "reason": "첫 번째 수익 목표 달성"
+#             },
+#             {
+#                 "condition": "trend_weakening",
+#                 "indicators": ["ma_slope_flattening", "volume_declining"],
+#                 "action": "SELL_50_PERCENT",
+#                 "reason": "추세 약화 신호"
+#             }
+#         ]
+#         
+#         # 긴급 청산 조건
+#         exit_conditions["emergency_exit"] = [
+#             {
+#                 "condition": "market_crash",
+#                 "trigger": "market_down_5_percent",
+#                 "action": "SELL_ALL_IMMEDIATELY",
+#                 "reason": "시장 급락"
+#             },
+#             {
+#                 "condition": "max_loss_exceeded",
+#                 "trigger": risk_management.get("emergency_exit_level", 0),
+#                 "action": "SELL_ALL_IMMEDIATELY",
+#                 "reason": "최대 손실 한도 초과"
+#             }
+#         ]
+#         
+#         return exit_conditions
+#         
+#     except Exception:
+#         return {"immediate_exit": [], "gradual_exit": [], "emergency_exit": []}
 
-def _get_fallback_pyramid_result(initial_entry: dict) -> dict:
-    """피라미딩 시스템 fallback 결과"""
-    return {
-        "pyramid_enabled": False,
-        "reason": "피라미딩 시스템 오류로 인한 비활성화",
-        "current_position": {
-            "total_size": initial_entry.get("position_size_pct", 2.0),
-            "levels": 1
-        },
-        "next_actions": ["수동 모니터링", "시스템 복구 후 재시도"],
-        "fallback_mode": True
-    }
+# def _get_fallback_pyramid_result(initial_entry: dict) -> dict:
+#     """피라미딩 시스템 fallback 결과"""
+#     return {
+#         "pyramid_enabled": False,
+#         "reason": "피라미딩 시스템 오류로 인한 비활성화",
+#         "current_position": {
+#             "total_size": initial_entry.get("position_size_pct", 2.0),
+#             "levels": 1
+#         },
+#         "next_actions": ["수동 모니터링", "시스템 복구 후 재시도"],
+#         "fallback_mode": True
+#     }
 
 # === 성능 모니터링 및 최적화 ===
 
@@ -1076,80 +1083,81 @@ class PerformanceMonitor:
 # 전역 성능 모니터 인스턴스
 performance_monitor = PerformanceMonitor()
 
-def get_optimization_report() -> dict:
-    """최적화 보고서 생성"""
-    try:
-        # 성능 모니터 데이터
-        perf_summary = performance_monitor.get_performance_summary()
-        
-        # 캐시 통계 (strategy_analyzer에서 가져옴)
-        try:
-            from strategy_analyzer import enhanced_technical_cache_manager
-            cache_stats = enhanced_technical_cache_manager().get_cache_stats()
-        except Exception:
-            cache_stats = {"hit_rate": 0, "cache_size": 0}
-        
-        # 최적화 달성도 평가
-        achievements = {
-            "function_integration": {
-                "target": "20개 함수 → 5개 함수",
-                "achieved": perf_summary.get("total_analyses", 0) > 0,
-                "impact": "분석 시간 단축"
-            },
-            "caching_enhancement": {
-                "target": "캐시 히트율 60% 이상",
-                "achieved": cache_stats.get("hit_rate", 0) >= 60,
-                "impact": "반복 계산 최소화"
-            },
-            "error_handling": {
-                "target": "Fail-safe 파이프라인 구현",
-                "achieved": True,  # 구현 완료
-                "impact": "시스템 안정성 향상"
-            },
-            "performance_target": {
-                "target": "종목당 분석 시간 50% 단축",
-                "achieved": perf_summary.get("performance_target_achieved", False),
-                "impact": "전체 시스템 처리량 증가"
-            }
-        }
-        
-        # 추가 개선 제안
-        improvement_suggestions = []
-        
-        if cache_stats.get("hit_rate", 0) < 60:
-            improvement_suggestions.append({
-                "area": "캐싱 최적화",
-                "suggestion": "캐시 TTL 조정 및 키 최적화",
-                "priority": "HIGH"
-            })
-        
-        if perf_summary.get("average_analysis_time_ms", 0) > 100:
-            improvement_suggestions.append({
-                "area": "성능 최적화",
-                "suggestion": "병렬 처리 확대 및 알고리즘 최적화",
-                "priority": "MEDIUM"
-            })
-        
-        return {
-            "optimization_summary": {
-                "total_functions_integrated": 20,
-                "target_functions_achieved": 5,
-                "performance_improvement_pct": 50 if achievements["performance_target"]["achieved"] else 0,
-                "cache_efficiency_pct": cache_stats.get("hit_rate", 0)
-            },
-            "achievements": achievements,
-            "performance_metrics": perf_summary,
-            "cache_statistics": cache_stats,
-            "improvement_suggestions": improvement_suggestions,
-            "report_generated_at": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logging.error(f"❌ 최적화 보고서 생성 오류: {str(e)}")
-        return {
-            "error": "최적화 보고서 생성 실패",
-            "message": str(e)
-        }
+# UNUSED: 호출되지 않는 함수
+# def get_optimization_report() -> dict:
+#     """최적화 보고서 생성"""
+#     try:
+#         # 성능 모니터 데이터
+#         perf_summary = performance_monitor.get_performance_summary()
+#         
+#         # 캐시 통계 (strategy_analyzer에서 가져옴)
+#         try:
+#             from strategy_analyzer import enhanced_technical_cache_manager
+#             cache_stats = enhanced_technical_cache_manager().get_cache_stats()
+#         except Exception:
+#             cache_stats = {"hit_rate": 0, "cache_size": 0}
+#         
+#         # 최적화 달성도 평가
+#         achievements = {
+#             "function_integration": {
+#                 "target": "20개 함수 → 5개 함수",
+#                 "achieved": perf_summary.get("total_analyses", 0) > 0,
+#                 "impact": "분석 시간 단축"
+#             },
+#             "caching_enhancement": {
+#                 "target": "캐시 히트율 60% 이상",
+#                 "achieved": cache_stats.get("hit_rate", 0) >= 60,
+#                 "impact": "반복 계산 최소화"
+#             },
+#             "error_handling": {
+#                 "target": "Fail-safe 파이프라인 구현",
+#                 "achieved": True,  # 구현 완료
+#                 "impact": "시스템 안정성 향상"
+#             },
+#             "performance_target": {
+#                 "target": "종목당 분석 시간 50% 단축",
+#                 "achieved": perf_summary.get("performance_target_achieved", False),
+#                 "impact": "전체 시스템 처리량 증가"
+#             }
+#         }
+#         
+#         # 추가 개선 제안
+#         improvement_suggestions = []
+#         
+#         if cache_stats.get("hit_rate", 0) < 60:
+#             improvement_suggestions.append({
+#                 "area": "캐싱 최적화",
+#                 "suggestion": "캐시 TTL 조정 및 키 최적화",
+#                 "priority": "HIGH"
+#             })
+#         
+#         if perf_summary.get("average_analysis_time_ms", 0) > 100:
+#             improvement_suggestions.append({
+#                 "area": "성능 최적화",
+#                 "suggestion": "병렬 처리 확대 및 알고리즘 최적화",
+#                 "priority": "MEDIUM"
+#             })
+#         
+#         return {
+#             "optimization_summary": {
+#                 "total_functions_integrated": 20,
+#                 "target_functions_achieved": 5,
+#                 "performance_improvement_pct": 50 if achievements["performance_target"]["achieved"] else 0,
+#                 "cache_efficiency_pct": cache_stats.get("hit_rate", 0)
+#             },
+#             "achievements": achievements,
+#             "performance_metrics": perf_summary,
+#             "cache_statistics": cache_stats,
+#             "improvement_suggestions": improvement_suggestions,
+#             "report_generated_at": datetime.now().isoformat()
+#         }
+#         
+#     except Exception as e:
+#         logging.error(f"❌ 최적화 보고서 생성 오류: {str(e)}")
+#         return {
+#             "error": "최적화 보고서 생성 실패",
+#             "message": str(e)
+#         }
 
 # === 로그 순환 및 압축 설정 ===
 
@@ -3556,65 +3564,66 @@ def analyze_trend_with_gpt_bulk(candidates: list, optimizer: GPTAnalysisOptimize
     
     return results
 
-def get_gpt_analysis_performance_report() -> dict:
-    """
-    GPT 분석 성능 리포트를 반환합니다.
-    """
-    optimizer = GPTAnalysisOptimizerSingleton()
-    
-    efficiency_report = optimizer.monitor.get_efficiency_report()
-    cost_alert = optimizer.monitor.get_cost_alert()
-    
-    return {
-        "efficiency_report": efficiency_report,
-        "cost_alert": cost_alert,
-        "timestamp": datetime.now().isoformat()
-    }
+# UNUSED: 호출되지 않는 함수들
+# def get_gpt_analysis_performance_report() -> dict:
+#     """
+#     GPT 분석 성능 리포트를 반환합니다.
+#     """
+#     optimizer = GPTAnalysisOptimizerSingleton()
+#     
+#     efficiency_report = optimizer.monitor.get_efficiency_report()
+#     cost_alert = optimizer.monitor.get_cost_alert()
+#     
+#     return {
+#         "efficiency_report": efficiency_report,
+#         "cost_alert": cost_alert,
+#         "timestamp": datetime.now().isoformat()
+#     }
 
-def reset_gpt_analysis_monitor():
-    """
-    GPT 분석 모니터를 리셋합니다. (새로운 세션 시작 시 사용)
-    """
-    global _global_optimizer
-    _global_optimizer = GPTAnalysisOptimizerSingleton()
-    logging.info("🔄 GPT 분석 모니터가 리셋되었습니다.")
+# def reset_gpt_analysis_monitor():
+#     """
+#     GPT 분석 모니터를 리셋합니다. (새로운 세션 시작 시 사용)
+#     """
+#     global _global_optimizer
+#     _global_optimizer = GPTAnalysisOptimizerSingleton()
+#     logging.info("🔄 GPT 분석 모니터가 리셋되었습니다.")
 
-def print_gpt_analysis_summary():
-    """
-    현재 세션의 GPT 분석 요약을 출력합니다.
-    """
-    optimizer = GPTAnalysisOptimizerSingleton()
-    report = optimizer.monitor.get_efficiency_report()
-    alert = optimizer.monitor.get_cost_alert()
-    
-    print("\n" + "="*60)
-    print("📊 GPT 분석 성능 요약")
-    print("="*60)
-    
-    if "error" in report:
-        print(f"⚠️ {report['error']}")
-        return
-    
-    print(f"총 API 호출수: {report['총_API_호출수']}")
-    print(f"성공률: {report['성공률']}")
-    print(f"평균 처리시간: {report['평균_처리시간']}")
-    print(f"평균 토큰사용량: {report['평균_토큰사용량']}")
-    print(f"총 토큰사용량: {report['총_토큰사용량']:,}")
-    print(f"오늘 비용: {report['오늘_비용']}")
-    print(f"총 비용: {report['총_비용']}")
-    print(f"시간당 호출수: {report['시간당_호출수']}")
-    
-    if report['오류_유형별_통계']:
-        print(f"\n오류 유형별 통계:")
-        for error_type, count in report['오류_유형별_통계'].items():
-            print(f"  - {error_type}: {count}회")
-    
-    print(f"\n💰 비용 상태: {alert['message']}")
-    if alert['alert']:
-        level_emoji = "🚨" if alert['level'] == 'critical' else "⚠️"
-        print(f"{level_emoji} 경고 레벨: {alert['level']}")
-    
-    print("="*60 + "\n")
+# def print_gpt_analysis_summary():
+#     """
+#     현재 세션의 GPT 분석 요약을 출력합니다.
+#     """
+#     optimizer = GPTAnalysisOptimizerSingleton()
+#     report = optimizer.monitor.get_efficiency_report()
+#     alert = optimizer.monitor.get_cost_alert()
+#     
+#     print("\n" + "="*60)
+#     print("📊 GPT 분석 성능 요약")
+#     print("="*60)
+#     
+#     if "error" in report:
+#         print(f"⚠️ {report['error']}")
+#         return
+#     
+#     print(f"총 API 호출수: {report['총_API_호출수']}")
+#     print(f"성공률: {report['성공률']}")
+#     print(f"평균 처리시간: {report['평균_처리시간']}")
+#     print(f"평균 토큰사용량: {report['평균_토큰사용량']}")
+#     print(f"총 토큰사용량: {report['총_토큰사용량']:,}")
+#     print(f"오늘 비용: {report['오늘_비용']}")
+#     print(f"총 비용: {report['총_비용']}")
+#     print(f"시간당 호출수: {report['시간당_호출수']}")
+#     
+#     if report['오류_유형별_통계']:
+#         print(f"\n오류 유형별 통계:")
+#         for error_type, count in report['오류_유형별_통계'].items():
+#             print(f"  - {error_type}: {count}회")
+#     
+#     print(f"\n💰 비용 상태: {alert['message']}")
+#     if alert['alert']:
+#         level_emoji = "🚨" if alert['level'] == 'critical' else "⚠️"
+#         print(f"{level_emoji} 경고 레벨: {alert['level']}")
+#     
+#     print("="*60 + "\n")
 
 # 전역 최적화기 인스턴스 (선택적)
 _global_optimizer = None
@@ -4762,101 +4771,101 @@ def get_enhanced_analysis_for_ticker(ticker: str, db_manager: DBManager):
         logging.error(f"❌ {ticker} 향상된 분석 결과 조회 중 오류: {str(e)}")
         return None
 
-def test_trend_analyzer_improvements():
-    """
-    trend_analyzer.py 개선사항 테스트 함수
-    
-    테스트 항목:
-    1. 로그 순환 및 압축 설정
-    2. 민감 정보 마스킹
-    3. 로깅 레벨 최적화
-    4. 강화된 응답 파싱
-    """
-    print("🧪 trend_analyzer.py 개선사항 테스트 시작\n")
-    
-    # 1. 로그 순환 설정 테스트
-    print("1️⃣ 로그 순환 설정 테스트:")
-    try:
-        test_logger = setup_gpt_logging_rotation(
-            log_file_path="log/test_gpt_rotation.log",
-            max_bytes=1024*1024,  # 1MB
-            backup_count=3
-        )
-        test_logger.info("테스트 로그 메시지")
-        print("   ✅ 로그 순환 설정 정상 작동")
-    except Exception as e:
-        print(f"   ❌ 로그 순환 설정 오류: {e}")
-    
-    # 2. 민감 정보 마스킹 테스트
-    print("\n2️⃣ 민감 정보 마스킹 테스트:")
-    try:
-        test_data = {
-            "api_key": "sk-abcd1234567890",
-            "price": "50000 KRW",
-            "email": "test@example.com",
-            "percentage": "12.5%",
-            "normal_text": "일반 텍스트"
-        }
-        
-        masked_low = mask_sensitive_info(test_data, "low")
-        masked_medium = mask_sensitive_info(test_data, "medium")
-        masked_high = mask_sensitive_info(test_data, "high")
-        
-        print(f"   원본: {test_data}")
-        print(f"   Low 마스킹: {masked_low}")
-        print(f"   Medium 마스킹: {masked_medium}")
-        print(f"   High 마스킹: {masked_high}")
-        print("   ✅ 민감 정보 마스킹 정상 작동")
-    except Exception as e:
-        print(f"   ❌ 민감 정보 마스킹 오류: {e}")
-    
-    # 3. 응답 파싱 테스트
-    print("\n3️⃣ 강화된 응답 파싱 테스트:")
-    try:
-        test_responses = [
-            '{"score": 85, "action": "BUY", "confidence": 0.8}',  # JSON 형식
-            'Score: 75/100\nAction: HOLD\nConfidence: 0.65',      # 텍스트 형식
-            '점수: 90점, 액션: 매수, 신뢰도: 80%',                 # 한국어 형식
-            'This is a positive analysis with bullish sentiment', # 키워드 기반
-            '',  # 빈 응답
-        ]
-        
-        for i, response in enumerate(test_responses, 1):
-            result = parse_enhanced_gpt_response(response)
-            print(f"   테스트 {i}: {response[:30]}...")
-            print(f"   결과: 점수={result['score']}, 액션={result['action']}, 신뢰도={result['confidence']:.2f}")
-        
-        print("   ✅ 강화된 응답 파싱 정상 작동")
-    except Exception as e:
-        print(f"   ❌ 응답 파싱 테스트 오류: {e}")
-    
-    # 4. 환경변수 설정 확인
-    print("\n4️⃣ 환경변수 설정 확인:")
-    gpt_detailed = os.getenv("GPT_DETAILED_LOGGING", "false")
-    mask_level = os.getenv("GPT_LOG_MASK_LEVEL", "medium")
-    
-    print(f"   GPT_DETAILED_LOGGING: {gpt_detailed}")
-    print(f"   GPT_LOG_MASK_LEVEL: {mask_level}")
-    
-    if gpt_detailed.lower() == "true":
-        print("   📋 상세 로깅 활성화됨")
-    else:
-        print("   📋 상세 로깅 비활성화됨 (성능 최적화)")
-    
-    print(f"\n✅ trend_analyzer.py 개선사항 테스트 완료!")
-    
-    # 사용법 안내
-    print("\n📖 사용법 안내:")
-    print("환경변수 설정:")
-    print("  export GPT_DETAILED_LOGGING=true  # 상세 로깅 활성화")
-    print("  export GPT_LOG_MASK_LEVEL=high    # 높은 수준 마스킹")
-    print("\n로그 파일 위치:")
-    print("  - 메인 로그: log/gpt_analysis.log")
-    print("  - 압축 백업: log/gpt_analysis.log.1.gz, log/gpt_analysis.log.2.gz, ...")
+# UNUSED: 호출되지 않는 함수
+# def test_trend_analyzer_improvements():
+#     """
+#     trend_analyzer.py 개선사항 테스트 함수
+#     
+#     테스트 항목:
+#     1. 로그 순환 및 압축 설정
+#     2. 민감 정보 마스킹
+#     3. 로깅 레벨 최적화
+#     4. 강화된 응답 파싱
+#     """
+#     print("🧪 trend_analyzer.py 개선사항 테스트 시작\n")
+#     
+#     # 1. 로그 순환 설정 테스트
+#     print("1️⃣ 로그 순환 설정 테스트:")
+#     try:
+#         test_logger = setup_gpt_logging_rotation(
+#             log_file_path="log/test_gpt_rotation.log",
+#             max_bytes=1024*1024,  # 1MB
+#             backup_count=3
+#         )
+#         test_logger.info("테스트 로그 메시지")
+#         print("   ✅ 로그 순환 설정 정상 작동")
+#     except Exception as e:
+#         print(f"   ❌ 로그 순환 설정 오류: {e}")
+#     
+#     # 2. 민감 정보 마스킹 테스트
+#     print("\n2️⃣ 민감 정보 마스킹 테스트:")
+#     try:
+#         test_data = {
+#             "api_key": "sk-abcd1234567890",
+#             "price": "50000 KRW",
+#             "email": "test@example.com",
+#             "percentage": "12.5%",
+#             "normal_text": "일반 텍스트"
+#         }
+#         
+#         masked_low = mask_sensitive_info(test_data, "low")
+#         masked_medium = mask_sensitive_info(test_data, "medium")
+#         masked_high = mask_sensitive_info(test_data, "high")
+#         
+#         print(f"   원본: {test_data}")
+#         print(f"   Low 마스킹: {masked_low}")
+#         print(f"   Medium 마스킹: {masked_medium}")
+#         print(f"   High 마스킹: {masked_high}")
+#         print("   ✅ 민감 정보 마스킹 정상 작동")
+#     except Exception as e:
+#         print(f"   ❌ 민감 정보 마스킹 오류: {e}")
+#     
+#     # 3. 응답 파싱 테스트
+#     print("\n3️⃣ 강화된 응답 파싱 테스트:")
+#     try:
+#         test_responses = [
+#             '{"score": 85, "action": "BUY", "confidence": 0.8}',  # JSON 형식
+#             'Score: 75/100\nAction: HOLD\nConfidence: 0.65',      # 텍스트 형식
+#             '점수: 90점, 액션: 매수, 신뢰도: 80%',                 # 한국어 형식
+#             'This is a positive analysis with bullish sentiment', # 키워드 기반
+#             '',  # 빈 응답
+#         ]
+#         
+#         for i, response in enumerate(test_responses, 1):
+#             result = parse_enhanced_gpt_response(response)
+#             print(f"   테스트 {i}: {response[:30]}...")
+#             print(f"   결과: 점수={result['score']}, 액션={result['action']}, 신뢰도={result['confidence']:.2f}")
+#         print("   ✅ 강화된 응답 파싱 정상 작동")
+#     except Exception as e:
+#         print(f"   ❌ 응답 파싱 테스트 오류: {e}")
+#     
+#     # 4. 환경변수 설정 확인
+#     print("\n4️⃣ 환경변수 설정 확인:")
+#     gpt_detailed = os.getenv("GPT_DETAILED_LOGGING", "false")
+#     mask_level = os.getenv("GPT_LOG_MASK_LEVEL", "medium")
+#     
+#     print(f"   GPT_DETAILED_LOGGING: {gpt_detailed}")
+#     print(f"   GPT_LOG_MASK_LEVEL: {mask_level}")
+#     
+#     if gpt_detailed.lower() == "true":
+#         print("   📋 상세 로깅 활성화됨")
+#     else:
+#         print("   📋 상세 로깅 비활성화됨 (성능 최적화)")
+#     
+#     print(f"\n✅ trend_analyzer.py 개선사항 테스트 완료!")
+#     
+#     # 사용법 안내
+#     print("\n📖 사용법 안내:")
+#     print("환경변수 설정:")
+#     print("  export GPT_DETAILED_LOGGING=true  # 상세 로깅 활성화")
+#     print("  export GPT_LOG_MASK_LEVEL=high    # 높은 수준 마스킹")
+#     print("\n로그 파일 위치:")
+#     print("  - 메인 로그: log/gpt_analysis.log")
+#     print("  - 압축 백업: log/gpt_analysis.log.1.gz, log/gpt_analysis.log.2.gz, ...")
 
-if __name__ == "__main__":
-    # 개선사항 테스트 실행
-    test_trend_analyzer_improvements()
+# if __name__ == "__main__":
+#     # 개선사항 테스트 실행
+#     test_trend_analyzer_improvements()
 
 
 # === DB 스키마 검증 및 복구 시스템 ===
