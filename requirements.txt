@@ -1,0 +1,16 @@
+pyupbit
+pandas
+pandas_ta
+TA-Lib
+psycopg2
+python-dotenv
+matplotlib
+numpy
+mplfinance
+sqlalchemy
+openai
+PyJWT
+pyyaml
+loguru
+tiktoken
+psutil

@@ -1,0 +1,114 @@
+# config/strategy.yaml - 통합된 전략 및 트레이딩 설정
+
+# 기본 전략 설정
+atr:
+  period: 14           # ATR 계산 기간
+
+risk:
+  pct: 0.01            # 포지션당 허용 리스크 비율
+
+pyramiding:
+  max_add_ons: 3       # 최대 추가 매수 횟수
+  add_on_ratio: 0.5    # 초기 비중 대비 추가 매수 비율
+
+trailing_stop:
+  atr_multiplier: 1.0  # ATR에 곱할 배수 (트레일링 스톱)
+
+# GPT 분석 설정
+gpt_analysis:
+  score_threshold: 85                # GPT 분석 점수 임계값
+  confidence_threshold: 0.9          # 신뢰도 임계값
+  batch_size: 5                      # 배치 처리 크기
+  memory_threshold_mb: 500           # 메모리 임계값 (MB)
+  max_tokens: 4000                   # 최대 토큰 수
+  temperature: 0.3                   # GPT 온도 설정
+  retry_attempts: 3                  # 재시도 횟수
+  timeout_seconds: 30                # 타임아웃 (초)
+  analysis_period_days: 200          # 분석 기간 (200일)
+
+# 리스크 관리 설정
+risk_management:
+  base_stop_loss: 3.0                # 기본 손절율 (%)
+  base_take_profit: 6.0              # 기본 익절율 (%)
+  max_volatility_multiplier: 3.0     # 최대 변동성 배수
+  max_position_size: 0.05            # 최대 포지션 크기 (5%)
+  base_position_size: 0.02           # 기본 포지션 크기 (2%)
+  kelly_fraction: 0.25               # Kelly fraction
+  max_daily_trades: 10               # 일일 최대 거래 수
+  max_portfolio_risk: 0.2            # 최대 포트폴리오 리스크 (20%)
+
+# 필터링 설정
+filtering:
+  max_filtered_tickers: 30           # 최대 필터링 티커 수
+  min_market_cap: 100000000          # 최소 시가총액 (1억)
+  min_volume_24h: 1000000           # 최소 24시간 거래량 (100만)
+  price_change_threshold: 5.0        # 가격 변동 임계값 (%)
+  rsi_oversold: 30                   # RSI 과매도 구간
+  rsi_overbought: 70                 # RSI 과매수 구간
+  enable_volume_filter: true         # 거래량 필터 활성화
+  enable_volatility_filter: true     # 변동성 필터 활성화
+
+# 백테스트 설정
+backtest:
+  default_period_days: 30            # 기본 백테스트 기간 (일)
+  initial_capital: 10000000          # 초기 자본금 (1천만원)
+  commission_rate: 0.0005            # 수수료율 (0.05%)
+  slippage_rate: 0.001               # 슬리피지율 (0.1%)
+  enable_auto_report: true           # 자동 리포트 생성
+  report_frequency: "daily"          # 리포트 주기 (daily/weekly/monthly)
+
+# 성능 모니터링 설정
+performance:
+  monitoring_enabled: true           # 성능 모니터링 활성화
+  metrics_retention_days: 90         # 메트릭 보관 기간 (일)
+  alert_win_rate_threshold: 0.4      # 승률 경고 임계값
+  alert_drawdown_threshold: 0.15     # 최대 손실 경고 임계값 (15%)
+  performance_review_interval: 7     # 성능 검토 주기 (일)
+
+# 실시간 적응 설정
+adaptive_strategy:
+  enable_auto_adjustment: true       # 자동 파라미터 조정 활성화
+  adjustment_frequency: 7            # 조정 주기 (일)
+  min_trades_for_adjustment: 20      # 조정을 위한 최소 거래 수
+  performance_window_days: 14        # 성과 평가 윈도우 (일)
+  adjustment_sensitivity: 0.1        # 조정 민감도 (0.1 = 10%)
+
+# VCP 패턴 분석 설정
+vcp_settings:
+  min_base_weeks: 7                    # 최소 베이스 기간 (주)
+  max_base_weeks: 65                   # 최대 베이스 기간 (주)  
+  volume_decline_threshold: 0.3        # 거래량 감소 임계값 (30%)
+  breakout_volume_multiplier: 1.5      # 브레이크아웃 시 거래량 배수
+  min_contractions: 2                  # 최소 수축 횟수
+  vcp_score_threshold: 60              # VCP 패턴 인정 점수 임계값
+  volatility_decrease_threshold: 0.8   # 변동성 감소 임계값
+
+# Weinstein 4단계 분석 설정  
+stage_settings:
+  stage2_entry_weight: 1.0             # Stage2 진입 가중치
+  stage1_transition_weight: 0.8        # Stage1 전환 가중치
+  stage3_exit_weight: 0.3              # Stage3 퇴장 가중치
+  stage4_avoid_weight: 0.1             # Stage4 회피 가중치
+  ma50_period: 50                      # MA50 기간
+  ma200_period: 200                    # MA200 기간
+  slope_calculation_days: 20           # 기울기 계산 기간
+  stage_confidence_threshold: 0.6      # 단계 신뢰도 임계값
+
+# 브레이크아웃 진입 조건 설정
+breakout_settings:
+  strong_buy_vcp_score: 70             # 강력 매수 VCP 점수
+  strong_buy_stage_confidence: 0.7     # 강력 매수 Stage 신뢰도
+  weak_buy_vcp_score: 50               # 약한 매수 VCP 점수
+  weak_buy_stage_confidence: 0.5       # 약한 매수 Stage 신뢰도
+  sell_stage_confidence: 0.6           # 매도 Stage 신뢰도
+  max_position_size: 0.05              # 최대 포지션 크기 (5%)
+  base_position_size: 0.02             # 기본 포지션 크기 (2%)
+  stop_loss_buffer: 0.02               # 손절 버퍼 (2%)
+  target_multiplier: 1.15              # 목표가 배수
+
+# 전략 통합 가중치
+strategy_weights:
+  vcp_weight: 0.4                      # VCP 분석 가중치
+  stage_weight: 0.3                    # Stage 분석 가중치
+  technical_weight: 0.2                # 기존 기술적 분석 가중치
+  gpt_weight: 0.1                      # GPT 분석 가중치
