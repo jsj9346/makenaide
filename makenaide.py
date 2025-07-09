@@ -79,29 +79,30 @@ def get_db_connection_safe():
             except Exception as e:
                 logger.warning(f"⚠️ DB 연결 종료 중 오류: {e}")
 
-def execute_batch_query(query, data_list):
-    """배치 쿼리 실행 함수
-    
-    Args:
-        query (str): SQL 쿼리문
-        data_list (list): 실행할 데이터 리스트
-        
-    Returns:
-        bool: 성공 여부
-    """
-    if not data_list:
-        return True
-        
-    try:
-        with get_db_connection_context() as conn:
-            cursor = conn.cursor()
-            for data in data_list:
-                cursor.execute(query, data)
-            conn.commit()
-            return True
-    except Exception as e:
-        logger.error(f"❌ 배치 쿼리 실행 중 오류 발생: {e}")
-        return False
+# UNUSED: 배치 쿼리 실행 함수 - 현재 파이프라인에서 사용되지 않음
+# def execute_batch_query(query, data_list):
+#     """배치 쿼리 실행 함수
+#     
+#     Args:
+#         query (str): SQL 쿼리문
+#         data_list (list): 실행할 데이터 리스트
+#         
+#     Returns:
+#         bool: 성공 여부
+#     """
+#     if not data_list:
+#         return True
+#         
+#     try:
+#         with get_db_connection_context() as conn:
+#             cursor = conn.cursor()
+#             for data in data_list:
+#                 cursor.execute(query, data)
+#             conn.commit()
+#             return True
+#     except Exception as e:
+#         logger.error(f"❌ 배치 쿼리 실행 중 오류 발생: {e}")
+#         return False
 
 # 중요 상수 정의
 ONE_HMIL_KRW = 100_000_000  # 1억원 (거래대금 필터링 기준)
@@ -1027,27 +1028,28 @@ class MakenaideBot:
             logger.error(f"❌ {ticker} 기술적 지표 계산 중 오류 발생: {str(e)}")
             return None
             
-    def process_ohlcv_data(self, ticker, data_source='db'):
-        """데이터 소스별 OHLCV 처리 로직"""
-        if data_source == 'api':
-            logger.info(f"📊 {ticker} 데이터 소스: API 직접 호출")
-            from data_fetcher import get_ohlcv_d
-            
-            # API에서 직접 가져온 경우 통합 처리 (날짜 복구 포함)
-            ohlcv_data = get_ohlcv_d(ticker)
-            if ohlcv_data is not None and not ohlcv_data.empty and hasattr(ohlcv_data.index, 'year') and len(ohlcv_data.index) > 0 and ohlcv_data.index[0].year == 1970:
-                logger.warning(f"🚨 {ticker} pyupbit API 1970-01-01 응답으로 인한 복구")
-                # 통합 파이프라인에서 날짜 복구도 처리하므로 별도 호출 불필요
-                enhanced_ohlcv_processor(ticker, ohlcv_data, data_source='api')
-                
-        elif data_source == 'db':
-            logger.info(f"📊 {ticker} 데이터 소스: DB 조회")
-            # DB에서 가져온 경우는 이미 안전한 DATE 형태
-            # 복구 로직 실행하지 않음
-            from data_fetcher import get_ohlcv_from_db
-            ohlcv_data = get_ohlcv_from_db(ticker)
-            
-        return ohlcv_data
+    # UNUSED: OHLCV 데이터 처리 함수 - 현재 파이프라인에서 사용되지 않음
+    # def process_ohlcv_data(self, ticker, data_source='db'):
+    #     """데이터 소스별 OHLCV 처리 로직"""
+    #     if data_source == 'api':
+    #         logger.info(f"📊 {ticker} 데이터 소스: API 직접 호출")
+    #         from data_fetcher import get_ohlcv_d
+    #         
+    #         # API에서 직접 가져온 경우 통합 처리 (날짜 복구 포함)
+    #         ohlcv_data = get_ohlcv_d(ticker)
+    #         if ohlcv_data is not None and not ohlcv_data.empty and hasattr(ohlcv_data.index, 'year') and len(ohlcv_data.index) > 0 and ohlcv_data.index[0].year == 1970:
+    #             logger.warning(f"🚨 {ticker} pyupbit API 1970-01-01 응답으로 인한 복구")
+    #             # 통합 파이프라인에서 날짜 복구도 처리하므로 별도 호출 불필요
+    #             enhanced_ohlcv_processor(ticker, ohlcv_data, data_source='api')
+    #             
+    #     elif data_source == 'db':
+    #         logger.info(f"📊 {ticker} 데이터 소스: DB 조회")
+    #         # DB에서 가져온 경우는 이미 안전한 DATE 형태
+    #         # 복구 로직 실행하지 않음
+    #         from data_fetcher import get_ohlcv_from_db
+    #         ohlcv_data = get_ohlcv_from_db(ticker)
+    #         
+    #     return ohlcv_data
 
     def save_chart_image(self, ticker: str, df: pd.DataFrame) -> str:
         """차트 이미지를 생성하고 저장합니다"""
@@ -1385,85 +1387,87 @@ class MakenaideBot:
     # 매도 로직은 trade_executor.py의 sell_asset 함수를 사용
     # 포트폴리오 매도 조건은 PortfolioManager.check_advanced_sell_conditions()에서 처리
 
-    def calculate_dynamic_exit_levels(self, ticker, avg_price, market_df):
-        """ATR 값을 활용한 동적 손절/익절 계산"""
-        try:
-            # 시장 데이터에서 해당 티커의 지표 조회
-            if market_df is None or ticker not in market_df.index:
-                logger.warning(f"⚠️ {ticker} 시장 데이터 없음, 동적 조건 계산 불가")
-                return None
-            
-            ticker_data = market_df.loc[ticker]
-            atr_value = safe_float_convert(ticker_data.get('atr'), context=f"{ticker} ATR")
-            rsi = safe_float_convert(ticker_data.get('rsi', 50), context=f"{ticker} RSI")
-            volume_ratio = safe_float_convert(ticker_data.get('volume_ratio', 1.0), context=f"{ticker} Volume Ratio")
-            
-            if not atr_value or atr_value <= 0:
-                logger.warning(f"⚠️ {ticker} ATR 값이 유효하지 않음")
-                return None
-            
-            # ATR 기반 변동성 계산 (가격 대비 퍼센트)
-            atr_pct = (atr_value / avg_price) * 100
-            
-            # 변동성 스코어 계산 (1.0 = 보통, 높을수록 변동성 큼)
-            volatility_score = min(max(atr_pct / 3.0, 0.5), 3.0)  # 0.5 ~ 3.0 범위
-            
-            # RSI 기반 시장 상황 분석
-            if rsi > 70:  # 과매수 상태
-                rsi_adjustment = 0.8  # 더 보수적
-            elif rsi < 30:  # 과매도 상태
-                rsi_adjustment = 1.2  # 더 공격적
-            else:
-                rsi_adjustment = 1.0  # 중립
-            
-            # 거래량 기반 조정
-            volume_adjustment = min(1.0 + (volume_ratio - 1.0) * 0.3, 1.5)
-            
-            # 기본 손절/익절 비율 (3% / 6%)
-            base_stop_loss = 3.0
-            base_take_profit = 6.0
-            
-            # 최종 동적 조건 계산
-            stop_loss_pct = base_stop_loss * volatility_score * rsi_adjustment
-            take_profit_pct = base_take_profit * volatility_score * volume_adjustment
-            
-            # 범위 제한 (손절: 1.5~12%, 익절: 3~25%)
-            stop_loss_pct = min(max(stop_loss_pct, 1.5), 12.0)
-            take_profit_pct = min(max(take_profit_pct, 3.0), 25.0)
-            
-            logger.debug(f"📊 {ticker} 동적 매도 조건: "
-                        f"ATR={atr_value:.2f}({atr_pct:.1f}%), "
-                        f"RSI={rsi:.1f}, "
-                        f"변동성스코어={volatility_score:.2f}, "
-                        f"손절={stop_loss_pct:.1f}%, "
-                        f"익절={take_profit_pct:.1f}%")
-            
-            return {
-                'stop_loss_pct': stop_loss_pct,
-                'take_profit_pct': take_profit_pct,
-                'volatility_score': volatility_score,
-                'atr_pct': atr_pct,
-                'rsi': rsi,
-                'volume_ratio': volume_ratio
-            }
-            
-        except Exception as e:
-            logger.error(f"❌ {ticker} 동적 매도 조건 계산 중 오류: {e}")
-            return None
+    # UNUSED: 동적 출구 레벨 계산 함수 - 현재 파이프라인에서 사용되지 않음
+    # def calculate_dynamic_exit_levels(self, ticker, avg_price, market_df):
+    #     """ATR 값을 활용한 동적 손절/익절 계산"""
+    #     try:
+    #         # 시장 데이터에서 해당 티커의 지표 조회
+    #         if market_df is None or ticker not in market_df.index:
+    #             logger.warning(f"⚠️ {ticker} 시장 데이터 없음, 동적 조건 계산 불가")
+    #             return None
+    #         
+    #         ticker_data = market_df.loc[ticker]
+    #         atr_value = safe_float_convert(ticker_data.get('atr'), context=f"{ticker} ATR")
+    #         rsi = safe_float_convert(ticker_data.get('rsi', 50), context=f"{ticker} RSI")
+    #         volume_ratio = safe_float_convert(ticker_data.get('volume_ratio', 1.0), context=f"{ticker} Volume Ratio")
+    #         
+    #         if not atr_value or atr_value <= 0:
+    #             logger.warning(f"⚠️ {ticker} ATR 값이 유효하지 않음")
+    #             return None
+    #         
+    #         # ATR 기반 변동성 계산 (가격 대비 퍼센트)
+    #         atr_pct = (atr_value / avg_price) * 100
+    #         
+    #         # 변동성 스코어 계산 (1.0 = 보통, 높을수록 변동성 큼)
+    #         volatility_score = min(max(atr_pct / 3.0, 0.5), 3.0)  # 0.5 ~ 3.0 범위
+    #         
+    #         # RSI 기반 시장 상황 분석
+    #         if rsi > 70:  # 과매수 상태
+    #             rsi_adjustment = 0.8  # 더 보수적
+    #         elif rsi < 30:  # 과매도 상태
+    #             rsi_adjustment = 1.2  # 더 공격적
+    #         else:
+    #             rsi_adjustment = 1.0  # 중립
+    #         
+    #         # 거래량 기반 조정
+    #         volume_adjustment = min(1.0 + (volume_ratio - 1.0) * 0.3, 1.5)
+    #         
+    #         # 기본 손절/익절 비율 (3% / 6%)
+    #         base_stop_loss = 3.0
+    #         base_take_profit = 6.0
+    #         
+    #         # 최종 동적 조건 계산
+    #         stop_loss_pct = base_stop_loss * volatility_score * rsi_adjustment
+    #         take_profit_pct = base_take_profit * volatility_score * volume_adjustment
+    #         
+    #         # 범위 제한 (손절: 1.5~12%, 익절: 3~25%)
+    #         stop_loss_pct = min(max(stop_loss_pct, 1.5), 12.0)
+    #         take_profit_pct = min(max(take_profit_pct, 3.0), 25.0)
+    #         
+    #         logger.debug(f"📊 {ticker} 동적 매도 조건: "
+    #                     f"ATR={atr_value:.2f}({atr_pct:.1f}%), "
+    #                     f"RSI={rsi:.1f}, "
+    #                     f"변동성스코어={volatility_score:.2f}, "
+    #                     f"손절={stop_loss_pct:.1f}%, "
+    #                     f"익절={take_profit_pct:.1f}%")
+    #         
+    #         return {
+    #             'stop_loss_pct': stop_loss_pct,
+    #             'take_profit_pct': take_profit_pct,
+    #             'volatility_score': volatility_score,
+    #             'atr_pct': atr_pct,
+    #             'rsi': rsi,
+    #             'volume_ratio': volume_ratio
+    #         }
+    #         
+    #     except Exception as e:
+    #         logger.error(f"❌ {ticker} 동적 매도 조건 계산 중 오류: {e}")
+    #         return None
 
     # 매도 로직은 PortfolioManager로 이동됨
 
-    def filter_buy_candidates(self, ohlcv_df, market_df, market_df_4h, filter_config):
-        """
-        매수 후보 티커를 필터링합니다.
-        """
-        try:
-            # filter_breakout_candidates 함수는 market_df, market_df_4h, config 매개변수만 받으므로 ohlcv_df는 전달하지 않음
-            tickers = filter_breakout_candidates(market_df, market_df_4h, filter_config)
-            return tickers
-        except Exception as e:
-            logger.error(f"❌ 매수 후보 필터링 중 오류 발생: {e}")
-            return []
+    # UNUSED: 매수 후보 필터링 함수 - 현재 파이프라인에서 사용되지 않음
+    # def filter_buy_candidates(self, ohlcv_df, market_df, market_df_4h, filter_config):
+    #     """
+    #     매수 후보 티커를 필터링합니다.
+    #     """
+    #     try:
+    #         # filter_breakout_candidates 함수는 market_df, market_df_4h, config 매개변수만 받으므로 ohlcv_df는 전달하지 않음
+    #         tickers = filter_breakout_candidates(market_df, market_df_4h, filter_config)
+    #         return tickers
+    #     except Exception as e:
+    #         logger.error(f"❌ 매수 후보 필터링 중 오류 발생: {e}")
+    #         return []
 
     def run_backtest_and_report(self, ohlcv_df, market_df) -> bool:
         """통합된 backtester.py 사용으로 기능 확장"""
