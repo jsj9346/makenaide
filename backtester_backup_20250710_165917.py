@@ -8,7 +8,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 from utils import setup_logger, safe_strftime, safe_float_convert
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta
 from typing import Dict, List, Tuple, Optional
 import logging
 from pathlib import Path
@@ -398,40 +398,12 @@ def backtest_combo(ohlcv_df: pd.DataFrame, market_df: pd.DataFrame, combo: Dict)
             else:
                 return []
         
-        # market_df에도 ticker 컬럼이 있는지 확인
         if 'ticker' not in market_df.columns:
             logger.warning(f"⚠️ 시장 데이터에 ticker 컬럼이 없음: {combo['name']}")
-            # market_df에 ticker 컬럼이 없으면 단일 티커로 가정
-            if len(market_df) > 0:
-                # 모의 백테스트 결과 생성
-                mock_result = {
-                    'combo': combo_name,
-                    'ticker': 'MOCK_TICKER',
-                    'total_return': np.random.uniform(-0.1, 0.2),
-                    'avg_return': np.random.uniform(-0.05, 0.15),
-                    'win_rate': np.random.uniform(0.4, 0.7),
-                    'sharpe_ratio': np.random.uniform(0.5, 1.5),
-                    'mdd': np.random.uniform(0.05, 0.25),
-                    'volatility': np.random.uniform(0.1, 0.3),
-                    'trades': np.random.randint(10, 50),
-                    'kelly': np.random.uniform(0.1, 0.3),
-                    'kelly_1_2': np.random.uniform(0.05, 0.15),
-                    'swing_score': np.random.uniform(30, 80),
-                    'b': np.random.uniform(1.2, 2.5),
-                    'days': len(ohlcv_df) if not ohlcv_df.empty else 30
-                }
-                results.append(mock_result)
-                logger.info(f"✅ {combo_name} 모의 백테스트 완료: 1개 결과")
-                return results
-            else:
-                return []
+            return []
         
         # 티커별로 백테스트 수행
-        try:
-            available_tickers = set(ohlcv_df['ticker'].unique()) & set(market_df['ticker'].unique())
-        except KeyError as e:
-            logger.error(f"❌ ticker 컬럼 접근 오류: {e}")
-            return []
+        available_tickers = set(ohlcv_df['ticker'].unique()) & set(market_df['ticker'].unique())
         
         if not available_tickers:
             logger.warning(f"⚠️ 공통 티커 없음: {combo_name}")
@@ -1186,9 +1158,7 @@ class KellyBacktester:
                 if trade['action'] == 'SELL':
                     # 날짜 처리 안전하게 수정
                     trade_date = trade['date']
-                    if isinstance(trade_date, (datetime, date)):
-                        date_str = trade_date.strftime('%Y-%m-%d')
-                    elif hasattr(trade_date, 'strftime'):
+                    if hasattr(trade_date, 'strftime'):
                         date_str = trade_date.strftime('%Y-%m-%d')
                     else:
                         date_str = str(trade_date)
@@ -1196,9 +1166,7 @@ class KellyBacktester:
                 else:
                     # 날짜 처리 안전하게 수정
                     trade_date = trade['date']
-                    if isinstance(trade_date, (datetime, date)):
-                        date_str = trade_date.strftime('%Y-%m-%d')
-                    elif hasattr(trade_date, 'strftime'):
+                    if hasattr(trade_date, 'strftime'):
                         date_str = trade_date.strftime('%Y-%m-%d')
                     else:
                         date_str = str(trade_date)
@@ -1832,16 +1800,13 @@ class ComprehensiveBacktestEngine:
                         entry_date = trade['entry_date']
                         exit_date = trade['exit_date']
                         
-                        # 날짜 객체 타입 안전하게 처리
-                        if isinstance(entry_date, (datetime, date)) and isinstance(exit_date, (datetime, date)):
-                            # 실제 날짜 객체인 경우
+                        # 날짜 객체인지 확인하고 안전하게 처리
+                        if hasattr(entry_date, 'days') and hasattr(exit_date, 'days'):
+                            # 이미 timedelta인 경우
                             duration = (exit_date - entry_date).days
                         elif hasattr(entry_date, '__sub__') and hasattr(exit_date, '__sub__'):
-                            # 날짜 객체인 경우 (pandas Timestamp 등)
-                            try:
-                                duration = (exit_date - entry_date).days
-                            except AttributeError:
-                                duration = 1  # 기본값
+                            # 날짜 객체인 경우
+                            duration = (exit_date - entry_date).days
                         else:
                             # 인덱스나 정수인 경우 (모의 데이터)
                             duration = 1  # 기본값

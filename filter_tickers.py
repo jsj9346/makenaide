@@ -959,7 +959,7 @@ def fetch_market_data_4h():
             df.set_index('ticker', inplace=True)
             logger.info(f"✅ 4시간봉 시장 데이터 {len(df)}개 조회 완료")
         else:
-            logger.warning("⚠️ 4시간봉 시장 데이터 없음")
+            pass
             
         return df
         

@@ -52,10 +52,10 @@ class MarketThermometer:
                 
                 # 기본값 설정
                 default_thresholds = {
-                    'min_pct_up': 45.0,
-                    'max_top10_volume': 70.0,
-                    'min_ma200_above': 25.0,
-                    'min_sentiment_score': 60.0
+                    'min_pct_up': 40.0,           #상승종목 비율
+                    'max_top10_volume': 75.0,     #거래대금 집중도
+                    'min_ma200_above': 20.0,      #MA200 상회 비율
+                    'min_sentiment_score': 40.0   #종합 점수
                 }
                 
                 # 설정 파일의 값으로 기본값 업데이트

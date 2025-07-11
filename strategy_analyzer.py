@@ -881,37 +881,72 @@ def _calculate_atr_fast(highs: list, lows: list, closes: list, period: int = 14)
         return 0.0
 
 def _calculate_position_sizing_fast(breakout_conditions: dict, atr: float, vcp_score: int, stage_confidence: float) -> dict:
-    """빠른 포지션 사이징 계산"""
+    """ATR 기반 강화된 포지션 사이징 계산"""
     try:
         base_size = 2.0  # 기본 2%
         
-        # 브레이크아웃 확률에 따른 조정
+        # 1. ATR 기반 변동성 조정 (핵심 개선)
+        current_price = breakout_conditions.get("current_price", 1000)
+        if current_price > 0 and atr > 0:
+            # ATR 비율 계산 (변동성 지표)
+            atr_ratio = atr / current_price
+            
+            # 변동성에 따른 포지션 크기 조정
+            if atr_ratio > 0.05:  # 5% 이상 변동성 (고변동성)
+                volatility_adjustment = 0.6  # 40% 축소
+            elif atr_ratio > 0.03:  # 3-5% 변동성 (중변동성)
+                volatility_adjustment = 0.8  # 20% 축소
+            elif atr_ratio > 0.02:  # 2-3% 변동성 (저변동성)
+                volatility_adjustment = 1.0  # 조정 없음
+            else:  # 2% 미만 변동성 (매우 낮은 변동성)
+                volatility_adjustment = 1.2  # 20% 증가
+        else:
+            volatility_adjustment = 1.0
+        
+        # 2. 브레이크아웃 확률에 따른 조정
         probability = breakout_conditions.get("probability", 0.3)
-        size_multiplier = probability * 2  # 최대 2배
+        probability_multiplier = probability * 2  # 최대 2배
         
-        # VCP 점수에 따른 조정
+        # 3. VCP 점수에 따른 조정
+        vcp_multiplier = 1.0
         if vcp_score > 70:
-            size_multiplier *= 1.5
+            vcp_multiplier = 1.5
         elif vcp_score > 50:
-            size_multiplier *= 1.2
+            vcp_multiplier = 1.2
         
-        # Stage 신뢰도에 따른 조정
+        # 4. Stage 신뢰도에 따른 조정
+        stage_multiplier = 1.0
         if stage_confidence > 0.7:
-            size_multiplier *= 1.3
+            stage_multiplier = 1.3
         elif stage_confidence > 0.5:
-            size_multiplier *= 1.1
+            stage_multiplier = 1.1
         
-        recommended_pct = min(base_size * size_multiplier, 8.0)  # 최대 8%
+        # 5. 통합 배수 계산
+        total_multiplier = probability_multiplier * vcp_multiplier * stage_multiplier * volatility_adjustment
+        
+        # 6. 최종 포지션 크기 계산
+        recommended_pct = base_size * total_multiplier
+        
+        # 7. ATR 기반 리스크 관리
+        max_risk_pct = min(atr_ratio * 50, 3.0) if atr_ratio > 0 else 2.0  # ATR 기반 최대 리스크
+        recommended_pct = min(recommended_pct, max_risk_pct * 4)  # 리스크 대비 4배까지 허용
+        
+        # 8. 최종 범위 제한
+        recommended_pct = max(0.5, min(recommended_pct, 8.0))  # 0.5-8% 범위
         
         return {
             "recommended_pct": round(recommended_pct, 2),
             "base_size": base_size,
-            "multiplier": round(size_multiplier, 2),
-            "max_risk": min(recommended_pct * 0.25, 2.0)  # 최대 리스크 2%
+            "total_multiplier": round(total_multiplier, 2),
+            "volatility_adjustment": round(volatility_adjustment, 2),
+            "atr_ratio": round(atr_ratio, 4) if atr_ratio > 0 else 0,
+            "max_risk": round(max_risk_pct, 2),
+            "risk_reward_ratio": round(4.0 / max_risk_pct, 2) if max_risk_pct > 0 else 2.0
         }
         
-    except Exception:
-        return {"recommended_pct": 1.0, "base_size": 1.0, "multiplier": 1.0, "max_risk": 0.25}
+    except Exception as e:
+        logging.error(f"❌ ATR 기반 포지션 사이징 계산 오류: {str(e)}")
+        return {"recommended_pct": 1.0, "base_size": 1.0, "total_multiplier": 1.0, "volatility_adjustment": 1.0, "atr_ratio": 0, "max_risk": 2.0, "risk_reward_ratio": 2.0}
 
 def _calculate_risk_levels_fast(current_price: float, atr: float, support_resistance: dict) -> dict:
     """빠른 리스크 레벨 계산"""
@@ -3903,4 +3938,148 @@ def _determine_final_action(breakout_evaluation: dict, risk_management: dict,
         }
     except:
         return {'action': 'HOLD', 'urgency': 'NONE', 'confidence': 0}
+
+def calculate_integrated_position_size(technical_data: dict, kelly_params: dict, atr_params: dict, 
+                                     market_conditions: dict) -> dict:
+    """
+    켈리 공식 + ATR + 기술적 지표 통합 포지션 사이징
+    
+    Args:
+        technical_data: 기술적 지표 데이터
+        kelly_params: 켈리 공식 파라미터
+        atr_params: ATR 관련 파라미터
+        market_conditions: 시장 상황 데이터
+        
+    Returns:
+        dict: 통합 포지션 사이징 결과
+    """
+    try:
+        # 1. 켈리 공식 기반 기본 사이징
+        kelly_fraction = kelly_params.get('kelly_fraction', 0.01)
+        estimated_win_rate = kelly_params.get('estimated_win_rate', 0.5)
+        risk_reward_ratio = kelly_params.get('risk_reward_ratio', 1.0)
+        
+        # 2. ATR 기반 변동성 조정
+        atr = atr_params.get('atr', 0)
+        current_price = atr_params.get('current_price', 1000)
+        atr_ratio = atr / current_price if current_price > 0 and atr > 0 else 0.02
+        
+        # ATR 기반 변동성 조정 계수
+        if atr_ratio > 0.05:  # 고변동성
+            atr_adjustment = 0.6
+        elif atr_ratio > 0.03:  # 중변동성
+            atr_adjustment = 0.8
+        elif atr_ratio > 0.02:  # 저변동성
+            atr_adjustment = 1.0
+        elif atr_ratio > 0.01:  # 매우 낮은 변동성
+            atr_adjustment = 1.2
+        else:  # 극히 낮은 변동성
+            atr_adjustment = 1.4
+        
+        # 3. 기술적 지표 기반 조정
+        rsi = technical_data.get('rsi_14', 50)
+        macd_signal = technical_data.get('macd_signal', 'neutral')
+        ma_alignment = technical_data.get('ma_alignment', 'neutral')
+        
+        # RSI 기반 조정
+        if rsi > 70:  # 과매수
+            rsi_adjustment = 0.8
+        elif rsi > 60:  # 약간 과매수
+            rsi_adjustment = 0.9
+        elif rsi < 30:  # 과매도
+            rsi_adjustment = 1.2
+        elif rsi < 40:  # 약간 과매도
+            rsi_adjustment = 1.1
+        else:  # 중립
+            rsi_adjustment = 1.0
+        
+        # MACD 신호 기반 조정
+        if macd_signal == 'bullish':
+            macd_adjustment = 1.1
+        elif macd_signal == 'bearish':
+            macd_adjustment = 0.9
+        else:
+            macd_adjustment = 1.0
+        
+        # 이동평균 정렬 기반 조정
+        if ma_alignment == 'bullish':
+            ma_adjustment = 1.1
+        elif ma_alignment == 'bearish':
+            ma_adjustment = 0.9
+        else:
+            ma_adjustment = 1.0
+        
+        # 4. 시장 상황 기반 조정
+        market_volatility = market_conditions.get('market_volatility', 'normal')
+        trend_strength = market_conditions.get('trend_strength', 0.5)
+        
+        # 시장 변동성 기반 조정
+        if market_volatility == 'high':
+            market_adjustment = 0.8
+        elif market_volatility == 'low':
+            market_adjustment = 1.2
+        else:
+            market_adjustment = 1.0
+        
+        # 추세 강도 기반 조정
+        trend_adjustment = 0.8 + (trend_strength * 0.4)  # 0.8-1.2 범위
+        
+        # 5. 통합 조정 계수 계산
+        total_adjustment = (atr_adjustment * rsi_adjustment * macd_adjustment * 
+                           ma_adjustment * market_adjustment * trend_adjustment)
+        
+        # 6. 최종 포지션 크기 계산
+        base_position_size = kelly_fraction * total_adjustment
+        
+        # 7. 안전장치 적용
+        # 최소/최대 포지션 크기 제한
+        final_position_size = max(0.005, min(base_position_size, 0.15))  # 0.5-15% 범위
+        
+        # 8. 리스크 관리
+        max_risk_per_trade = min(atr_ratio * 50, 3.0)  # ATR 기반 최대 리스크
+        position_risk = final_position_size * max_risk_per_trade
+        
+        # 9. 포트폴리오 리스크 체크
+        portfolio_risk_limit = 0.2  # 20% 포트폴리오 리스크 제한
+        if position_risk > portfolio_risk_limit:
+            final_position_size = portfolio_risk_limit / max_risk_per_trade
+            final_position_size = max(0.005, min(final_position_size, 0.15))
+        
+        return {
+            'final_position_size': round(final_position_size, 4),
+            'kelly_fraction': round(kelly_fraction, 4),
+            'total_adjustment': round(total_adjustment, 3),
+            'atr_adjustment': round(atr_adjustment, 3),
+            'rsi_adjustment': round(rsi_adjustment, 3),
+            'macd_adjustment': round(macd_adjustment, 3),
+            'ma_adjustment': round(ma_adjustment, 3),
+            'market_adjustment': round(market_adjustment, 3),
+            'trend_adjustment': round(trend_adjustment, 3),
+            'atr_ratio': round(atr_ratio, 4),
+            'estimated_win_rate': round(estimated_win_rate, 3),
+            'risk_reward_ratio': round(risk_reward_ratio, 2),
+            'position_risk': round(position_risk, 2),
+            'max_risk_per_trade': round(max_risk_per_trade, 2),
+            'confidence_score': round(estimated_win_rate * risk_reward_ratio * total_adjustment, 3)
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ 통합 포지션 사이징 계산 오류: {str(e)}")
+        return {
+            'final_position_size': 0.01,
+            'kelly_fraction': 0.01,
+            'total_adjustment': 1.0,
+            'atr_adjustment': 1.0,
+            'rsi_adjustment': 1.0,
+            'macd_adjustment': 1.0,
+            'ma_adjustment': 1.0,
+            'market_adjustment': 1.0,
+            'trend_adjustment': 1.0,
+            'atr_ratio': 0.02,
+            'estimated_win_rate': 0.5,
+            'risk_reward_ratio': 1.0,
+            'position_risk': 2.0,
+            'max_risk_per_trade': 2.0,
+            'confidence_score': 0.5
+        }
 

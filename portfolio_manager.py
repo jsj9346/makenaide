@@ -895,118 +895,20 @@ class PortfolioManager:
             import traceback
             logging.error(traceback.format_exc())
 
-    # UNUSED: 호출되지 않는 함수
-    # def evaluate_exit_conditions(self, market_df, gpt_results=None):
-    #     """
-    #     현재 보유 종목들에 대해 청산 조건을 평가하고 매도 실행
-    #     """
-    #     from trade_executor import should_exit_trade, sell_asset
-    # 
-    #     positions = self.get_current_positions()
-    #     for item in positions:
-    #         symbol = item['currency']
-    #         if symbol == "KRW":
-    #             continue
-    #         ticker = f"KRW-{symbol}"
-    #         if ticker not in market_df.index:
-    #             print(f"⚠️ {ticker}의 시장 데이터 없음 → 청산 평가 생략")
-    #             continue
-    # 
-    #         market_data = market_df.loc[ticker]
-    #         gpt_analysis = gpt_results.get(ticker, "") if gpt_results else None
-    # 
-    #         if should_exit_trade(ticker, market_data, gpt_analysis):
-    #             print(f"🟥 {ticker} 청산 실행")
-    #             sell_asset(ticker)
-    #         else:
-    #             print(f"✅ {ticker} 청산 조건 미충족 → 유지")
-
-    # UNUSED: 호출되지 않는 함수
-    # def upsert_performance_summary(self, period='daily'):
-    #     """
-    #     performance_summary 테이블에 일간/주간 성과 요약을 INSERT 또는 UPDATE.
-    #     """
-    #     # 기간 계산
-    #     today = datetime.date.today()
-    #     if period == 'daily':
-    #         start_date = today
-    #         end_date = today
-    #     elif period == 'weekly':
-    #         start_date = today - datetime.timedelta(days=today.weekday())
-    #         end_date = start_date + datetime.timedelta(days=6)
-    #     else:
-    #         raise ValueError(f"Unsupported period: {period}")
-    # 
-    #     # 현재 계좌 가치
-    #     final_valuation = self.get_total_balance()
-    # 
-    #     # 이전 초기 자산 조회 (있으면 유지, 없으면 final 기준 설정)
-    #     conn = psycopg2.connect(
-    #         host=os.getenv("PG_HOST"),
-    #         port=os.getenv("PG_PORT"),
-    #         dbname=os.getenv("PG_DATABASE"),
-    #         user=os.getenv("PG_USER"),
-    #         password=os.getenv("PG_PASSWORD")
-    #     )
-    #     cur = conn.cursor()
-    #     cur.execute(
-    #         "SELECT initial_cash FROM performance_summary WHERE period_start = %s AND period_end = %s",
-    #         (start_date, end_date)
-    #     )
-    #     row = cur.fetchone()
-    #     initial_cash = row[0] if row and row[0] is not None else final_valuation
-    # 
-    #     # 순이익 계산
-    #     net_profit = final_valuation - initial_cash
-    # 
-    #     # 거래 횟수 계산
-    #     cur.execute(
-    #         "SELECT COUNT(*) FROM portfolio_history WHERE timestamp::date BETWEEN %s AND %s",
-    #         (start_date, end_date)
-    #     )
-    #     num_trades = cur.fetchone()[0] or 0
-    # 
-    #     # 간단한 win_rate, profit_factor, max_drawdown 자리 표시자
-    #     win_rate = None
-    #     profit_factor = None
-    #     max_drawdown = None
-    # 
-    #     # UPSERT 성과 요약
-    #     cur.execute("""
-    #         INSERT INTO performance_summary (
-    #             period_start, period_end, initial_cash,
-    #             final_valuation, net_profit, win_rate,
-    #             profit_factor, max_drawdown, num_trades
-    #         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-    #         ON CONFLICT (period_start, period_end) DO UPDATE SET
-    #             initial_cash = performance_summary.initial_cash,
-    #             final_valuation = EXCLUDED.final_valuation,
-    #             net_profit = EXCLUDED.net_profit,
-    #             num_trades = EXCLUDED.num_trades
-    #     """, (
-    #         start_date, end_date, initial_cash,
-    #         final_valuation, net_profit, win_rate,
-    #         profit_factor, max_drawdown, num_trades
-    #     ))
-    #     conn.commit()
-    #     cur.close()
-    #     conn.close()
-
-    # 매도 실행은 trade_executor.py의 sell_asset 함수를 사용
-
     def check_advanced_sell_conditions(self, portfolio_data=None):
         """
-        고도화된 매도 조건을 점검합니다.
+        🔧 [5단계 개선] 켈리 공식 + ATR 통합 고도화된 매도 조건 점검
         
-        ✅ 손절매 조건 (GPT 미사용)
-        - 저항선 아래로 하락 시 손절
-        - 매입가 대비 n×ATR 하락 시 손절
+        ✅ 손절매 조건 (켈리 공식 기반)
+        - 켈리 공식 기반 동적 손절가 계산
+        - ATR 기반 변동성 조정 손절
+        - 포트폴리오 리스크 기반 손절
         
-        ✅ 이익실현 조건
-        - 최고가 대비 n×ATR 하락 시 (trailing stop)
-        - 기술적 약세 신호 2개 이상 (MA20 이탈 + MACD 데드크로스 + RSI 하락)
-        - 손익률 +25% 이상 + 약세 시그널
-        - 보유기간 기반 조건 분기
+        ✅ 이익실현 조건 (켈리 공식 기반)
+        - 켈리 공식 기반 동적 익절가 계산
+        - ATR 기반 트레일링 스탑 강화
+        - 시장 상황 기반 동적 조정
+        - 포트폴리오 밸런싱 기반 매도
         
         Args:
             portfolio_data: 포트폴리오 데이터 (None이면 자동 조회)
@@ -1064,14 +966,13 @@ class PortfolioManager:
             # 시장 데이터 조회
             from filter_tickers import fetch_static_indicators_data, fetch_market_data_4h
             market_df = fetch_static_indicators_data()
-            market_df_4h = fetch_market_data_4h()
             
             if market_df is None or market_df.empty:
                 logging.warning("⚠️ 매도 조건 점검 실패: 시장 데이터 없음")
                 return
-            if market_df_4h is None or market_df_4h.empty:
-                logging.warning("⚠️ 4시간봉 시장 데이터 없음, 1일봉 데이터만으로 매도 조건 점검")
-                market_df_4h = None  # 4시간봉 데이터 없어도 계속 진행
+            
+            # 4시간봉 데이터 조회 (4시간봉 데이터는 이미 정리되었으므로 조회하지 않음)
+            market_df_4h = None
                 
             # 각 보유 종목에 대해 고도화된 매도 조건 점검
             from datetime import datetime, timedelta
@@ -1145,98 +1046,86 @@ class PortfolioManager:
                     # 저항선 계산 (최근 30일 고점들의 평균)
                     resistance_level = self._calculate_resistance_level(ticker_krw, ohlcv_data)
                     
+                    # 🔧 [5단계 개선] 켈리 공식 기반 매도 조건 계산
+                    kelly_sell_conditions = self._calculate_kelly_based_sell_conditions(
+                        ticker_krw, current_price, avg_price, atr, return_rate, 
+                        max_price_since_buy, holding_days, market_df
+                    )
+                    
                     # 매도 조건 체크 시작
                     sell_reason = None
                     sell_type = None
                     
-                    # ========== 1. 손절매 조건 (GPT 미사용) ==========
+                    # ========== 1. 켈리 공식 기반 손절매 조건 ==========
                     
-                    # 조건 A: 저항선 아래로 하락 시 손절
-                    if resistance_level and current_price < resistance_level * 0.95:  # 저항선 5% 아래
-                        sell_reason = f"저항선 하락 손절 (현재가: {current_price:,.0f}, 저항선: {resistance_level:,.0f})"
-                        sell_type = "resistance_stop_loss"
+                    # 조건 A: 켈리 공식 기반 동적 손절가
+                    if kelly_sell_conditions['stop_loss_triggered']:
+                        sell_reason = kelly_sell_conditions['stop_loss_reason']
+                        sell_type = "kelly_stop_loss"
                     
-                    # 조건 B: 매입가 대비 n×ATR 하락 시 손절
+                    # 조건 B: ATR 기반 변동성 조정 손절
                     elif atr > 0:
-                        atr_stop_loss_pct = min(max((atr / avg_price) * 100 * 2.5, 3.0), 8.0)  # 2.5x ATR, 3-8% 범위
+                        atr_ratio = atr / current_price
+                        # 변동성에 따른 동적 손절 비율 조정
+                        if atr_ratio > 0.05:  # 고변동성
+                            atr_multiplier = 1.5  # 더 보수적
+                        elif atr_ratio > 0.03:  # 중변동성
+                            atr_multiplier = 2.0  # 기본
+                        else:  # 저변동성
+                            atr_multiplier = 2.5  # 더 관대
+                        
+                        atr_stop_loss_pct = min(max((atr / avg_price) * 100 * atr_multiplier, 2.0), 10.0)
                         if return_rate <= -atr_stop_loss_pct:
-                            sell_reason = f"ATR 기반 손절 (수익률: {return_rate:.1f}%, 기준: -{atr_stop_loss_pct:.1f}%)"
-                            sell_type = "atr_stop_loss"
+                            sell_reason = f"ATR 기반 동적 손절 (수익률: {return_rate:.1f}%, 기준: -{atr_stop_loss_pct:.1f}%, 변동성: {atr_ratio:.2%})"
+                            sell_type = "atr_dynamic_stop_loss"
                     
-                    # ========== 2. 이익실현 조건 ==========
+                    # ========== 2. 켈리 공식 기반 이익실현 조건 ==========
                     
-                    # 조건 A: 최고가 대비 n×ATR 하락 시 (trailing stop)
-                    if not sell_reason and atr > 0 and max_price_since_buy > avg_price * 1.05:  # 5% 이상 상승했을 때만
-                        trailing_stop_pct = min(max((atr / current_price) * 100 * 2.0, 2.0), 6.0)  # 2x ATR, 2-6% 범위
+                    # 조건 A: 켈리 공식 기반 동적 익절가
+                    if not sell_reason and kelly_sell_conditions['take_profit_triggered']:
+                        sell_reason = kelly_sell_conditions['take_profit_reason']
+                        sell_type = "kelly_take_profit"
+                    
+                    # 조건 B: ATR 기반 강화된 트레일링 스탑
+                    if not sell_reason and atr > 0 and max_price_since_buy > avg_price * 1.03:  # 3% 이상 상승했을 때만
+                        # 변동성에 따른 동적 트레일링 스탑
+                        if atr_ratio > 0.05:  # 고변동성
+                            trailing_multiplier = 1.5  # 더 관대
+                        elif atr_ratio > 0.03:  # 중변동성
+                            trailing_multiplier = 2.0  # 기본
+                        else:  # 저변동성
+                            trailing_multiplier = 2.5  # 더 보수적
+                        
+                        trailing_stop_pct = min(max((atr / current_price) * 100 * trailing_multiplier, 1.5), 8.0)
                         drawdown_from_peak = (max_price_since_buy - current_price) / max_price_since_buy * 100
                         
                         if drawdown_from_peak >= trailing_stop_pct:
-                            sell_reason = f"트레일링 스탑 (고점 대비 -{drawdown_from_peak:.1f}%, 기준: -{trailing_stop_pct:.1f}%)"
-                            sell_type = "trailing_stop"
+                            sell_reason = f"ATR 기반 강화 트레일링 스탑 (고점 대비 -{drawdown_from_peak:.1f}%, 기준: -{trailing_stop_pct:.1f}%, 변동성: {atr_ratio:.2%})"
+                            sell_type = "atr_enhanced_trailing_stop"
                     
-                    # 조건 B: 기술적 약세 신호 2개 이상
+                    # 조건 C: 시장 상황 기반 동적 익절
                     if not sell_reason:
-                        bearish_signals = 0
-                        signal_details = []
-                        
-                        # MA20 이탈 체크
-                        if current_price < ma20 * 0.98:  # MA20 대비 2% 이하
-                            bearish_signals += 1
-                            signal_details.append("MA20 이탈")
-                        
-                        # MACD 데드크로스 체크
-                        if macd < macd_signal and macd < 0:
-                            bearish_signals += 1
-                            signal_details.append("MACD 데드크로스")
-                        
-                        # RSI 하락 체크
-                        if rsi < 40:
-                            bearish_signals += 1
-                            signal_details.append("RSI 하락")
-                        
-                        # 볼린저 밴드 하단 이탈 체크
-                        if current_price < bb_lower:
-                            bearish_signals += 1
-                            signal_details.append("볼린저 하단 이탈")
-                        
-                        if bearish_signals >= 2:
-                            sell_reason = f"기술적 약세 신호 {bearish_signals}개 ({', '.join(signal_details)})"
-                            sell_type = "technical_bearish"
+                        market_based_exit = self._check_market_based_exit_conditions(
+                            ticker_krw, current_price, avg_price, return_rate, 
+                            rsi, ma20, macd, macd_signal, bb_upper, bb_lower, holding_days
+                        )
+                        if market_based_exit['should_exit']:
+                            sell_reason = market_based_exit['reason']
+                            sell_type = market_based_exit['type']
                     
-                    # 조건 C: 손익률 +25% 이상 + 약세 시그널
-                    if not sell_reason and return_rate >= 25.0:
-                        weak_bearish_signals = 0
-                        
-                        # 약세 시그널 체크 (더 완화된 조건)
-                        if current_price < ma20:
-                            weak_bearish_signals += 1
-                        if rsi > 70:  # 과매수 상태
-                            weak_bearish_signals += 1
-                        if macd < macd_signal:
-                            weak_bearish_signals += 1
-                        
-                        if weak_bearish_signals >= 1:
-                            sell_reason = f"고수익 + 약세신호 익절 (수익률: {return_rate:.1f}%, 약세신호: {weak_bearish_signals}개)"
-                            sell_type = "high_profit_exit"
-                    
-                    # 조건 D: 보유기간 기반 조건 분기
-                    if not sell_reason and holding_days is not None:
-                        if holding_days <= 3:  # 3일 이내: 보수적 익절
-                            if return_rate >= 15.0:
-                                sell_reason = f"단기 보수적 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
-                                sell_type = "short_term_exit"
-                        elif holding_days <= 7:  # 7일 이내: 일반 익절
-                            if return_rate >= 20.0:
-                                sell_reason = f"중기 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
-                                sell_type = "medium_term_exit"
-                        else:  # 7일 초과: 적극적 익절
-                            if return_rate >= 12.0:
-                                sell_reason = f"장기 적극적 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
-                                sell_type = "long_term_exit"
+                    # 조건 D: 포트폴리오 밸런싱 기반 매도
+                    if not sell_reason:
+                        portfolio_based_exit = self._check_portfolio_based_exit_conditions(
+                            ticker_krw, current_price, avg_price, return_rate, 
+                            portfolio_data, market_df
+                        )
+                        if portfolio_based_exit['should_exit']:
+                            sell_reason = portfolio_based_exit['reason']
+                            sell_type = portfolio_based_exit['type']
                     
                     # ========== 매도 실행 ==========
                     if sell_reason:
-                        logging.info(f"🔴 {ticker_krw} 매도 조건 충족: {sell_reason}")
+                        logging.info(f"🔴 {ticker_krw} 켈리 기반 매도 조건 충족: {sell_reason}")
                         
                         # 매도 실행 (trade_executor.py의 sell_asset 함수 사용)
                         from trade_executor import sell_asset
@@ -1246,21 +1135,21 @@ class PortfolioManager:
                             # 매도 로그 기록
                             self._log_sell_decision(ticker_krw, current_price, avg_price, return_rate, 
                                                    sell_type, sell_reason, holding_days)
-                            logging.info(f"✅ {ticker_krw} 매도 완료: {sell_reason}")
+                            logging.info(f"✅ {ticker_krw} 켈리 기반 매도 완료: {sell_reason}")
                         else:
                             error_msg = sell_result.get('error') if sell_result else "Unknown error"
                             logging.error(f"❌ {ticker_krw} 매도 실패: {sell_reason} - {error_msg}")
                     else:
                         # 매도 조건 미충족 시 상태 로깅
-                        logging.debug(f"📊 {ticker_krw} 매도 조건 미충족 - 수익률: {return_rate:.1f}%, "
+                        logging.debug(f"📊 {ticker_krw} 켈리 기반 매도 조건 미충족 - 수익률: {return_rate:.1f}%, "
                                    f"보유기간: {holding_days}일, RSI: {rsi:.1f}, 현재가: {current_price:,.0f}")
                         
                 except Exception as e:
-                    logging.error(f"❌ {ticker} 매도 조건 점검 중 오류 발생: {e}")
+                    logging.error(f"❌ {ticker} 켈리 기반 매도 조건 점검 중 오류 발생: {e}")
                     continue
                     
         except Exception as e:
-            logging.error(f"❌ 매도 조건 점검 중 오류 발생: {e}")
+            logging.error(f"❌ 켈리 기반 매도 조건 점검 중 오류 발생: {e}")
             raise
     
     def _calculate_holding_days(self, ticker):
@@ -1601,80 +1490,325 @@ class PortfolioManager:
             
         except Exception as e:
             logging.error(f"❌ 수동 개입 기록 실패: {e}")
+
+    def _calculate_kelly_based_sell_conditions(self, ticker, current_price, avg_price, atr, return_rate, 
+                                             max_price_since_buy, holding_days, market_df):
+        """
+        켈리 공식 기반 매도 조건 계산
+        
+        Args:
+            ticker: 티커 심볼
+            current_price: 현재가
+            avg_price: 평균 매수가
+            atr: ATR 값
+            return_rate: 수익률
+            max_price_since_buy: 매수 후 최고가
+            holding_days: 보유기간
+            market_df: 시장 데이터
+            
+        Returns:
+            dict: 켈리 기반 매도 조건 결과
+        """
+        try:
+            # 1. 켈리 공식 기반 손절가 계산
+            kelly_stop_loss = self._calculate_kelly_stop_loss(ticker, current_price, avg_price, atr, market_df)
+            
+            # 2. 켈리 공식 기반 익절가 계산
+            kelly_take_profit = self._calculate_kelly_take_profit(ticker, current_price, avg_price, atr, return_rate, market_df)
+            
+            # 3. 손절 조건 체크
+            stop_loss_triggered = False
+            stop_loss_reason = None
+            
+            if kelly_stop_loss['stop_loss_price'] > 0 and current_price <= kelly_stop_loss['stop_loss_price']:
+                stop_loss_triggered = True
+                stop_loss_reason = f"켈리 기반 손절 (현재가: {current_price:,.0f}, 손절가: {kelly_stop_loss['stop_loss_price']:,.0f}, 켈리비율: {kelly_stop_loss['kelly_ratio']:.1%})"
+            
+            # 4. 익절 조건 체크
+            take_profit_triggered = False
+            take_profit_reason = None
+            
+            if kelly_take_profit['take_profit_price'] > 0 and current_price >= kelly_take_profit['take_profit_price']:
+                take_profit_triggered = True
+                take_profit_reason = f"켈리 기반 익절 (현재가: {current_price:,.0f}, 익절가: {kelly_take_profit['take_profit_price']:,.0f}, 켈리비율: {kelly_take_profit['kelly_ratio']:.1%})"
+            
+            return {
+                'stop_loss_triggered': stop_loss_triggered,
+                'stop_loss_reason': stop_loss_reason,
+                'stop_loss_price': kelly_stop_loss['stop_loss_price'],
+                'kelly_stop_ratio': kelly_stop_loss['kelly_ratio'],
+                'take_profit_triggered': take_profit_triggered,
+                'take_profit_reason': take_profit_reason,
+                'take_profit_price': kelly_take_profit['take_profit_price'],
+                'kelly_take_ratio': kelly_take_profit['kelly_ratio']
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 켈리 기반 매도 조건 계산 오류: {str(e)}")
+            return {
+                'stop_loss_triggered': False,
+                'stop_loss_reason': None,
+                'stop_loss_price': 0,
+                'kelly_stop_ratio': 0,
+                'take_profit_triggered': False,
+                'take_profit_reason': None,
+                'take_profit_price': 0,
+                'kelly_take_ratio': 0
+            }
     
-    # UNUSED: 호출되지 않는 함수
-    # def get_manual_intervention_summary(self, days=7):
-    #     """최근 수동 개입 요약 조회"""
-    #     try:
-    #         query = """
-    #         SELECT ticker, detection_type, COUNT(*) as count,
-    #                SUM(ABS(quantity_diff)) as total_quantity_diff,
-    #                MAX(detected_at) as last_detected
-    #         FROM manual_override_log
-    #         WHERE detected_at >= NOW() - INTERVAL '%s days'
-    #         GROUP BY ticker, detection_type
-    #         ORDER BY last_detected DESC
-    #     """
-    #             
-    #         results = self.db_mgr.execute_query(query, (days,))
-    #             
-    #         summary = {
-    #             'period_days': days,
-    #             'total_interventions': len(results),
-    #             'interventions_by_type': {},
-    #             'details': []
-    #         }
-    #             
-    #         for row in results:
-    #             ticker, detection_type, count, total_diff, last_detected = row
-    #                 
-    #             if detection_type not in summary['interventions_by_type']:
-    #                 summary['interventions_by_type'][detection_type] = 0
-    #             summary['interventions_by_type'][detection_type] += count
-    #                 
-    #             summary['details'].append({
-    #                 'ticker': ticker,
-    #                 'detection_type': detection_type,
-    #                 'count': count,
-    #                 'total_quantity_diff': float(total_diff),
-    #                 'last_detected': last_detected
-    #             })
-    #             
-    #         return summary
-    #             
-    #     except Exception as e:
-    #         logging.error(f"❌ 수동 개입 요약 조회 실패: {e}")
-    #         return {'error': str(e)}
-
-# UNUSED: 호출되지 않는 함수
-# def create_performance_summary_table():
-#     conn = psycopg2.connect(
-#         host=os.getenv("PG_HOST"),
-#         port=os.getenv("PG_PORT"),
-#         dbname=os.getenv("PG_DATABASE"),
-#         user=os.getenv("PG_USER"),
-#         password=os.getenv("PG_PASSWORD")
-#     )
-#     cursor = conn.cursor()
-#     cursor.execute("""
-#         CREATE TABLE IF NOT EXISTS performance_summary (
-#             id SERIAL PRIMARY KEY,
-#             period_start DATE,
-#             period_end DATE,
-#             initial_cash REAL,
-#             final_valuation REAL,
-#             net_profit REAL,
-#             win_rate REAL,
-#             profit_factor REAL,
-#             max_drawdown REAL,
-#             num_trades INTEGER,
-#             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-#             UNIQUE (period_start, period_end)
-#         )
-#     """)
-#     # Placeholder for future implementation
-#     # INSERT INTO performance_summary (...) ON CONFLICT (period_start, period_end) DO UPDATE SET ...
-#     conn.commit()
-#     conn.close()
-
-# create_performance_summary_table()
+    def _calculate_kelly_stop_loss(self, ticker, current_price, avg_price, atr, market_df):
+        """켈리 공식 기반 손절가 계산"""
+        try:
+            # 1. 시장 데이터에서 승률 추정
+            market_data = market_df.loc[ticker] if ticker in market_df.index else None
+            if market_data is None:
+                return {'stop_loss_price': 0, 'kelly_ratio': 0}
+            
+            # 2. 기술적 지표 기반 승률 추정
+            rsi = safe_float_convert(market_data.get('rsi_14', 50), context=f"{ticker} RSI")
+            macd = safe_float_convert(market_data.get('macd', 0), context=f"{ticker} MACD")
+            macd_signal = safe_float_convert(market_data.get('macd_signal', 0), context=f"{ticker} MACD Signal")
+            
+            # RSI 기반 승률 추정
+            if rsi > 70:
+                base_win_rate = 0.3  # 과매수 상태
+            elif rsi > 60:
+                base_win_rate = 0.4  # 약간 과매수
+            elif rsi < 30:
+                base_win_rate = 0.6  # 과매도 상태 (반등 기대)
+            elif rsi < 40:
+                base_win_rate = 0.5  # 약간 과매도
+            else:
+                base_win_rate = 0.45  # 중립
+            
+            # MACD 기반 승률 조정
+            if macd > macd_signal:
+                macd_adjustment = 0.1  # 상승 신호
+            else:
+                macd_adjustment = -0.1  # 하락 신호
+            
+            estimated_win_rate = max(0.2, min(base_win_rate + macd_adjustment, 0.8))
+            
+            # 3. 켈리 공식 기반 손절가 계산
+            if atr > 0:
+                # ATR 기반 리스크/리워드 비율 설정
+                risk_reward_ratio = 1.5  # 기본 1.5:1
+                
+                # 켈리 공식: f = (bp - q) / b
+                # b = 리스크/리워드 비율, p = 승률, q = 패배 확률
+                kelly_ratio = (risk_reward_ratio * estimated_win_rate - (1 - estimated_win_rate)) / risk_reward_ratio
+                kelly_ratio = max(0, min(kelly_ratio, 0.3))  # 0-30% 범위로 제한
+                
+                # 켈리 비율 기반 손절가 계산
+                kelly_stop_distance = atr * (2.0 + kelly_ratio * 5.0)  # 2-4.5x ATR
+                stop_loss_price = avg_price - kelly_stop_distance
+                
+                return {
+                    'stop_loss_price': stop_loss_price,
+                    'kelly_ratio': kelly_ratio,
+                    'estimated_win_rate': estimated_win_rate,
+                    'risk_reward_ratio': risk_reward_ratio
+                }
+            else:
+                return {'stop_loss_price': 0, 'kelly_ratio': 0}
+                
+        except Exception as e:
+            logging.error(f"❌ {ticker} 켈리 손절가 계산 오류: {str(e)}")
+            return {'stop_loss_price': 0, 'kelly_ratio': 0}
+    
+    def _calculate_kelly_take_profit(self, ticker, current_price, avg_price, atr, return_rate, market_df):
+        """켈리 공식 기반 익절가 계산"""
+        try:
+            # 1. 시장 데이터에서 승률 추정
+            market_data = market_df.loc[ticker] if ticker in market_df.index else None
+            if market_data is None:
+                return {'take_profit_price': 0, 'kelly_ratio': 0}
+            
+            # 2. 현재 수익률 기반 승률 조정
+            if return_rate > 20:
+                profit_adjustment = 0.2  # 고수익 상태에서 승률 증가
+            elif return_rate > 10:
+                profit_adjustment = 0.1  # 중간 수익 상태
+            elif return_rate < -10:
+                profit_adjustment = -0.1  # 손실 상태에서 승률 감소
+            else:
+                profit_adjustment = 0
+            
+            # 3. 기술적 지표 기반 승률 추정
+            rsi = safe_float_convert(market_data.get('rsi_14', 50), context=f"{ticker} RSI")
+            macd = safe_float_convert(market_data.get('macd', 0), context=f"{ticker} MACD")
+            macd_signal = safe_float_convert(market_data.get('macd_signal', 0), context=f"{ticker} MACD Signal")
+            
+            # RSI 기반 승률 추정
+            if rsi > 70:
+                base_win_rate = 0.6  # 과매수 상태에서 익절 기대
+            elif rsi > 60:
+                base_win_rate = 0.5  # 약간 과매수
+            elif rsi < 30:
+                base_win_rate = 0.3  # 과매도 상태에서 익절 어려움
+            elif rsi < 40:
+                base_win_rate = 0.4  # 약간 과매도
+            else:
+                base_win_rate = 0.45  # 중립
+            
+            # MACD 기반 승률 조정
+            if macd > macd_signal:
+                macd_adjustment = 0.1  # 상승 신호
+            else:
+                macd_adjustment = -0.1  # 하락 신호
+            
+            estimated_win_rate = max(0.2, min(base_win_rate + macd_adjustment + profit_adjustment, 0.8))
+            
+            # 4. 켈리 공식 기반 익절가 계산
+            if atr > 0:
+                # ATR 기반 리스크/리워드 비율 설정 (익절은 더 보수적)
+                risk_reward_ratio = 2.0  # 기본 2:1
+                
+                # 켈리 공식: f = (bp - q) / b
+                kelly_ratio = (risk_reward_ratio * estimated_win_rate - (1 - estimated_win_rate)) / risk_reward_ratio
+                kelly_ratio = max(0, min(kelly_ratio, 0.25))  # 0-25% 범위로 제한
+                
+                # 켈리 비율 기반 익절가 계산
+                kelly_take_distance = atr * (3.0 + kelly_ratio * 4.0)  # 3-4x ATR
+                take_profit_price = avg_price + kelly_take_distance
+                
+                return {
+                    'take_profit_price': take_profit_price,
+                    'kelly_ratio': kelly_ratio,
+                    'estimated_win_rate': estimated_win_rate,
+                    'risk_reward_ratio': risk_reward_ratio
+                }
+            else:
+                return {'take_profit_price': 0, 'kelly_ratio': 0}
+                
+        except Exception as e:
+            logging.error(f"❌ {ticker} 켈리 익절가 계산 오류: {str(e)}")
+            return {'take_profit_price': 0, 'kelly_ratio': 0}
+    
+    def _check_market_based_exit_conditions(self, ticker, current_price, avg_price, return_rate, 
+                                          rsi, ma20, macd, macd_signal, bb_upper, bb_lower, holding_days):
+        """시장 상황 기반 동적 익절 조건 체크"""
+        try:
+            should_exit = False
+            reason = None
+            exit_type = None
+            
+            # 1. 기술적 약세 신호 2개 이상
+            bearish_signals = 0
+            signal_details = []
+            
+            # MA20 이탈 체크
+            if current_price < ma20 * 0.98:  # MA20 대비 2% 이하
+                bearish_signals += 1
+                signal_details.append("MA20 이탈")
+            
+            # MACD 데드크로스 체크
+            if macd < macd_signal and macd < 0:
+                bearish_signals += 1
+                signal_details.append("MACD 데드크로스")
+            
+            # RSI 하락 체크
+            if rsi < 40:
+                bearish_signals += 1
+                signal_details.append("RSI 하락")
+            
+            # 볼린저 밴드 하단 이탈 체크
+            if current_price < bb_lower:
+                bearish_signals += 1
+                signal_details.append("볼린저 하단 이탈")
+            
+            if bearish_signals >= 2:
+                should_exit = True
+                reason = f"기술적 약세 신호 {bearish_signals}개 ({', '.join(signal_details)})"
+                exit_type = "technical_bearish"
+            
+            # 2. 고수익 + 약세 시그널
+            if not should_exit and return_rate >= 25.0:
+                weak_bearish_signals = 0
+                
+                # 약세 시그널 체크 (더 완화된 조건)
+                if current_price < ma20:
+                    weak_bearish_signals += 1
+                if rsi > 70:  # 과매수 상태
+                    weak_bearish_signals += 1
+                if macd < macd_signal:
+                    weak_bearish_signals += 1
+                
+                if weak_bearish_signals >= 1:
+                    should_exit = True
+                    reason = f"고수익 + 약세신호 익절 (수익률: {return_rate:.1f}%, 약세신호: {weak_bearish_signals}개)"
+                    exit_type = "high_profit_exit"
+            
+            # 3. 보유기간 기반 조건 분기
+            if not should_exit and holding_days is not None:
+                if holding_days <= 3:  # 3일 이내: 보수적 익절
+                    if return_rate >= 15.0:
+                        should_exit = True
+                        reason = f"단기 보수적 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
+                        exit_type = "short_term_exit"
+                elif holding_days <= 7:  # 7일 이내: 일반 익절
+                    if return_rate >= 20.0:
+                        should_exit = True
+                        reason = f"중기 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
+                        exit_type = "medium_term_exit"
+                else:  # 7일 초과: 적극적 익절
+                    if return_rate >= 12.0:
+                        should_exit = True
+                        reason = f"장기 적극적 익절 (보유 {holding_days}일, 수익률: {return_rate:.1f}%)"
+                        exit_type = "long_term_exit"
+            
+            return {
+                'should_exit': should_exit,
+                'reason': reason,
+                'type': exit_type
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 시장 기반 익절 조건 체크 오류: {str(e)}")
+            return {'should_exit': False, 'reason': None, 'type': None}
+    
+    def _check_portfolio_based_exit_conditions(self, ticker, current_price, avg_price, return_rate, 
+                                             portfolio_data, market_df):
+        """포트폴리오 밸런싱 기반 매도 조건 체크"""
+        try:
+            should_exit = False
+            reason = None
+            exit_type = None
+            
+            # 1. 포트폴리오 집중도 체크
+            total_positions = len(portfolio_data)
+            if total_positions > 10:  # 10개 이상 보유 시
+                # 수익률이 낮은 종목부터 정리
+                if return_rate < 5.0:
+                    should_exit = True
+                    reason = f"포트폴리오 정리 (보유 {total_positions}개, 수익률: {return_rate:.1f}%)"
+                    exit_type = "portfolio_cleanup"
+            
+            # 2. 동일 섹터 과다 집중 체크 (간단한 구현)
+            # 실제로는 섹터 분류가 필요하지만, 여기서는 보유 종목 수로 대체
+            if total_positions > 15:  # 15개 이상 보유 시
+                if return_rate < 10.0:
+                    should_exit = True
+                    reason = f"과다 집중 해소 (보유 {total_positions}개, 수익률: {return_rate:.1f}%)"
+                    exit_type = "concentration_reduction"
+            
+            # 3. 시장 대비 상대 강도 체크
+            if ticker in market_df.index:
+                market_data = market_df.loc[ticker]
+                relative_strength = safe_float_convert(market_data.get('relative_strength', 0), context=f"{ticker} relative_strength")
+                
+                if relative_strength < -0.1:  # 시장 대비 10% 이상 약세
+                    if return_rate > 0:  # 수익 상태에서만
+                        should_exit = True
+                        reason = f"상대 강도 약세 (상대강도: {relative_strength:.2f}, 수익률: {return_rate:.1f}%)"
+                        exit_type = "relative_strength_exit"
+            
+            return {
+                'should_exit': should_exit,
+                'reason': reason,
+                'type': exit_type
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 포트폴리오 기반 익절 조건 체크 오류: {str(e)}")
+            return {'should_exit': False, 'reason': None, 'type': None}

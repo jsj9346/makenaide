@@ -23,31 +23,7 @@ import pandas as pd
 from data_fetcher import get_ohlcv_d
 import json
 
-# DB 연결 관리를 위한 컨텍스트 매니저
-# ❌ 중복 함수 제거 - db_manager.py의 get_db_connection_context() 사용
-# @contextmanager
-# def get_db_connection_context():
-#     """데이터베이스 연결을 위한 컨텍스트 매니저
-#     with 블록과 함께 사용하여 자원 누수 방지
-#     """
-#     conn = None
-#     try:
-#         conn = psycopg2.connect(
-#             host=os.getenv("PG_HOST"),
-#             port=os.getenv("PG_PORT"),
-#             dbname=os.getenv("PG_DATABASE"),
-#             user=os.getenv("PG_USER"),
-#             password=os.getenv("PG_PASSWORD")
-#         )
-#         yield conn
-#     except Exception as e:
-#         logger.error(f"❌ DB 연결 중 오류 발생: {e}")
-#         raise
-#     finally:
-#         if conn is not None:
-#             conn.close()
-#             logger.debug("DB 연결 종료")
-#
+
 # ✅ db_manager.py의 함수 사용
 from db_manager import get_db_connection_context
 
@@ -78,31 +54,6 @@ def get_db_connection_safe():
                 logger.debug("안전한 DB 연결 종료")
             except Exception as e:
                 logger.warning(f"⚠️ DB 연결 종료 중 오류: {e}")
-
-# UNUSED: 배치 쿼리 실행 함수 - 현재 파이프라인에서 사용되지 않음
-# def execute_batch_query(query, data_list):
-#     """배치 쿼리 실행 함수
-#     
-#     Args:
-#         query (str): SQL 쿼리문
-#         data_list (list): 실행할 데이터 리스트
-#         
-#     Returns:
-#         bool: 성공 여부
-#     """
-#     if not data_list:
-#         return True
-#         
-#     try:
-#         with get_db_connection_context() as conn:
-#             cursor = conn.cursor()
-#             for data in data_list:
-#                 cursor.execute(query, data)
-#             conn.commit()
-#             return True
-#     except Exception as e:
-#         logger.error(f"❌ 배치 쿼리 실행 중 오류 발생: {e}")
-#         return False
 
 # 중요 상수 정의
 ONE_HMIL_KRW = 100_000_000  # 1억원 (거래대금 필터링 기준)
@@ -1027,29 +978,6 @@ class MakenaideBot:
         except Exception as e:
             logger.error(f"❌ {ticker} 기술적 지표 계산 중 오류 발생: {str(e)}")
             return None
-            
-    # UNUSED: OHLCV 데이터 처리 함수 - 현재 파이프라인에서 사용되지 않음
-    # def process_ohlcv_data(self, ticker, data_source='db'):
-    #     """데이터 소스별 OHLCV 처리 로직"""
-    #     if data_source == 'api':
-    #         logger.info(f"📊 {ticker} 데이터 소스: API 직접 호출")
-    #         from data_fetcher import get_ohlcv_d
-    #         
-    #         # API에서 직접 가져온 경우 통합 처리 (날짜 복구 포함)
-    #         ohlcv_data = get_ohlcv_d(ticker)
-    #         if ohlcv_data is not None and not ohlcv_data.empty and hasattr(ohlcv_data.index, 'year') and len(ohlcv_data.index) > 0 and ohlcv_data.index[0].year == 1970:
-    #             logger.warning(f"🚨 {ticker} pyupbit API 1970-01-01 응답으로 인한 복구")
-    #             # 통합 파이프라인에서 날짜 복구도 처리하므로 별도 호출 불필요
-    #             enhanced_ohlcv_processor(ticker, ohlcv_data, data_source='api')
-    #             
-    #     elif data_source == 'db':
-    #         logger.info(f"📊 {ticker} 데이터 소스: DB 조회")
-    #         # DB에서 가져온 경우는 이미 안전한 DATE 형태
-    #         # 복구 로직 실행하지 않음
-    #         from data_fetcher import get_ohlcv_from_db
-    #         ohlcv_data = get_ohlcv_from_db(ticker)
-    #         
-    #     return ohlcv_data
 
     def save_chart_image(self, ticker: str, df: pd.DataFrame) -> str:
         """차트 이미지를 생성하고 저장합니다"""
@@ -1383,92 +1311,7 @@ class MakenaideBot:
             import traceback
             logger.error(f"상세 오류: {traceback.format_exc()}")
             return pd.DataFrame()
-
-    # 매도 로직은 trade_executor.py의 sell_asset 함수를 사용
-    # 포트폴리오 매도 조건은 PortfolioManager.check_advanced_sell_conditions()에서 처리
-
-    # UNUSED: 동적 출구 레벨 계산 함수 - 현재 파이프라인에서 사용되지 않음
-    # def calculate_dynamic_exit_levels(self, ticker, avg_price, market_df):
-    #     """ATR 값을 활용한 동적 손절/익절 계산"""
-    #     try:
-    #         # 시장 데이터에서 해당 티커의 지표 조회
-    #         if market_df is None or ticker not in market_df.index:
-    #             logger.warning(f"⚠️ {ticker} 시장 데이터 없음, 동적 조건 계산 불가")
-    #             return None
-    #         
-    #         ticker_data = market_df.loc[ticker]
-    #         atr_value = safe_float_convert(ticker_data.get('atr'), context=f"{ticker} ATR")
-    #         rsi = safe_float_convert(ticker_data.get('rsi', 50), context=f"{ticker} RSI")
-    #         volume_ratio = safe_float_convert(ticker_data.get('volume_ratio', 1.0), context=f"{ticker} Volume Ratio")
-    #         
-    #         if not atr_value or atr_value <= 0:
-    #             logger.warning(f"⚠️ {ticker} ATR 값이 유효하지 않음")
-    #             return None
-    #         
-    #         # ATR 기반 변동성 계산 (가격 대비 퍼센트)
-    #         atr_pct = (atr_value / avg_price) * 100
-    #         
-    #         # 변동성 스코어 계산 (1.0 = 보통, 높을수록 변동성 큼)
-    #         volatility_score = min(max(atr_pct / 3.0, 0.5), 3.0)  # 0.5 ~ 3.0 범위
-    #         
-    #         # RSI 기반 시장 상황 분석
-    #         if rsi > 70:  # 과매수 상태
-    #             rsi_adjustment = 0.8  # 더 보수적
-    #         elif rsi < 30:  # 과매도 상태
-    #             rsi_adjustment = 1.2  # 더 공격적
-    #         else:
-    #             rsi_adjustment = 1.0  # 중립
-    #         
-    #         # 거래량 기반 조정
-    #         volume_adjustment = min(1.0 + (volume_ratio - 1.0) * 0.3, 1.5)
-    #         
-    #         # 기본 손절/익절 비율 (3% / 6%)
-    #         base_stop_loss = 3.0
-    #         base_take_profit = 6.0
-    #         
-    #         # 최종 동적 조건 계산
-    #         stop_loss_pct = base_stop_loss * volatility_score * rsi_adjustment
-    #         take_profit_pct = base_take_profit * volatility_score * volume_adjustment
-    #         
-    #         # 범위 제한 (손절: 1.5~12%, 익절: 3~25%)
-    #         stop_loss_pct = min(max(stop_loss_pct, 1.5), 12.0)
-    #         take_profit_pct = min(max(take_profit_pct, 3.0), 25.0)
-    #         
-    #         logger.debug(f"📊 {ticker} 동적 매도 조건: "
-    #                     f"ATR={atr_value:.2f}({atr_pct:.1f}%), "
-    #                     f"RSI={rsi:.1f}, "
-    #                     f"변동성스코어={volatility_score:.2f}, "
-    #                     f"손절={stop_loss_pct:.1f}%, "
-    #                     f"익절={take_profit_pct:.1f}%")
-    #         
-    #         return {
-    #             'stop_loss_pct': stop_loss_pct,
-    #             'take_profit_pct': take_profit_pct,
-    #             'volatility_score': volatility_score,
-    #             'atr_pct': atr_pct,
-    #             'rsi': rsi,
-    #             'volume_ratio': volume_ratio
-    #         }
-    #         
-    #     except Exception as e:
-    #         logger.error(f"❌ {ticker} 동적 매도 조건 계산 중 오류: {e}")
-    #         return None
-
-    # 매도 로직은 PortfolioManager로 이동됨
-
-    # UNUSED: 매수 후보 필터링 함수 - 현재 파이프라인에서 사용되지 않음
-    # def filter_buy_candidates(self, ohlcv_df, market_df, market_df_4h, filter_config):
-    #     """
-    #     매수 후보 티커를 필터링합니다.
-    #     """
-    #     try:
-    #         # filter_breakout_candidates 함수는 market_df, market_df_4h, config 매개변수만 받으므로 ohlcv_df는 전달하지 않음
-    #         tickers = filter_breakout_candidates(market_df, market_df_4h, filter_config)
-    #         return tickers
-    #     except Exception as e:
-    #         logger.error(f"❌ 매수 후보 필터링 중 오류 발생: {e}")
-    #         return []
-
+    
     def run_backtest_and_report(self, ohlcv_df, market_df) -> bool:
         """통합된 backtester.py 사용으로 기능 확장"""
         if ohlcv_df is None or ohlcv_df.empty:
@@ -2628,23 +2471,66 @@ class MakenaideBot:
                         logger.warning(f"[경고] {result.get('ticker')}의 chart_path가 누락되었거나 존재하지 않음. 시각 분석에 영향 가능성 있음.")
                     
                     try:
-                        score = safe_float_convert(result.get("score", 0), context=f"GPT분석 {result.get('ticker', 'Unknown')} score")
-                        confidence = safe_float_convert(result.get("confidence", 0), context=f"GPT분석 {result.get('ticker', 'Unknown')} confidence")
-                        ticker = result["ticker"]
+                        # 데이터 유효성 검증 강화
+                        ticker = result.get("ticker", "")
+                        if not ticker:
+                            logger.warning(f"⚠️ 티커 정보 누락: {result}")
+                            excluded_candidates.append(result)
+                            continue
+                            
+                        score = safe_float_convert(result.get("score", 0), context=f"GPT분석 {ticker} score")
+                        confidence = safe_float_convert(result.get("confidence", 0), context=f"GPT분석 {ticker} confidence")
+                        
+                        # 점수와 신뢰도 범위 검증
+                        if not (0 <= score <= 100):
+                            logger.warning(f"⚠️ {ticker} 점수 범위 오류: {score} (0-100 범위 초과)")
+                            excluded_candidates.append(result)
+                            continue
+                            
+                        if not (0 <= confidence <= 1):
+                            logger.warning(f"⚠️ {ticker} 신뢰도 범위 오류: {confidence} (0-1 범위 초과)")
+                            excluded_candidates.append(result)
+                            continue
                         
                         # 매수 조건 필터링만 수행 (실제 매수는 4시간봉 필터링 후)
-                        if score >= 5 and confidence >= 0.1:
+                        action = result.get("action", "AVOID").upper()
+                        
+                        # 설정 기반 엄격한 매수 조건 적용
+                        try:
+                            from config import GPT_FILTERING_CONFIG
+                            strict_config = GPT_FILTERING_CONFIG['strict_mode']
+                        except ImportError:
+                            # fallback 설정
+                            strict_config = {
+                                'min_score': 80,
+                                'min_confidence': 0.9,
+                                'allowed_actions': ['BUY', 'STRONG_BUY'],
+                                'allowed_market_phases': ['Stage1', 'Stage2']
+                            }
+                        
+                        if (score >= strict_config['min_score'] and 
+                            confidence >= strict_config['min_confidence'] and 
+                            action in strict_config['allowed_actions'] and 
+                            result.get("market_phase", "") in strict_config['allowed_market_phases']):
                             buy_candidates.append(result)
-                            logger.info(f"✅ 매수 후보 선정: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f}")
+                            logger.info(f"✅ 매수 후보 선정: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
                         else:
                             excluded_candidates.append(result)
-                            logger.info(f"❌ 제외됨: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f}")
+                            logger.info(f"❌ 제외됨: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
                             
                     except (ValueError, TypeError) as e:
                         logger.error(f"❌ 데이터 타입 오류: {result.get('ticker', 'Unknown')} | 오류: {str(e)}")
                         excluded_candidates.append(result)
                 
                 logger.info(f"✅ 매수 후보 {len(buy_candidates)}개, 제외된 종목 {len(excluded_candidates)}개")
+                
+                # 상세한 필터링 결과 로그
+                if buy_candidates:
+                    logger.info("🎯 최종 매수 후보 목록:")
+                    for candidate in buy_candidates:
+                        logger.info(f"   - {candidate['ticker']}: 점수 {candidate['score']}, 신뢰도 {candidate['confidence']:.2f}, 액션 {candidate.get('action', 'Unknown')}")
+                else:
+                    logger.info("📊 엄격한 필터링으로 인해 매수 후보가 없습니다.")
                 
             else:
                 logger.warning("⚠️ gpt_json_data가 없거나 비어있어 GPT 분석을 건너뜁니다.")
@@ -2717,33 +2603,65 @@ class MakenaideBot:
                     try:
                         current_price = get_current_price_safe(ticker)
                         if current_price and current_price > 0:
-                            # 🔧 [3단계 개선] 동적 매수 금액 계산
+                            # 🔧 [1단계 개선] 켈리 공식 기반 매수 금액 계산
                             confidence = gpt_confidence_map.get(ticker, 0.5)
                             
-                            # 점수와 신뢰도 기반 가중치 계산 (0.5 ~ 1.5)
-                            score_weight = min(max(score / 50.0, 0.5), 1.5)  # 점수 50점 기준
-                            confidence_weight = min(max(confidence * 2, 0.5), 1.5)  # 신뢰도 0.5 기준
-                            combined_weight = (score_weight + confidence_weight) / 2
+                            # 🔧 [2단계 개선] 통합 포지션 사이징 시스템 사용
+                            # 1. 켈리 공식 기반 기본 사이징
+                            kelly_result = self.calculate_kelly_position_size(
+                                ticker=ticker,
+                                score=score,
+                                confidence=confidence,
+                                current_price=current_price,
+                                total_balance=total_balance
+                            )
                             
-                            # 동적 매수 금액 계산
-                            trade_amount_krw = base_amount * combined_weight
+                            # 2. 기술적 지표 데이터 수집
+                            technical_data = self._get_technical_data_for_integration(ticker)
                             
-                            # 🔧 [3단계 개선] 최소/최대 매수 금액 제한 (수수료 포함)
+                            # 3. 시장 상황 데이터 수집
+                            market_conditions = self._get_market_conditions_for_integration()
+                            
+                            # 4. 통합 포지션 사이징 계산
+                            from strategy_analyzer import calculate_integrated_position_size
+                            
+                            kelly_params = {
+                                'kelly_fraction': kelly_result['kelly_fraction'],
+                                'estimated_win_rate': kelly_result['estimated_win_rate'],
+                                'risk_reward_ratio': kelly_result['risk_reward_ratio']
+                            }
+                            
+                            atr_params = {
+                                'atr': kelly_result['atr'],
+                                'current_price': current_price
+                            }
+                            
+                            integrated_result = calculate_integrated_position_size(
+                                technical_data=technical_data,
+                                kelly_params=kelly_params,
+                                atr_params=atr_params,
+                                market_conditions=market_conditions
+                            )
+                            
+                            # 5. 통합 결과 기반 매수 금액 계산
+                            integrated_position_size = integrated_result['final_position_size']
+                            trade_amount_krw = total_balance * integrated_position_size
+                            
+                            # 최소/최대 금액 제한 적용
                             from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
-                            
-                            # 수수료를 고려한 최소 주문 금액 계산
-                            # 매수 시: 체결금액 + 수수료 = 주문금액
-                            # 따라서 체결금액 = 주문금액 / (1 + 수수료율)
-                            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)  # 수수료를 제외한 최소 체결 금액
-                            max_amount = min(200000, total_balance * 0.05)  # 최대 20만원 또는 총 자산의 5%
-                            
-                            # 수수료를 고려한 매수 금액 계산
+                            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
+                            max_amount = min(200000, total_balance * 0.05)
                             trade_amount_krw = max(min_amount_with_fee, min(trade_amount_krw, max_amount))
                             
-                            # 수수료를 포함한 실제 주문 금액 계산
+                            # 수수료를 포함한 실제 주문 금액
                             actual_order_amount = trade_amount_krw * (1 + TAKER_FEE_RATE)
                             
-                            logger.debug(f"💰 {ticker} 매수 금액 계산: 체결금액 {trade_amount_krw:,.0f}원 + 수수료 {trade_amount_krw * TAKER_FEE_RATE:,.0f}원 = 주문금액 {actual_order_amount:,.0f}원")
+                            logger.debug(f"💰 {ticker} 통합 포지션 사이징 결과:")
+                            logger.debug(f"   - 켈리 비율: {kelly_result['kelly_fraction']:.1%}")
+                            logger.debug(f"   - 통합 포지션: {integrated_position_size:.1%}")
+                            logger.debug(f"   - 총 조정 계수: {integrated_result['total_adjustment']:.3f}")
+                            logger.debug(f"   - 신뢰도 점수: {integrated_result['confidence_score']:.3f}")
+                            logger.debug(f"   - 매수 금액: {trade_amount_krw:,.0f}원")
                             
                             # 🔧 [3단계 개선] 시장 상황 기반 추가 검증
                             market_validation = self._validate_market_conditions(ticker, current_price, score, confidence)
@@ -2760,7 +2678,7 @@ class MakenaideBot:
                                 })
                                 continue
                             
-                            logger.info(f"🎯 매수 시도: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 금액: {trade_amount_krw:,.0f}원")
+                            logger.info(f"🎯 매수 시도: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 금액: {trade_amount_krw:,.0f}원")
                             
                             # trade_executor.buy_asset 호출 (수수료 포함한 실제 주문 금액 전달)
                             from trade_executor import buy_asset
@@ -2776,7 +2694,7 @@ class MakenaideBot:
                             if buy_result.get("status") in ["SUCCESS", "SUCCESS_PARTIAL", "SUCCESS_PARTIAL_NO_AVG", "SUCCESS_NO_AVG_PRICE"]:
                                 buy_price = buy_result.get('price', current_price)
                                 status_msg = "매수 성공" if buy_result.get("status") == "SUCCESS" else "매수 부분 체결 성공"
-                                logger.info(f"💰 {status_msg}: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 체결가: {buy_price:.2f} | 금액: {trade_amount_krw:,.0f}원")
+                                logger.info(f"💰 {status_msg}: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 체결가: {buy_price:.2f} | 금액: {trade_amount_krw:,.0f}원")
                                 
                                 # 매수 성공 이력 수집
                                 trade_logs.append({
@@ -2790,7 +2708,7 @@ class MakenaideBot:
                                 })
                             else:
                                 error_msg = buy_result.get('error', 'Unknown')
-                                logger.warning(f"⚠️ 매수 실패: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 오류: {error_msg}")
+                                logger.warning(f"⚠️ 매수 실패: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 오류: {error_msg}")
                                 
                                 # 🔧 [3단계 개선] 상세한 오류 분석
                                 error_analysis = self._analyze_buy_error(error_msg, ticker, current_price, trade_amount_krw)
@@ -3162,6 +3080,35 @@ class MakenaideBot:
         try:
             logging.info("🚀 Makenaide 파이프라인 시작")
             
+            # 📁 로그 파일 정리 (설정 기반)
+            try:
+                from utils import cleanup_old_log_files, get_log_file_info
+                from config import LOG_MANAGEMENT
+                
+                # 로그 관리 설정 확인
+                if LOG_MANAGEMENT.get('enable_log_cleanup', True) and LOG_MANAGEMENT.get('log_cleanup_on_startup', True):
+                    retention_days = LOG_MANAGEMENT.get('retention_days', 7)
+                    
+                    # 로그 파일 정리 실행
+                    cleanup_result = cleanup_old_log_files(retention_days=retention_days)
+                    if cleanup_result["status"] == "success":
+                        logging.info(f"🗑️ 로그 파일 정리 완료: {cleanup_result['deleted_count']}개 파일 삭제 (보관기간: {retention_days}일)")
+                    else:
+                        logging.warning(f"⚠️ 로그 파일 정리 중 오류: {cleanup_result.get('message', 'Unknown error')}")
+                    
+                    # 현재 로그 파일 상태 출력
+                    log_info = get_log_file_info()
+                    if log_info["status"] == "success":
+                        logging.info(f"📊 현재 로그 파일 상태: {log_info['total_files']}개 파일, 총 {log_info['total_size_mb']}MB")
+                    else:
+                        logging.warning(f"⚠️ 로그 파일 정보 조회 실패: {log_info.get('message', 'Unknown error')}")
+                else:
+                    logging.info("ℹ️ 로그 파일 정리가 비활성화되어 있습니다.")
+                    
+            except Exception as e:
+                logging.error(f"❌ 로그 파일 정리 중 오류: {e}")
+                logging.warning("⚠️ 로그 파일 정리 없이 파이프라인을 계속 진행합니다.")
+            
             # 0. DB 초기화 확인 및 테이블 생성 (최우선)
             try:
                 logging.info("🔧 DB 초기화 확인 중...")
@@ -3428,10 +3375,24 @@ class MakenaideBot:
                         action = result.get("action", "buy")
                         market_phase = result.get("market_phase", "Unknown")
 
-                        # GPT 분석 결과 조건 통과 종목 선별
-                        # if score >= 80 and confidence >= 0.9 and action == "BUY" and market_phase in ["Stage1", "Stage2"]:
-                        #     qualified_tickers.append(result["ticker"])
-                        if score >= 10 and confidence >= 0.1 and action == "BUY" and market_phase in ["Stage1", "Stage2"]:
+                        # GPT 분석 결과 조건 통과 종목 선별 (설정 기반)
+                        action = result.get("action", "AVOID").upper()
+                        try:
+                            from config import GPT_FILTERING_CONFIG
+                            strict_config = GPT_FILTERING_CONFIG['strict_mode']
+                        except ImportError:
+                            # fallback 설정
+                            strict_config = {
+                                'min_score': 80,
+                                'min_confidence': 0.9,
+                                'allowed_actions': ['BUY', 'STRONG_BUY'],
+                                'allowed_market_phases': ['Stage1', 'Stage2']
+                            }
+                        
+                        if (score >= strict_config['min_score'] and 
+                            confidence >= strict_config['min_confidence'] and 
+                            action in strict_config['allowed_actions'] and 
+                            market_phase in strict_config['allowed_market_phases']):
                             qualified_tickers.append(result["ticker"])
                 
                 if qualified_tickers:
@@ -4233,6 +4194,238 @@ class MakenaideBot:
         except Exception as e:
             logger.error(f"❌ 매수 오류 분석 중 오류: {e}")
             return "오류 분석 실패"
+
+    def calculate_kelly_position_size(self, ticker: str, score: float, confidence: float, 
+                                    current_price: float, total_balance: float) -> dict:
+        """
+        켈리 공식 기반 포지션 사이징 계산
+        
+        Args:
+            ticker: 티커 심볼
+            score: GPT 분석 점수
+            confidence: GPT 분석 신뢰도
+            current_price: 현재가
+            total_balance: 총 자산
+            
+        Returns:
+            dict: 켈리 기반 포지션 사이징 결과
+        """
+        try:
+            # 1. 기술적 지표 데이터 조회 (ATR, 지지/저항선 등)
+            market_data = self._get_market_data_for_kelly(ticker)
+            if not market_data:
+                logger.warning(f"⚠️ {ticker} 켈리 계산을 위한 시장 데이터 없음")
+                return self._get_default_kelly_result(total_balance)
+            
+            # 2. ATR 기반 리스크 계산
+            atr = market_data.get('atr', 0)
+            if atr <= 0:
+                logger.warning(f"⚠️ {ticker} ATR 값이 유효하지 않음: {atr}")
+                return self._get_default_kelly_result(total_balance)
+            
+            # 3. 손절가 및 목표가 계산
+            stop_loss = current_price - (atr * 2.5)  # 2.5x ATR 손절
+            target_price = current_price + (atr * 4.0)  # 4.0x ATR 목표 (리스크 대비 1.6:1)
+            
+            # 4. 승률 추정 (점수와 신뢰도 기반)
+            # 점수 50점 기준으로 승률 추정 (40-80% 범위)
+            base_win_rate = 0.4 + (score / 100.0) * 0.4  # 40-80% 범위
+            # 신뢰도로 승률 조정
+            estimated_win_rate = base_win_rate * confidence
+            estimated_win_rate = max(0.3, min(estimated_win_rate, 0.8))  # 30-80% 범위
+            
+            # 5. 평균 수익/손실 비율 계산
+            avg_win = (target_price - current_price) / current_price
+            avg_loss = (current_price - stop_loss) / current_price
+            
+            # 6. 켈리 공식 적용: f = (bp - q) / b
+            # b = 승리시 수익률, p = 승률, q = 패배 확률
+            if avg_loss > 0 and avg_win > 0:
+                kelly_fraction = (avg_win * estimated_win_rate - (1 - estimated_win_rate)) / avg_win
+                # 켈리 비율을 0-25% 범위로 제한 (보수적 접근)
+                kelly_fraction = max(0, min(kelly_fraction, 0.25))
+            else:
+                kelly_fraction = 0.01  # 기본값
+            
+            # 7. ATR 기반 변동성 조정 (강화된 로직)
+            atr_ratio = atr / current_price
+            
+            # 변동성에 따른 포지션 크기 조정 (더 세밀한 조정)
+            if atr_ratio > 0.05:  # 5% 이상 변동성 (고변동성)
+                volatility_adjustment = 0.5  # 50% 축소
+            elif atr_ratio > 0.03:  # 3-5% 변동성 (중변동성)
+                volatility_adjustment = 0.7  # 30% 축소
+            elif atr_ratio > 0.02:  # 2-3% 변동성 (저변동성)
+                volatility_adjustment = 0.9  # 10% 축소
+            elif atr_ratio > 0.01:  # 1-2% 변동성 (매우 낮은 변동성)
+                volatility_adjustment = 1.1  # 10% 증가
+            else:  # 1% 미만 변동성 (극히 낮은 변동성)
+                volatility_adjustment = 1.3  # 30% 증가
+            
+            # 8. 최종 포지션 크기 계산
+            final_position_size = kelly_fraction * volatility_adjustment * confidence
+            final_position_size = max(0.005, min(final_position_size, 0.15))  # 0.5-15% 범위
+            
+            # 9. 실제 매수 금액 계산
+            position_amount_krw = total_balance * final_position_size
+            
+            # 10. 최소/최대 금액 제한
+            from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
+            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
+            max_amount = min(200000, total_balance * 0.05)  # 최대 20만원 또는 총 자산의 5%
+            
+            position_amount_krw = max(min_amount_with_fee, min(position_amount_krw, max_amount))
+            
+            # 11. 수수료를 포함한 실제 주문 금액
+            actual_order_amount = position_amount_krw * (1 + TAKER_FEE_RATE)
+            
+            logger.info(f"💰 {ticker} 켈리 공식 계산 완료:")
+            logger.info(f"   - 켈리 비율: {kelly_fraction:.3f} ({kelly_fraction*100:.1f}%)")
+            logger.info(f"   - ATR 비율: {atr_ratio:.2%} (변동성)")
+            logger.info(f"   - 변동성 조정: {volatility_adjustment:.3f}")
+            logger.info(f"   - 최종 포지션: {final_position_size:.3f} ({final_position_size*100:.1f}%)")
+            logger.info(f"   - 예상 승률: {estimated_win_rate:.1%}")
+            logger.info(f"   - 리스크/리워드: 1:{avg_win/avg_loss:.2f}")
+            logger.info(f"   - 매수 금액: {position_amount_krw:,.0f}원")
+            
+            return {
+                'position_amount_krw': position_amount_krw,
+                'actual_order_amount': actual_order_amount,
+                'kelly_fraction': kelly_fraction,
+                'volatility_adjustment': volatility_adjustment,
+                'final_position_size': final_position_size,
+                'estimated_win_rate': estimated_win_rate,
+                'risk_reward_ratio': avg_win / avg_loss if avg_loss > 0 else 0,
+                'stop_loss': stop_loss,
+                'target_price': target_price,
+                'atr': atr
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 켈리 공식 계산 중 오류: {str(e)}")
+            return self._get_default_kelly_result(total_balance)
+    
+    def _get_market_data_for_kelly(self, ticker: str) -> dict:
+        """켈리 계산을 위한 시장 데이터 조회"""
+        try:
+            # static_indicators에서 ATR 및 기타 지표 조회
+            with get_db_connection_safe() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT atr, adx, ma200_slope, price, high_60, low_60
+                    FROM static_indicators 
+                    WHERE ticker = %s
+                """, (ticker,))
+                
+                result = cursor.fetchone()
+                if result:
+                    atr, adx, ma200_slope, price, high_60, low_60 = result
+                    return {
+                        'atr': atr or 0,
+                        'adx': adx or 25,
+                        'ma200_slope': ma200_slope or 0,
+                        'price': price or 0,
+                        'high_60': high_60 or 0,
+                        'low_60': low_60 or 0
+                    }
+                else:
+                    logger.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
+                    return None
+                    
+        except Exception as e:
+            logger.error(f"❌ {ticker} 시장 데이터 조회 실패: {str(e)}")
+            return None
+    
+    def _get_default_kelly_result(self, total_balance: float) -> dict:
+        """기본 켈리 계산 결과 (오류 시 사용)"""
+        from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
+        
+        min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
+        actual_order_amount = min_amount_with_fee * (1 + TAKER_FEE_RATE)
+        
+        return {
+            'position_amount_krw': min_amount_with_fee,
+            'actual_order_amount': actual_order_amount,
+            'kelly_fraction': 0.01,
+            'volatility_adjustment': 1.0,
+            'final_position_size': 0.01,
+            'estimated_win_rate': 0.5,
+            'risk_reward_ratio': 1.0,
+            'stop_loss': 0,
+            'target_price': 0,
+            'atr': 0
+        }
+    
+    def _get_technical_data_for_integration(self, ticker: str) -> dict:
+        """통합 포지션 사이징을 위한 기술적 지표 데이터 조회"""
+        try:
+            market_data = self._get_market_data_for_kelly(ticker)
+            if not market_data:
+                return self._get_default_technical_data()
+            
+            # MACD 신호 판단
+            macd = market_data.get('macd', 0)
+            macd_signal = market_data.get('macd_signal', 0)
+            macd_signal_type = 'bullish' if macd > macd_signal else 'bearish' if macd < macd_signal else 'neutral'
+            
+            # 이동평균 정렬 판단
+            ma50 = market_data.get('ma_50', 0)
+            ma200 = market_data.get('ma_200', 0)
+            current_price = market_data.get('current_price', 0)
+            
+            if current_price > 0 and ma50 > 0 and ma200 > 0:
+                if current_price > ma50 > ma200:
+                    ma_alignment = 'bullish'
+                elif current_price < ma50 < ma200:
+                    ma_alignment = 'bearish'
+                else:
+                    ma_alignment = 'neutral'
+            else:
+                ma_alignment = 'neutral'
+            
+            return {
+                'rsi_14': market_data.get('rsi_14', 50),
+                'macd_signal': macd_signal_type,
+                'ma_alignment': ma_alignment,
+                'bb_upper': market_data.get('bb_upper', 0),
+                'bb_lower': market_data.get('bb_lower', 0)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 기술적 지표 데이터 조회 실패: {str(e)}")
+            return self._get_default_technical_data()
+    
+    def _get_market_conditions_for_integration(self) -> dict:
+        """통합 포지션 사이징을 위한 시장 상황 데이터 조회"""
+        try:
+            # 전체 시장 변동성 계산 (간단한 구현)
+            market_volatility = 'normal'  # 기본값
+            
+            # 추세 강도 계산 (간단한 구현)
+            trend_strength = 0.5  # 기본값
+            
+            return {
+                'market_volatility': market_volatility,
+                'trend_strength': trend_strength
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 시장 상황 데이터 조회 실패: {str(e)}")
+            return {
+                'market_volatility': 'normal',
+                'trend_strength': 0.5
+            }
+    
+    def _get_default_technical_data(self) -> dict:
+        """기본 기술적 지표 데이터 (오류 시 사용)"""
+        return {
+            'adx': 25,
+            'macd_signal': 'neutral',
+            'ma_alignment': 'neutral',
+            'price': 0,
+            'high_60': 0,
+            'low_60': 0
+        }
 
 
 class MemoryMonitor:

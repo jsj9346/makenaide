@@ -231,6 +231,166 @@ def setup_logger():
 
     return logger
 
+def setup_restricted_logger(logger_name: str = None):
+    """
+    제한된 로깅 설정을 초기화하고 로거를 반환합니다.
+    특정 로그 파일 생성 제한을 적용합니다.
+    
+    Args:
+        logger_name (str): 로거 이름 (None이면 기본 로거)
+    
+    Returns:
+        logging.Logger: 설정된 로거 객체
+    """
+    log_dir = "log"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    # 제한된 로그 파일명 (makenaide.log만 생성)
+    log_filename = safe_strftime(datetime.now(), "%Y%m%d") + "_makenaide.log"
+    log_file_path = os.path.join(log_dir, log_filename)
+
+    log_format = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"
+
+    # 로거 생성
+    if logger_name:
+        logger = logging.getLogger(logger_name)
+    else:
+        logger = logging.getLogger()
+    
+    logger.setLevel(logging.INFO)
+
+    # 기존 핸들러 삭제
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # 스트림 핸들러 (터미널 출력)
+    stream_handler = logging.StreamHandler()
+    stream_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(stream_handler)
+
+    # 파일 핸들러 (makenaide.log만 사용)
+    file_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(file_handler)
+
+    return logger
+
+def cleanup_old_log_files(retention_days: int = 7):
+    """
+    지정된 보관 기간을 초과한 로그 파일들을 삭제합니다.
+    
+    Args:
+        retention_days (int): 로그 파일 보관 기간 (일)
+    
+    Returns:
+        dict: 정리 결과 정보
+    """
+    try:
+        log_dir = "log"
+        if not os.path.exists(log_dir):
+            return {"status": "success", "message": "로그 디렉토리가 존재하지 않음", "deleted_count": 0}
+        
+        # 현재 시간 기준으로 보관 기간 계산
+        cutoff_date = datetime.now() - timedelta(days=retention_days)
+        deleted_count = 0
+        error_count = 0
+        
+        # 로그 디렉토리의 모든 파일 검사
+        for filename in os.listdir(log_dir):
+            file_path = os.path.join(log_dir, filename)
+            
+            # 파일인지 확인
+            if not os.path.isfile(file_path):
+                continue
+            
+            try:
+                # 파일 생성 시간 확인
+                file_creation_time = datetime.fromtimestamp(os.path.getctime(file_path))
+                
+                # 보관 기간을 초과한 파일 삭제
+                if file_creation_time < cutoff_date:
+                    os.remove(file_path)
+                    deleted_count += 1
+                    print(f"🗑️ 오래된 로그 파일 삭제: {filename}")
+                    
+            except Exception as e:
+                error_count += 1
+                print(f"⚠️ 로그 파일 삭제 중 오류 ({filename}): {e}")
+        
+        result = {
+            "status": "success",
+            "deleted_count": deleted_count,
+            "error_count": error_count,
+            "retention_days": retention_days,
+            "cutoff_date": cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
+        }
+        
+        if deleted_count > 0:
+            print(f"✅ 로그 파일 정리 완료: {deleted_count}개 파일 삭제")
+        else:
+            print(f"ℹ️ 삭제할 오래된 로그 파일이 없습니다 (보관기간: {retention_days}일)")
+            
+        return result
+        
+    except Exception as e:
+        error_result = {
+            "status": "error",
+            "message": f"로그 파일 정리 중 오류: {str(e)}",
+            "deleted_count": 0,
+            "error_count": 1
+        }
+        print(f"❌ 로그 파일 정리 실패: {e}")
+        return error_result
+
+def get_log_file_info():
+    """
+    현재 로그 디렉토리의 파일 정보를 반환합니다.
+    
+    Returns:
+        dict: 로그 파일 정보
+    """
+    try:
+        log_dir = "log"
+        if not os.path.exists(log_dir):
+            return {"status": "error", "message": "로그 디렉토리가 존재하지 않음"}
+        
+        log_files = []
+        total_size = 0
+        
+        for filename in os.listdir(log_dir):
+            file_path = os.path.join(log_dir, filename)
+            
+            if os.path.isfile(file_path):
+                file_size = os.path.getsize(file_path)
+                file_creation_time = datetime.fromtimestamp(os.path.getctime(file_path))
+                
+                log_files.append({
+                    "filename": filename,
+                    "size_bytes": file_size,
+                    "size_mb": round(file_size / (1024 * 1024), 2),
+                    "creation_time": file_creation_time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "age_days": (datetime.now() - file_creation_time).days
+                })
+                
+                total_size += file_size
+        
+        # 파일 크기순으로 정렬
+        log_files.sort(key=lambda x: x["size_bytes"], reverse=True)
+        
+        return {
+            "status": "success",
+            "total_files": len(log_files),
+            "total_size_mb": round(total_size / (1024 * 1024), 2),
+            "files": log_files
+        }
+        
+    except Exception as e:
+        return {
+            "status": "error", 
+            "message": f"로그 파일 정보 조회 중 오류: {str(e)}"
+        }
+
 # 로거 초기화
 logger = setup_logger()
 

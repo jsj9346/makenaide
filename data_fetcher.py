@@ -16,7 +16,7 @@ import matplotlib.dates as mdates
 import matplotlib.lines as mlines
 from dotenv import load_dotenv
 from sqlalchemy import create_engine
-from utils import retry, setup_logger, load_blacklist, safe_strftime
+from utils import retry, setup_logger, load_blacklist, safe_strftime, setup_restricted_logger
 from config import (
     ESSENTIAL_TREND_INDICATORS, 
     INDICATOR_MIN_PERIODS, 
@@ -64,30 +64,8 @@ def apply_decimal_limit_to_dataframe(df: pd.DataFrame, exclude_columns: list = N
     
     return df_processed
 
-# 로거 초기화
-logger = setup_logger()
-
-# 로그 디렉토리 생성
-log_dir = "log"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-# 로그 파일명 설정 (YYYYMMDD_data_fetcher.log)
-log_filename = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_data_fetcher.log")
-
-# 로거 설정
-# 기존 핸들러가 있을 경우 제거
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-# 로그 핸들러 추가 
-handler = logging.StreamHandler(sys.stderr)
-handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"))
-logger.addHandler(handler)
-
-file_handler = logging.FileHandler(log_filename)
-file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"))
-logger.addHandler(file_handler)
+# 로거 초기화 (제한된 로깅 사용)
+logger = setup_restricted_logger('data_fetcher')
 
 # 통합된 DB 매니저 인스턴스 생성
 db_manager = get_db_manager()

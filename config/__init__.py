@@ -60,6 +60,12 @@ try:
         # 피라미딩 설정
         PYRAMIDING_CONFIG = getattr(root_config, 'PYRAMIDING_CONFIG', {})
         
+        # GPT 필터링 설정
+        GPT_FILTERING_CONFIG = getattr(root_config, 'GPT_FILTERING_CONFIG', {})
+        
+        # 로그 관리 설정
+        LOG_MANAGEMENT = getattr(root_config, 'LOG_MANAGEMENT', {})
+        
         # 함수들
         validate_config = getattr(root_config, 'validate_config', lambda: True)
         print_config_summary = getattr(root_config, 'print_config_summary', lambda: None)
@@ -103,6 +109,12 @@ except ImportError as e:
     
     # 피라미딩 설정
     PYRAMIDING_CONFIG = {}
+    
+    # GPT 필터링 설정
+    GPT_FILTERING_CONFIG = {}
+    
+    # 로그 관리 설정
+    LOG_MANAGEMENT = {}
     
     # 클래스 및 객체들
     StrategyIndicators = None
@@ -173,6 +185,12 @@ __all__ = [
     
     # 피라미딩 설정
     'PYRAMIDING_CONFIG',
+    
+    # GPT 필터링 설정
+    'GPT_FILTERING_CONFIG',
+    
+    # 로그 관리 설정
+    'LOG_MANAGEMENT',
     
     # 함수들
     'validate_config',

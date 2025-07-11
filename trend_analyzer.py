@@ -1161,20 +1161,28 @@ performance_monitor = PerformanceMonitor()
 
 # === 로그 순환 및 압축 설정 ===
 
-def setup_gpt_logging_rotation(log_file_path: str = "log/gpt_analysis.log", 
+def setup_gpt_logging_rotation(log_file_path: str = None, 
                               max_bytes: int = 50 * 1024 * 1024,  # 50MB
                               backup_count: int = 5,
                               enable_compression: bool = False) -> logging.Logger:
                               #enable_compression: bool = True) -> logging.Logger:
     """
-    GPT 분석용 로깅 순환 및 압축 설정
+    GPT 분석용 로깅 순환 및 압축 설정 (제한된 로깅 사용)
     
     Args:
-        log_file_path: 로그 파일 경로
+        log_file_path: 로그 파일 경로 (None이면 makenaide.log 사용)
         max_bytes: 최대 파일 크기 (기본: 50MB)
         backup_count: 백업 파일 개수 (기본: 5개)
         enable_compression: 압축 활성화 여부
     """
+    # 로그 파일 경로가 None이면 makenaide.log 사용 (제한된 로깅)
+    if log_file_path is None:
+        from utils import safe_strftime
+        log_dir = "log"
+        if not os.path.exists(log_dir):
+            os.makedirs(log_dir)
+        log_file_path = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_makenaide.log")
+    
     # 로그 디렉토리 생성
     os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
     
@@ -1382,8 +1390,8 @@ def setup_secure_logging(log_level: str = None, enable_sensitive_masking: bool =
     secure_logger.info(f"🔒 보안 강화 로깅 시스템 설정 완료 - 레벨: {log_level}")
     return secure_logger
 
-# 통합 로깅 시스템 초기화
-gpt_logger = setup_gpt_logging_rotation()
+# 통합 로깅 시스템 초기화 (제한된 로깅 사용)
+gpt_logger = setup_gpt_logging_rotation(log_file_path=None)  # makenaide.log 사용
 secure_logger = setup_secure_logging()
 
 # === GPT 분석 성능 최적화 클래스 ===

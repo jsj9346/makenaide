@@ -74,7 +74,7 @@ makenaide/
 ├── 📂 거래 및 포트폴리오
 │   ├── trade_executor.py         # 거래 실행 및 트레일링 스탑
 │   ├── portfolio_manager.py      # 포트폴리오 관리
-│   └── backtester.py             # 백테스트 엔진 (하이브리드 전략)
+│   └── backtester.py             # 백테스트 엔진 (하이브리드 전략 + 켈리공식)
 ├── 📂 설정 및 유틸리티
 │   ├── config.py                 # 통합 시스템 설정
 │   ├── config_loader.py          # 동적 설정 로더
@@ -93,6 +93,14 @@ makenaide/
 │   ├── mode_presets.py           # 모드별 프리셋 (tight/lose)
 │   ├── filter_rules_config.yaml # 필터링 규칙 설정
 │   └── filter_rules_config.yaml # 하이브리드 필터링 설정
+├── 📂 리포트 및 로그 (reports/)
+│   ├── kelly_backtest/           # 켈리공식 백테스트 리포트
+│   ├── hybrid_backtest/          # 하이브리드 백테스트 결과
+│   ├── strategy_reports/         # 전략별 성과 리포트
+│   └── quality/                  # 데이터 품질 리포트
+├── 📂 로그 (log/)
+│   ├── makenaide.log             # 메인 시스템 로그
+│   └── secure_trend_analyzer.log # 트렌드 분석 로그
 └── 📂 테스트 및 검증
     ├── test_enhanced_system.py   # 하이브리드 시스템 테스트
     ├── verify_migration.py       # 마이그레이션 검증
@@ -415,3 +423,14 @@ python makenaide.py
 [![GitHub forks](https://img.shields.io/github/forks/your-username/makenaide?style=social)](https://github.com/jsj9346/makenaide)
 
 </div>
+
+---
+
+## 🛠️ TODO (향후 업데이트 예정)
+
+- [ ] **리포트 파일 압축 저장**: 대용량 리포트 파일을 zip 등으로 자동 압축
+- [ ] **웹 대시보드**: 리포트 및 성과를 웹에서 시각적으로 확인할 수 있는 대시보드 제공
+- [ ] **이메일 알림**: 주요 리포트 자동 이메일 발송 기능
+
+이제 자동 정리 기능은 코드에 반영, 나머지 개선 방향은 README에 Todo로 추가 완료입니다!  
+추가 요청이 있으면 말씀해 주세요.

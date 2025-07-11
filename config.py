@@ -98,6 +98,50 @@ PERFORMANCE_MONITORING: Dict[str, Any] = {
     'report_generation_interval': 86400  # 보고서 생성 주기 (초)
 }
 
+# 로그 관리 설정
+LOG_MANAGEMENT: Dict[str, Any] = {
+    'retention_days': 7,                 # 로그 파일 보관 기간 (일)
+    'restricted_logging': True,          # 제한된 로깅 사용 (makenaide.log만 생성)
+    'enable_log_cleanup': True,          # 자동 로그 정리 활성화
+    'log_cleanup_on_startup': True,      # 파이프라인 시작 시 로그 정리
+    'max_log_size_mb': 100,              # 최대 로그 파일 크기 (MB)
+    'excluded_log_files': [              # 생성하지 않을 로그 파일 목록
+        'gpt_analysis.log',
+        'data_fetcher.log', 
+        'scanner.log'
+    ]
+}
+
+# ===== GPT 분석 필터링 조건 설정 =====
+
+# GPT 분석 결과 기반 매수 조건 필터링 설정
+GPT_FILTERING_CONFIG: Dict[str, Any] = {
+    'strict_mode': {
+        'enabled': True,
+        'min_score': 80,                    # 최소 점수 (0-100)
+        'min_confidence': 0.9,              # 최소 신뢰도 (0-1)
+        'allowed_actions': ['BUY', 'STRONG_BUY'],  # 허용되는 액션
+        'allowed_market_phases': ['Stage1', 'Stage2'],  # 허용되는 시장 단계
+        'description': '엄격한 필터링 모드 - 고품질 매수 신호만 허용'
+    },
+    'moderate_mode': {
+        'enabled': False,
+        'min_score': 60,                    # 중간 점수 기준
+        'min_confidence': 0.7,              # 중간 신뢰도 기준
+        'allowed_actions': ['BUY', 'STRONG_BUY'],
+        'allowed_market_phases': ['Stage1', 'Stage2', 'Stage3'],
+        'description': '중간 필터링 모드 - 보다 많은 신호 허용'
+    },
+    'loose_mode': {
+        'enabled': False,
+        'min_score': 40,                    # 낮은 점수 기준
+        'min_confidence': 0.5,              # 낮은 신뢰도 기준
+        'allowed_actions': ['BUY', 'STRONG_BUY', 'HOLD'],
+        'allowed_market_phases': ['Stage1', 'Stage2', 'Stage3', 'Stage4'],
+        'description': '느슨한 필터링 모드 - 많은 신호 허용 (테스트용)'
+    }
+}
+
 # ===== 트레이딩 전략별 설정 =====
 
 # 전략 설정은 하단에서 통합 정의됩니다.

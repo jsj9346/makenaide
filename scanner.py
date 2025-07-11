@@ -4,31 +4,12 @@ import pyupbit
 import psycopg2
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from utils import logger, setup_logger, load_blacklist, safe_strftime
+from utils import logger, setup_logger, load_blacklist, safe_strftime, setup_restricted_logger
 import sys
 import argparse
 
-# 로그 디렉토리 생성
-log_dir = "log"
-if not os.path.exists(log_dir):
-    os.makedirs(log_dir)
-
-# 로그 파일명 설정 (YYYYMMDD_scanner.log)
-log_filename = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_scanner.log")
-
-# 로거 설정
-# 기존 핸들러가 있을 경우 제거
-if logger.hasHandlers():
-    logger.handlers.clear()
-
-# 로그 핸들러 추가
-handler = logging.StreamHandler(sys.stderr)
-handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"))
-logger.addHandler(handler)
-
-file_handler = logging.FileHandler(log_filename)
-file_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d - %(message)s"))
-logger.addHandler(file_handler)
+# 로거 초기화 (제한된 로깅 사용)
+logger = setup_restricted_logger('scanner')
 
 load_dotenv()
 
