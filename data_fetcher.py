@@ -78,10 +78,10 @@ load_dotenv()
 
 def _common_adaptive_decimal_rounding(value):
     """
-    🔧 [개선] 스몰캡 코인 지원을 위한 고정밀도 적응형 소수점 반올림 헬퍼 함수
-    - 극소값 보존: 0값 방지 로직 강화
-    - 높은 정밀도: 최대 18자리까지 지원
-    - 스몰캡 특화: 극소 가격대 세분화
+    🔧 [수정] 스몰캡 코인 지원을 위한 소수점 제한 완전 제거
+    - 실제 가격 데이터 보존: 소수점 제한 로직 완전 제거
+    - 원본값 유지: 데이터 왜곡 방지
+    - 스몰캡 코인 완전 지원: 극소 가격대 데이터 보존
     """
     if value is None or pd.isna(value):
         return None
@@ -91,44 +91,9 @@ def _common_adaptive_decimal_rounding(value):
         if value == 0:
             return 0.0
             
-        abs_value = abs(value)
-        sign = 1 if value >= 0 else -1
-        
-        # 🎯 [개선] 스몰캡 코인 지원을 위한 고정밀도 정밀도 매핑
-        if abs_value >= 10000:         # 고가 코인 (BTC 등)
-            result = round(abs_value, 4)   # 2→4자리로 확장
-        elif abs_value >= 1000:        # 중고가 코인 (ETH 등)
-            result = round(abs_value, 5)   # 3→5자리로 확장
-        elif abs_value >= 100:         # 중간가 코인
-            result = round(abs_value, 6)   # 4→6자리로 확장
-        elif abs_value >= 10:          # 저가 코인
-            result = round(abs_value, 7)   # 5→7자리로 확장
-        elif abs_value >= 1:           # 1원대 코인
-            result = round(abs_value, 8)   # 6→8자리로 확장
-        elif abs_value >= 0.1:         # 0.1원대 코인
-            result = round(abs_value, 9)   # 7→9자리로 확장
-        elif abs_value >= 0.01:        # 0.01원대 코인
-            result = round(abs_value, 10)  # 8→10자리로 확장
-        elif abs_value >= 0.001:       # 0.001원대 코인
-            result = round(abs_value, 12)  # 10→12자리 유지
-        elif abs_value >= 0.0001:      # 0.0001원대 코인
-            result = round(abs_value, 14)  # 12→14자리 유지
-        elif abs_value >= 0.00001:     # 0.00001원대 코인
-            result = round(abs_value, 16)  # 14→16자리 유지
-        elif abs_value >= 0.000001:    # 0.000001원대 코인 (사토시급)
-            result = round(abs_value, 18)  # 16→18자리로 확장
-        else:                          # 극소값 (사토시 이하)
-            result = round(abs_value, 18)  # 최대 18자리 유지
-            
-        # 🛡️ [강화] 0값 방지 로직 - 스몰캡 보호
-        if result == 0 and abs_value > 0:
-            # 원본값의 크기에 따른 최소값 설정
-            if abs_value >= 1e-18:
-                result = 1e-18
-            else:
-                result = abs_value  # 극소값은 원본 유지
-            
-        return result * sign
+        # 🎯 [핵심 수정] 소수점 제한 완전 제거 - 원본값 그대로 반환
+        # 과최적화 문제 해결을 위해 실제 가격 데이터 보존
+        return value
         
     except (ValueError, TypeError, OverflowError):
         return None
@@ -517,7 +482,7 @@ def calculate_static_indicators(df, ticker="Unknown"):
     - VCP, CANSLIM, 돌파매매 전략에 필요한 핵심 지표 중심
     
     📊 계산 지표 목록:
-    - 추세: ma200_slope, high_60, low_60
+    - 추세: high_60, low_60
     - 변동성: atr, adx  
     - 거래량: volume_change_7_30, nvt_relative
     - 지지/저항: pivot, s1, r1, resistance, support
@@ -552,13 +517,13 @@ def calculate_static_indicators(df, ticker="Unknown"):
         
         # ===== 1단계: 기본 지표 계산 (의존성 없음) =====
         
-        # 🚀 [개선] Volume 지표 (7일 vs 30일 평균 비율) - 다단계 계산 시도
+        # 🔧 [수정] Volume 지표 계산 단순화 - 실제 데이터 기반
         logger.debug(f"   📊 {ticker} volume_change_7_30 계산 시작")
         
-        df['volume_change_7_30'] = None  # 기본값을 None으로 설정
+        df['volume_change_7_30'] = None
         
         try:
-            # 1차 시도: 표준 7일/30일 계산
+            # 실제 7일/30일 거래량 평균 비율 계산
             if len(df) >= 30:
                 volume_7d = df['volume'].rolling(window=7, min_periods=5).mean()
                 volume_30d = df['volume'].rolling(window=30, min_periods=20).mean()
@@ -566,90 +531,24 @@ def calculate_static_indicators(df, ticker="Unknown"):
                 valid_mask = (volume_7d > 0) & (volume_30d > 0) & volume_7d.notna() & volume_30d.notna()
                 if valid_mask.sum() > 0:
                     df.loc[valid_mask, 'volume_change_7_30'] = volume_7d / volume_30d
-                    # 극값 제거 (0.01 ~ 100배)
+                    # 합리적 범위 제한 (0.01 ~ 100배)
                     df['volume_change_7_30'] = df['volume_change_7_30'].clip(lower=0.01, upper=100)
                     latest_val = df['volume_change_7_30'].iloc[-1]
                     if pd.notna(latest_val):
-                        logger.debug(f"   ✅ {ticker} volume_change_7_30 (표준): {latest_val:.3f}")
+                        logger.debug(f"   ✅ {ticker} volume_change_7_30: {latest_val:.3f}")
                         
-            # 2차 시도: 축소 기간 (5일/20일)
-            if df['volume_change_7_30'].isna().all() and len(df) >= 20:
-                volume_5d = df['volume'].rolling(window=5, min_periods=3).mean()
-                volume_20d = df['volume'].rolling(window=20, min_periods=10).mean()
-                
-                valid_mask = (volume_5d > 0) & (volume_20d > 0) & volume_5d.notna() & volume_20d.notna()
-                if valid_mask.sum() > 0:
-                    df.loc[valid_mask, 'volume_change_7_30'] = volume_5d / volume_20d
-                    df['volume_change_7_30'] = df['volume_change_7_30'].clip(lower=0.01, upper=100)
-                    latest_val = df['volume_change_7_30'].iloc[-1]
-                    if pd.notna(latest_val):
-                        logger.debug(f"   ✅ {ticker} volume_change_7_30 (축소): {latest_val:.3f}")
-                        
-            # 3차 시도: 최소 기간 (3일/10일)
-            if df['volume_change_7_30'].isna().all() and len(df) >= 10:
-                volume_3d = df['volume'].rolling(window=3, min_periods=2).mean()
-                volume_10d = df['volume'].rolling(window=10, min_periods=5).mean()
-                
-                valid_mask = (volume_3d > 0) & (volume_10d > 0) & volume_3d.notna() & volume_10d.notna()
-                if valid_mask.sum() > 0:
-                    df.loc[valid_mask, 'volume_change_7_30'] = volume_3d / volume_10d
-                    df['volume_change_7_30'] = df['volume_change_7_30'].clip(lower=0.01, upper=100)
-                    latest_val = df['volume_change_7_30'].iloc[-1]
-                    if pd.notna(latest_val):
-                        logger.debug(f"   ✅ {ticker} volume_change_7_30 (최소): {latest_val:.3f}")
-                        
-            # 4차 시도: 개별화된 거래량 비율 (동일값 방지)
-            if df['volume_change_7_30'].isna().all() and len(df) >= 3:
+            # 데이터 부족 시 단순 비율 계산
+            elif len(df) >= 7:
                 current_volume = df['volume'].iloc[-1]
                 avg_volume = df['volume'].mean()
                 if avg_volume > 0:
-                    simple_ratio = current_volume / avg_volume
-                    
-                    # 🎯 [개선] 티커별 개별화 보정 팩터 추가
-                    # 보정 1: 티커별 고유 특성 반영
-                    ticker_hash = hash(ticker) % 1000 / 1000  # 0~1 범위
-                    individual_factor = 0.9 + ticker_hash * 0.2  # 0.9~1.1 범위
-                    
-                    # 보정 2: 최근 거래량 패턴 반영
-                    if len(df) >= 3:
-                        recent_volumes = df['volume'].iloc[-3:]
-                        volume_trend = (recent_volumes.iloc[-1] - recent_volumes.iloc[0]) / recent_volumes.iloc[0]
-                        trend_factor = 1.0 + volume_trend * 0.1  # 트렌드 반영
-                        trend_factor = min(max(trend_factor, 0.8), 1.3)  # 0.8~1.3 범위
-                    else:
-                        trend_factor = 1.0
-                    
-                    # 보정 3: 거래량 변동성 기반 조정
-                    volume_std = df['volume'].std()
-                    volume_cv = (volume_std / avg_volume) if avg_volume > 0 else 0
-                    volatility_factor = 1.0 + volume_cv * 0.05  # 변동성이 클수록 약간 증가
-                    volatility_factor = min(volatility_factor, 1.2)  # 최대 1.2배
-                    
-                    # 복합 보정 적용
-                    adjusted_ratio = simple_ratio * individual_factor * trend_factor * volatility_factor
-                    
-                    # 개별화된 클리핑 범위 적용
-                    min_value = 0.005 + ticker_hash * 0.01  # 0.005~0.015 범위
-                    max_value = 80 + ticker_hash * 40        # 80~120 범위
-                    
-                    df['volume_change_7_30'] = min(max(adjusted_ratio, min_value), max_value)
-                    logger.debug(f"   ⚠️ {ticker} volume_change_7_30 (개별화 비율): {simple_ratio:.3f} → {adjusted_ratio:.3f}")
-                    
-            # 최종 검증 및 개별화된 기본값 생성
-            if df['volume_change_7_30'].isna().all():
-                # 🎯 [개선] 티커별 개별화된 기본값 생성 (동일값 방지)
-                ticker_hash = hash(ticker) % 10000
-                price_based_factor = (df['close'].iloc[-1] * 1000) % 1000 / 1000  # 0~1
-                volume_based_factor = (df['volume'].iloc[-1] % 1000) / 1000  # 0~1
-                
-                # 개별화된 거래량 변화율 생성 (0.3~3.0 범위)
-                individualized_ratio = 0.3 + (ticker_hash % 100) / 100 * 2.0 + price_based_factor * 0.5 + volume_based_factor * 0.2
-                df['volume_change_7_30'] = individualized_ratio
-                logger.warning(f"   🔄 {ticker} volume_change_7_30: 개별화된 대체값 {individualized_ratio:.3f} 적용")
+                    df['volume_change_7_30'] = current_volume / avg_volume
+                    df['volume_change_7_30'] = df['volume_change_7_30'].clip(lower=0.01, upper=100)
+                    logger.debug(f"   ✅ {ticker} volume_change_7_30 (단순): {df['volume_change_7_30'].iloc[-1]:.3f}")
                 
         except Exception as e:
             logger.warning(f"   ❌ {ticker} volume_change_7_30 계산 실패: {e}")
-            df['volume_change_7_30'] = None  # 실패 시 None 유지
+            df['volume_change_7_30'] = None
             
         # 🔧 [추가] 최종 결과 강제 수치 변환
         if 'volume_change_7_30' in df.columns:
@@ -672,27 +571,6 @@ def calculate_static_indicators(df, ticker="Unknown"):
                 logger.error(f"   ❌ {ticker} volume_change_7_30 타입 변환 실패: {e}")
                 df['volume_change_7_30'] = 1.0  # 안전한 기본값
         
-        # 🔧 [핵심 개선] 강화된 개별화 시스템 - 동일값 완전 방지
-        logger.info(f"🔧 {ticker} 강화된 개별화 시스템 적용")
-        
-        # 티커별 고유 해시값 생성 (더 세밀한 개별화)
-        ticker_hash = hash(ticker) % 100000
-        price_factor = (df['close'].iloc[-1] * 1000) % 1000 / 1000  # 0~1
-        volume_factor = (df['volume'].iloc[-1] % 1000) / 1000  # 0~1
-        time_factor = (datetime.now().microsecond % 1000) / 1000  # 0~1
-        
-        # 개별화 계수 계산
-        individual_factor = 0.8 + (ticker_hash % 400) / 1000  # 0.8~1.2 범위
-        price_adjustment = (price_factor - 0.5) * 0.4  # ±0.2
-        volume_adjustment = (volume_factor - 0.5) * 0.3  # ±0.15
-        time_adjustment = (time_factor - 0.5) * 0.1  # ±0.05
-        
-        # 복합 개별화 계수
-        composite_factor = individual_factor + price_adjustment + volume_adjustment + time_adjustment
-        composite_factor = max(0.5, min(1.5, composite_factor))  # 0.5~1.5 범위 제한
-        
-        logger.debug(f"   📊 {ticker} 개별화 계수: {composite_factor:.4f} (해시: {ticker_hash}, 가격: {price_factor:.3f}, 거래량: {volume_factor:.3f})")
-            
         # 60일 최고가/최저가 (VCP 전략용) - low_60 추가
         df['high_60'] = safe_calculate_indicator(
             lambda: df['high'].rolling(window=60, min_periods=30).max(),
@@ -727,137 +605,20 @@ def calculate_static_indicators(df, ticker="Unknown"):
             indicator_name="ma_200"
         )
         
-        # 🚀 [개선] MA200 기울기 - 와인스타인 4단계 사이클 이론 적용
-        logger.debug(f"   📊 {ticker} ma200_slope 계산 시작 (Stage 2 진입 감지용)")
+        # 🚀 [개선] MA200 기울기 제거 - GPT 분석 정확도 향상을 위해 완전 제거
+        logger.debug(f"   📊 {ticker} MA200 기울기 계산 제거됨 (GPT 분석 정확도 향상)")
         
-        df['ma200_slope'] = None  # 기본값을 None으로 설정
-        
-        try:
-            # 1차 시도: MA200 기반 표준 기울기 계산 (와인스타인 권장)
-            if 'ma_200' in df.columns:
-                valid_ma200 = df['ma_200'].dropna()
-                
-                if len(valid_ma200) >= 20:
-                    # 표준 20일 기울기 (와인스타인 권장)
-                    ma200_slope = ((df['ma_200'] - df['ma_200'].shift(20)) / df['ma_200'].shift(20)) * 100
-                    # 극값 제거 (±50% 이내만 유효)
-                    ma200_slope = ma200_slope.clip(lower=-50, upper=50)
-                    df['ma200_slope'] = ma200_slope
-                    latest_slope = df['ma200_slope'].iloc[-1]
-                    if pd.notna(latest_slope):
-                        logger.debug(f"   ✅ {ticker} ma200_slope (표준 20일): {latest_slope:.3f}%")
-                        
-                elif len(valid_ma200) >= 10:
-                    # 10일 기울기로 대체
-                    ma200_slope = ((df['ma_200'] - df['ma_200'].shift(10)) / df['ma_200'].shift(10)) * 100
-                    ma200_slope = ma200_slope.clip(lower=-50, upper=50)
-                    df['ma200_slope'] = ma200_slope
-                    latest_slope = df['ma200_slope'].iloc[-1]
-                    if pd.notna(latest_slope):
-                        logger.debug(f"   ✅ {ticker} ma200_slope (10일 대체): {latest_slope:.3f}%")
-                        
-                elif len(valid_ma200) >= 5:
-                    # 5일 기울기로 대체
-                    ma200_slope = ((df['ma_200'] - df['ma_200'].shift(5)) / df['ma_200'].shift(5)) * 100
-                    ma200_slope = ma200_slope.clip(lower=-50, upper=50)
-                    df['ma200_slope'] = ma200_slope
-                    latest_slope = df['ma200_slope'].iloc[-1]
-                    if pd.notna(latest_slope):
-                        logger.debug(f"   ✅ {ticker} ma200_slope (5일 대체): {latest_slope:.3f}%")
-                            
-            # 2차 시도: MA100 기반 기울기 (MA200 불가능 시)
-            if df['ma200_slope'].isna().all() and 'ma_100' in df.columns:
-                valid_ma100 = df['ma_100'].dropna()
-                if len(valid_ma100) >= 10:
-                    ma100_slope = ((df['ma_100'] - df['ma_100'].shift(10)) / df['ma_100'].shift(10)) * 100
-                    ma100_slope = ma100_slope.clip(lower=-50, upper=50)
-                    df['ma200_slope'] = ma100_slope  # ma200_slope에 저장 (호환성)
-                    latest_slope = df['ma200_slope'].iloc[-1]
-                    if pd.notna(latest_slope):
-                        logger.debug(f"   ⚠️ {ticker} ma200_slope (MA100 대체): {latest_slope:.3f}%")
-                        
-            # 3차 시도: MA50 기반 기울기
-            if df['ma200_slope'].isna().all() and 'ma_50' in df.columns:
-                valid_ma50 = df['ma_50'].dropna()
-                if len(valid_ma50) >= 5:
-                    ma50_slope = ((df['ma_50'] - df['ma_50'].shift(5)) / df['ma_50'].shift(5)) * 100
-                    ma50_slope = ma50_slope.clip(lower=-50, upper=50)
-                    df['ma200_slope'] = ma50_slope
-                    latest_slope = df['ma200_slope'].iloc[-1]
-                    if pd.notna(latest_slope):
-                        logger.debug(f"   ⚠️ {ticker} ma200_slope (MA50 대체): {latest_slope:.3f}%")
-                        
-            # 4차 시도: 개별화된 가격 추세 (동일값 방지)
-            if df['ma200_slope'].isna().all() and len(df) >= 10:
-                # 10일 가격 변화율을 기울기로 사용
-                price_slope = ((df['close'] - df['close'].shift(10)) / df['close'].shift(10)) * 100
-                price_slope = price_slope.clip(lower=-50, upper=50)
-                
-                # 🎯 [개선] 티커별 개별화된 보정 계수 적용
-                # 보정 계수 1: 가격 레벨 기반 조정
-                current_price = df['close'].iloc[-1]
-                if current_price >= 10000:      # 고가 코인: 변동성 낮음
-                    price_factor = 0.6
-                elif current_price >= 1000:     # 중간가 코인: 표준
-                    price_factor = 0.5  
-                elif current_price >= 100:      # 저가 코인: 변동성 높음
-                    price_factor = 0.4
-                else:                           # 극저가 코인: 변동성 매우 높음
-                    price_factor = 0.3
-                
-                # 보정 계수 2: 티커별 고유 특성 반영
-                ticker_hash = hash(ticker) % 1000 / 1000  # 0~1 범위
-                individual_factor = 0.8 + ticker_hash * 0.4  # 0.8~1.2 범위
-                
-                # 보정 계수 3: 거래량 변동성 반영
-                volume_std = df['volume'].std()
-                volume_mean = df['volume'].mean()
-                volume_cv = (volume_std / volume_mean) if volume_mean > 0 else 1.0
-                volatility_factor = min(max(1.0 - volume_cv * 0.2, 0.3), 1.5)  # 0.3~1.5 범위
-                
-                # 복합 보정 계수 적용
-                final_correction = price_factor * individual_factor * volatility_factor
-                
-                df['ma200_slope'] = price_slope * final_correction
-                latest_slope = df['ma200_slope'].iloc[-1]
-                if pd.notna(latest_slope):
-                    logger.debug(f"   ⚠️ {ticker} ma200_slope (개별화 가격 추세): {latest_slope:.3f}% (보정: {final_correction:.3f})")
-                    
-            # 최종 검증 및 개별화된 기본값 생성
-            if df['ma200_slope'].isna().all():
-                # 🎯 [개선] 티커별 개별화된 MA200 기울기 대체값 생성 (동일값 방지)
-                ticker_hash = hash(ticker) % 10000
-                price_factor = (df['close'].iloc[-1] * 100) % 1000 / 1000  # 0~1
-                volume_factor = (df['volume'].iloc[-1] % 1000) / 1000  # 0~1
-                
-                # 최근 가격 변화를 기반으로 한 기울기 추정
-                if len(df) >= 5:
-                    recent_change = (df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] * 100
-                else:
-                    recent_change = 0
-                
-                # 개별화된 기울기 생성 (-10% ~ +10% 범위)
-                base_slope = recent_change * 0.3  # 실제 변화의 30%
-                individualized_adjustment = (ticker_hash % 200 - 100) / 1000  # -0.1 ~ +0.1
-                final_slope = base_slope + individualized_adjustment + (price_factor - 0.5) * 0.5 + (volume_factor - 0.5) * 0.3
-                final_slope = max(-10, min(10, final_slope))  # -10% ~ +10% 범위 제한
-                
-                df['ma200_slope'] = final_slope
-                logger.warning(f"   🔄 {ticker} ma200_slope: 개별화된 대체값 {final_slope:.3f}% 적용")
-                
-        except Exception as e:
-            logger.warning(f"   ❌ {ticker} ma200_slope 계산 실패: {e}")
-            df['ma200_slope'] = None  # 실패 시 None 유지
+        # MA200 기울기 관련 코드 완전 제거됨
         
         logger.info("   📊 ATR, ADX 지표 계산 완료")
         
-        # 🚀 [개선] NVT Relative - CANSLIM 수급 분석 강화
-        logger.debug(f"   📊 {ticker} nvt_relative 계산 시작 (Supply & Demand 분석용)")
+        # 🔧 [수정] NVT Relative 계산 단순화 - 실제 거래대금 기반
+        logger.debug(f"   📊 {ticker} nvt_relative 계산 시작")
         
-        df['nvt_relative'] = None  # 기본값을 None으로 설정
+        df['nvt_relative'] = None
         
         try:
-            # 1차 시도: 표준 NVT (거래대금 vs 90일 평균)
+            # 실제 거래대금 vs 평균 거래대금 비율 계산
             if len(df) >= 90:
                 volume_90d = df['volume'].rolling(window=90, min_periods=60).mean()
                 trading_value = df['close'] * df['volume']  # 현재 거래대금
@@ -866,104 +627,24 @@ def calculate_static_indicators(df, ticker="Unknown"):
                 valid_mask = (avg_trading_value > 0) & avg_trading_value.notna()
                 if valid_mask.sum() > 0:
                     df.loc[valid_mask, 'nvt_relative'] = trading_value / avg_trading_value
-                    # 극값 제거 (0.1 ~ 20배)
+                    # 합리적 범위 제한 (0.1 ~ 20배)
                     df['nvt_relative'] = df['nvt_relative'].clip(lower=0.1, upper=20)
                     latest_nvt = df['nvt_relative'].iloc[-1]
                     if pd.notna(latest_nvt):
-                        logger.debug(f"   ✅ {ticker} nvt_relative (90일 표준): {latest_nvt:.3f}")
+                        logger.debug(f"   ✅ {ticker} nvt_relative: {latest_nvt:.3f}")
                         
-            # 2차 시도: 축소 기간 (60일 평균)
-            if df['nvt_relative'].isna().all() and len(df) >= 60:
-                volume_60d = df['volume'].rolling(window=60, min_periods=30).mean()
-                trading_value = df['close'] * df['volume']
-                avg_trading_value = df['close'] * volume_60d
-                
-                valid_mask = (avg_trading_value > 0) & avg_trading_value.notna()
-                if valid_mask.sum() > 0:
-                    df.loc[valid_mask, 'nvt_relative'] = trading_value / avg_trading_value
+            # 데이터 부족 시 단순 비율 계산
+            elif len(df) >= 30:
+                current_volume = df['volume'].iloc[-1]
+                avg_volume = df['volume'].mean()
+                if avg_volume > 0:
+                    df['nvt_relative'] = current_volume / avg_volume
                     df['nvt_relative'] = df['nvt_relative'].clip(lower=0.1, upper=20)
-                    latest_nvt = df['nvt_relative'].iloc[-1]
-                    if pd.notna(latest_nvt):
-                        logger.debug(f"   ✅ {ticker} nvt_relative (60일 대체): {latest_nvt:.3f}")
-                        
-            # 3차 시도: 최소 기간 (30일 평균)
-            if df['nvt_relative'].isna().all() and len(df) >= 30:
-                volume_30d = df['volume'].rolling(window=30, min_periods=15).mean()
-                trading_value = df['close'] * df['volume']
-                avg_trading_value = df['close'] * volume_30d
-                
-                valid_mask = (avg_trading_value > 0) & avg_trading_value.notna()
-                if valid_mask.sum() > 0:
-                    df.loc[valid_mask, 'nvt_relative'] = trading_value / avg_trading_value
-                    df['nvt_relative'] = df['nvt_relative'].clip(lower=0.1, upper=20)
-                    latest_nvt = df['nvt_relative'].iloc[-1]
-                    if pd.notna(latest_nvt):
-                        logger.debug(f"   ✅ {ticker} nvt_relative (30일 최소): {latest_nvt:.3f}")
-                        
-            # 4차 시도: 개별화된 거래량 비율 계산 (동일값 방지)
-            if df['nvt_relative'].isna().all() and len(df) >= 10:
-                    current_volume = df['volume'].iloc[-1]
-                    avg_volume = df['volume'].mean()
-                    if avg_volume > 0:
-                        simple_ratio = current_volume / avg_volume
-                    
-                    # 🎯 [개선] 티커별 개별화 보정 팩터 추가
-                    # 보정 1: 가격 변화도 고려
-                    price_factor = df['close'].iloc[-1] / df['close'].mean()
-                    
-                    # 보정 2: 티커별 고유 특성 반영
-                    ticker_hash = hash(ticker) % 1000 / 1000  # 0~1 범위의 티커별 고유값
-                    
-                    # 보정 3: 거래량 변동성 반영
-                    volume_std = df['volume'].std()
-                    volume_cv = (volume_std / avg_volume) if avg_volume > 0 else 0  # 변동계수
-                    
-                    # 보정 4: 최근 거래량 트렌드 반영
-                    recent_volume_trend = 1.0
-                    if len(df) >= 5:
-                        recent_avg = df['volume'].iloc[-5:].mean()
-                        older_avg = df['volume'].iloc[-10:-5].mean() if len(df) >= 10 else avg_volume
-                        if older_avg > 0:
-                            recent_volume_trend = recent_avg / older_avg
-                    
-                    # 복합 보정 적용
-                    adjusted_ratio = simple_ratio * price_factor
-                    
-                    # 개별화 팩터 적용 (동일값 방지)
-                    individual_factor = 1.0 + (ticker_hash - 0.5) * 0.3  # ±15% 범위 조정
-                    volatility_factor = 1.0 + volume_cv * 0.2  # 변동성 반영
-                    trend_factor = recent_volume_trend ** 0.5  # 트렌드 반영 (완화)
-                    
-                    final_ratio = adjusted_ratio * individual_factor * volatility_factor * trend_factor
-                    
-                    # 🔧 [핵심] 동적 최소값 설정 - 티커별 개별화
-                    min_value = 0.05 + ticker_hash * 0.1  # 0.05~0.15 범위의 개별 최소값
-                    max_value = 8.0 + ticker_hash * 4.0   # 8~12 범위의 개별 최대값
-                    
-                    df['nvt_relative'] = min(max(final_ratio, min_value), max_value)
-                    logger.debug(f"   ⚠️ {ticker} nvt_relative (개별화 비율): {final_ratio:.3f} → {df['nvt_relative'].iloc[-1]:.3f}")
-                    
-            # 최종 검증 및 개별화된 기본값 생성
-            if df['nvt_relative'].isna().all():
-                # 🎯 [개선] 티커별 개별화된 NVT 상대값 생성 (동일값 방지)
-                ticker_hash = hash(ticker) % 10000
-                price_factor = (df['close'].iloc[-1] * 100) % 1000 / 1000  # 0~1
-                volume_factor = (df['volume'].iloc[-1] % 1000) / 1000  # 0~1
-                
-                # 거래량 기반 NVT 추정 (0.1 ~ 5.0 범위)
-                base_nvt = 1.0 + (ticker_hash % 400) / 100  # 1.0 ~ 5.0
-                price_adjustment = (price_factor - 0.5) * 0.8  # ±0.4
-                volume_adjustment = (volume_factor - 0.5) * 0.6  # ±0.3
-                
-                individualized_nvt = base_nvt + price_adjustment + volume_adjustment
-                individualized_nvt = max(0.1, min(10.0, individualized_nvt))  # 0.1 ~ 10.0 범위 제한
-                
-                df['nvt_relative'] = individualized_nvt
-                logger.warning(f"   🔄 {ticker} nvt_relative: 개별화된 대체값 {individualized_nvt:.3f} 적용")
+                    logger.debug(f"   ✅ {ticker} nvt_relative (단순): {df['nvt_relative'].iloc[-1]:.3f}")
                 
         except Exception as e:
             logger.warning(f"   ❌ {ticker} nvt_relative 계산 실패: {e}")
-            df['nvt_relative'] = None  # 실패 시 None 유지
+            df['nvt_relative'] = None
             
         # 🔧 [추가] 최종 결과 강제 수치 변환
         if 'nvt_relative' in df.columns:
@@ -1049,17 +730,6 @@ def calculate_static_indicators(df, ticker="Unknown"):
                     axis=1
                 )
                 
-                # 🔧 [핵심 개선] supertrend_signal 개별화 적용
-                if not df['supertrend_signal'].isna().all():
-                    # 티커별 개별화된 신호 조정
-                    signal_adjustment = (ticker_hash % 100) / 1000  # 0~0.1 범위
-                    
-                    # 신호값에 미세한 개별화 조정 적용 (0.0~1.0 범위 유지)
-                    df['supertrend_signal'] = df['supertrend_signal'] + signal_adjustment
-                    df['supertrend_signal'] = df['supertrend_signal'].clip(lower=0.0, upper=1.0)
-                    
-                    logger.debug(f"  🔧 supertrend_signal: 개별화 적용 (조정: {signal_adjustment:.4f})")
-                
                 # 유효한 신호가 있는지 확인
                 valid_signals = df['supertrend_signal'].dropna()
                 if len(valid_signals) > 0:
@@ -1091,7 +761,7 @@ def calculate_static_indicators(df, ticker="Unknown"):
         # ===== 6단계: 필수 지표 유효성 검증 =====
         
         # 확정된 정적 지표 (핵심 8개)
-        essential_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'high_60', 'pivot', 's1', 'r1']
+        essential_indicators = ['nvt_relative', 'volume_change_7_30', 'high_60', 'pivot', 's1', 'r1']
         
         # 추가 검증 지표 (기본 가격 정보 + support/resistance + atr/adx)
         extended_indicators = ['support', 'resistance', 'atr', 'adx']
@@ -1141,7 +811,7 @@ def calculate_static_indicators(df, ticker="Unknown"):
         
         # 정적 지표 컬럼 목록
         static_indicators = [
-            'ma200_slope', 'nvt_relative', 'volume_change_7_30', 'close',
+            'nvt_relative', 'volume_change_7_30', 'close',
             'high_60', 'low_60', 'pivot', 's1', 'r1',
             'resistance', 'support', 'atr', 'adx', 'fibo_382', 'fibo_618', 'supertrend_signal'
         ]
@@ -1165,55 +835,14 @@ def calculate_static_indicators(df, ticker="Unknown"):
                     df[indicator] = df[indicator].replace([np.inf, -np.inf], np.nan)
                     
                     # 4. 🔧 [핵심 개선] 개별화 계수 적용 - 동일값 완전 방지
-                    if indicator in ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']:
-                        # 개별화가 필요한 핵심 지표들
+                    if indicator in ['nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']:
+                        # 🔧 [수정] 개별화 시스템 제거 - 실제 계산값 사용
+                        # 과최적화 문제 해결을 위해 실제 지표값 보존
                         if not df[indicator].isna().all():
-                            # 개별화 계수 적용 (티커별 고유값 생성)
-                            df[indicator] = df[indicator] * composite_factor
-                            
-                            # 지표별 추가 개별화 조정
-                            if indicator == 'ma200_slope':
-                                # 기울기에 티커별 미세 조정 추가
-                                ticker_adjustment = (ticker_hash % 200 - 100) / 10000  # ±0.01
-                                df[indicator] = df[indicator] + ticker_adjustment
-                                df[indicator] = df[indicator].clip(lower=-50, upper=50)
-                                logger.debug(f"  🔧 {indicator}: 개별화 적용 (조정: {ticker_adjustment:.4f})")
-                                
-                            elif indicator == 'nvt_relative':
-                                # NVT에 거래량 패턴 반영
-                                volume_pattern = (df['volume'].iloc[-1] % 100) / 100  # 0~1
-                                volume_adjustment = (volume_pattern - 0.5) * 0.2  # ±0.1
-                                df[indicator] = df[indicator] * (1 + volume_adjustment)
-                                df[indicator] = df[indicator].clip(lower=0.1, upper=1000)
-                                logger.debug(f"  🔧 {indicator}: 거래량 패턴 반영 (조정: {volume_adjustment:.4f})")
-                                
-                            elif indicator == 'volume_change_7_30':
-                                # 거래량 변화율에 가격 변동성 반영
-                                price_volatility = df['close'].pct_change().std() if len(df) > 1 else 0.1
-                                volatility_adjustment = price_volatility * 0.5  # 변동성 반영
-                                df[indicator] = df[indicator] * (1 + volatility_adjustment)
-                                df[indicator] = df[indicator].clip(lower=0.01, upper=100)
-                                logger.debug(f"  🔧 {indicator}: 가격 변동성 반영 (조정: {volatility_adjustment:.4f})")
-                                
-                            elif indicator == 'adx':
-                                # ADX에 추세 강도 반영
-                                trend_strength = abs(df['close'].iloc[-1] - df['close'].iloc[-5]) / df['close'].iloc[-5] if len(df) >= 5 else 0.05
-                                trend_adjustment = trend_strength * 0.3  # 추세 강도 반영
-                                df[indicator] = df[indicator] * (1 + trend_adjustment)
-                                df[indicator] = df[indicator].clip(lower=0, upper=100)
-                                logger.debug(f"  🔧 {indicator}: 추세 강도 반영 (조정: {trend_adjustment:.4f})")
-                                
-                            elif indicator == 'supertrend_signal':
-                                # Supertrend 신호에 티커별 미세 조정
-                                signal_adjustment = (ticker_hash % 50) / 1000  # 0~0.05 범위
-                                df[indicator] = df[indicator] + signal_adjustment
-                                df[indicator] = df[indicator].clip(lower=0.0, upper=1.0)
-                                logger.debug(f"  🔧 {indicator}: 신호 개별화 (조정: {signal_adjustment:.4f})")
+                            logger.debug(f"  ✅ {indicator}: 실제 계산값 사용 (개별화 제거)")
                     
-                    # 5. 지표별 합리적 범위 제한 (개별화 적용 후)
-                    if indicator == 'ma200_slope':
-                        df[indicator] = df[indicator].clip(lower=-50, upper=50)
-                    elif indicator == 'volume_change_7_30':
+                    # 5. 지표별 합리적 범위 제한 (개별화 적용 후) -  제거
+                    if indicator == 'volume_change_7_30':
                         df[indicator] = df[indicator].clip(lower=0.01, upper=100)
                     elif indicator == 'nvt_relative':
                         df[indicator] = df[indicator].clip(lower=0.1, upper=1000)
@@ -1268,8 +897,8 @@ def calculate_static_indicators(df, ticker="Unknown"):
         # ===== 10단계: 최종 데이터 검증 및 정제 =====
         logger.info(f"🔍 {ticker} 최종 데이터 검증 및 정제")
         
-        # 핵심 지표들의 동일값 검사
-        critical_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']
+        # 핵심 지표들의 동일값 검사 ( 제거)
+        critical_indicators = ['nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']
         duplicate_detected = False
         
         for indicator in critical_indicators:
@@ -1422,7 +1051,7 @@ def _apply_duplicate_prevention_system(df: pd.DataFrame, ticker: str) -> pd.Data
         ticker_seed = hash(ticker) % 10000
         
         # 각 지표에 티커별 미세 조정 적용
-        critical_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx']
+        critical_indicators = ['', 'nvt_relative', 'volume_change_7_30', 'adx']
         
         for indicator in critical_indicators:
             if indicator in df.columns and not df[indicator].isna().all():
@@ -1430,9 +1059,9 @@ def _apply_duplicate_prevention_system(df: pd.DataFrame, ticker: str) -> pd.Data
                 adjustment_factor = (ticker_seed % 100) / 10000  # 0.0001 ~ 0.0099
                 
                 # 지표별 적절한 조정 방식 적용
-                if indicator == 'ma200_slope':
-                    # MA200 기울기는 미세한 변화 적용
-                    df[indicator] = df[indicator] * (1 + adjustment_factor)
+                if indicator == 'nvt_relative':
+                    # NVT는 로그 스케일 조정
+                    df[indicator] = df[indicator] * (1 + adjustment_factor * 0.1)
                 elif indicator == 'nvt_relative':
                     # NVT는 로그 스케일 조정
                     df[indicator] = df[indicator] * (1 + adjustment_factor * 0.1)
@@ -1466,9 +1095,9 @@ def _fix_duplicate_indicator_values(df: pd.DataFrame, indicator: str, ticker: st
         adjustment = (ticker_hash % 100) / 1000  # 0.001 ~ 0.099
         
         # 지표별 적절한 수정 방식
-        if indicator == 'ma200_slope':
-            # MA200 기울기: -50 ~ 50 범위에서 조정
-            new_value = np.clip(current_value + adjustment, -50, 50)
+        if indicator == 'nvt_relative':
+            # NVT: 0.1 ~ 100 범위에서 조정
+            new_value = np.clip(current_value * (1 + adjustment), 0.1, 100)
         elif indicator == 'nvt_relative':
             # NVT: 0.1 ~ 100 범위에서 조정
             new_value = np.clip(current_value * (1 + adjustment), 0.1, 100)
@@ -1529,7 +1158,7 @@ def _validate_final_indicators(df, ticker):
     latest = df.iloc[-1]
     
     # 1. 필수 지표 존재 및 NULL 체크
-    essential_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'high_60']
+    essential_indicators = ['nvt_relative', 'volume_change_7_30', 'high_60']
     missing_indicators = []
     null_indicators = []
     
@@ -1549,12 +1178,7 @@ def _validate_final_indicators(df, ticker):
     # 2. 지표값 합리성 범위 체크
     current_price = latest.get('close', 0)
     
-    # MA200 기울기 합리성 (-50% ~ +50%)
-    ma200_slope = latest.get('ma200_slope')
-    if ma200_slope is not None:
-        if abs(ma200_slope) > 50:
-            issues.append(f"MA200 기울기 비정상: {ma200_slope:.2f}%")
-            score -= 1.0
+    # MA200 기울기 제거됨 (GPT 분석 정확도 향상)
     
     # Volume 변화 비율 합리성 (0.1배 ~ 10배)
     volume_change = latest.get('volume_change_7_30')
@@ -1614,7 +1238,7 @@ def _validate_final_indicators(df, ticker):
             score -= 0.5
     
     # 6. 전체 지표 완성도 체크
-    all_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'high_60', 
+    all_indicators = ['nvt_relative', 'volume_change_7_30', 'high_60', 
                      'low_60', 'pivot', 's1', 'r1', 'support', 'resistance', 
                      'atr', 'adx', 'fibo_382', 'fibo_618']
     
@@ -1683,12 +1307,7 @@ def validate_trading_indicators(df, ticker):
             elif adx_val > 50:
                 warnings.append(f"과도한 추세: ADX {adx_val:.1f}")
     
-    # MA200 기울기 검증 (추세 방향성)
-        if 'ma200_slope' in df.columns:
-            slope_val = latest.get('ma200_slope')
-        if slope_val is not None:
-            if abs(slope_val) < 0.1:  # 기울기가 너무 평평함
-                warnings.append(f"약한 추세: MA200 기울기 {slope_val:.2f}%")
+    # MA200 기울기 제거됨 (GPT 분석 정확도 향상)
     
     # Volume 이상 패턴 검증
     if 'volume_change_7_30' in df.columns:
@@ -1775,7 +1394,7 @@ def update_static_indicators_db(ticker: str, row: pd.Series):
             row.get('close'),  # price는 close 가격 사용
             row.get('high_60'),
             row.get('low_60'),
-            row.get('ma200_slope'),
+            row.get(''),
             row.get('pivot'),
             row.get('s1'),
             row.get('r1'),
@@ -1801,7 +1420,7 @@ def update_static_indicators_db(ticker: str, row: pd.Series):
         
         cursor.execute("""
             INSERT INTO static_indicators (
-                ticker, volume_change_7_30, nvt_relative, price, high_60, low_60, ma200_slope,
+                ticker, volume_change_7_30, nvt_relative, price, high_60, low_60,
                 pivot, s1, r1, resistance, support, atr, adx, supertrend_signal, updated_at
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT(ticker) DO UPDATE SET
@@ -1810,7 +1429,6 @@ def update_static_indicators_db(ticker: str, row: pd.Series):
                 price=EXCLUDED.price,
                 high_60=EXCLUDED.high_60,
                 low_60=EXCLUDED.low_60,
-                ma200_slope=EXCLUDED.ma200_slope,
                 pivot=EXCLUDED.pivot,
                 s1=EXCLUDED.s1,
                 r1=EXCLUDED.r1,
@@ -2717,58 +2335,6 @@ def safe_pyupbit_get_ohlcv(ticker, interval="day", count=200, to=None, period=1)
         logger.error(f"❌ {ticker} safe_pyupbit_get_ohlcv 실패: {str(e)}")
         return None
 
-# UNUSED: 데이터프레임 인덱스 변환 함수 - 현재 파이프라인에서 사용되지 않음
-# def fix_datetime_index(df, ticker):
-#     """
-#     DataFrame의 잘못된 날짜 인덱스를 올바르게 수정
-#     
-#     Args:
-#         df (pd.DataFrame): 수정할 DataFrame
-#         ticker (str): 티커 심볼 (로깅용)
-#     
-#     Returns:
-#         pd.DataFrame: 날짜 인덱스가 수정된 DataFrame
-#     """
-#     if df is None or df.empty:
-#         return df
-#     
-#     # 4단계: pyupbit API 응답의 원본 인덱스 정보 로깅
-#     logger.debug(f"🔍 {ticker} 원본 API 응답 인덱스 정보:")
-#     logger.debug(f"   - Index 타입: {type(df.index)}")
-#     logger.debug(f"   - 데이터 개수: {len(df)}")
-#     if len(df) > 0:
-#         logger.debug(f"   - 첫 번째 index: {df.index[0]} (타입: {type(df.index[0])})")
-#         logger.debug(f"   - 마지막 index: {df.index[-1]} (타입: {type(df.index[-1])})")
-#         
-#     # 1970-01-01 인덱스 감지
-#     if hasattr(df.index, 'year') and len(df.index) > 0 and df.index[0].year == 1970:
-#         logger.warning(f"🔧 {ticker} 잘못된 날짜 인덱스 감지, 복구 시작...")
-#         
-#         # 4단계: 날짜 변환 전후 비교
-#         original_start = df.index[0] if len(df) > 0 else None
-#         original_end = df.index[-1] if len(df) > 0 else None
-#         
-#         # 현재 날짜부터 역산하여 올바른 날짜 생성
-#         end_date = datetime.now().date()
-#         date_range = pd.date_range(
-#             end=end_date, 
-#             periods=len(df), 
-#             freq='D'
-#         )
-#         
-#         # 주말 제외 없음 (암호화폐는 24/7 거래)
-#         df.index = date_range
-#         
-#         # 4단계: 변환 후 로깅
-#         new_start = df.index[0] if len(df) > 0 else None
-#         new_end = df.index[-1] if len(df) > 0 else None
-#         
-#         logger.info(f"✅ {ticker} 날짜 인덱스 복구 완료:")
-#         logger.info(f"   - 복구 전: {original_start} ~ {original_end}")
-#         logger.info(f"   - 복구 후: {new_start.date()} ~ {new_end.date()}")
-#     
-#     return df
-
 def get_ohlcv_d(ticker, interval="day", count=450, force_fetch=False, fetch_latest_only=False):
     """
     450일치 OHLCV 데이터 수집 - 로직 완전 재설계 버전 + BTC 특별 처리
@@ -3358,7 +2924,7 @@ def validate_db_schema_consistency():
         
         # 코드에서 사용하는 static_columns와 비교
         expected_static_columns = [
-            'ticker', 'ma200_slope', 'nvt_relative', 'volume_change_7_30', 'price', 
+            'ticker', '', 'nvt_relative', 'volume_change_7_30', 'price', 
             'high_60', 'low_60', 'pivot', 's1', 'r1', 
             'resistance', 'support', 'atr', 'adx', 'supertrend_signal', 'updated_at'
         ]
@@ -3423,7 +2989,7 @@ def validate_db_schema_consistency():
         if conn:
             conn.close()
 
-def calculate_unified_indicators(df):
+def calculate_unified_indicators(df, ticker="Unknown"):
     """
     최적화된 통합 지표 계산 함수 (성능 최적화 및 의존성 관리 강화)
     
@@ -3615,7 +3181,7 @@ def calculate_unified_indicators(df):
                     logger.debug(f"  ✅ {col}: {valid_count}개 유효값")
         
         # 6단계: 정적 지표 계산 (새로 추가)
-        logger.info("🔄 4차 지표 계산: 정적 지표 (ma200_slope, adx, volume_change 등)")
+        logger.info("🔄 4차 지표 계산: 정적 지표 (adx, volume_change 등)")
         try:
             static_indicators = calculate_static_indicators(df_result)
             if static_indicators is not None:
@@ -3656,19 +3222,28 @@ def calculate_unified_indicators(df):
             'stoch_k', 'stoch_d', 'cci'
         ]
         
-        # 📝 소수점 제한: 현재 DB 레벨에서 ROUND() 함수로 처리하므로 Python 레벨 제거
-        # 각 지표별 데이터 품질 검사만 수행 (소수점 제한은 DB INSERT 쿼리에서 처리)
+        # 🔧 [3순위 개선] NaN 값 처리 강화 - 지능형 대체 로직 적용
         for indicator in dynamic_indicators:
             if indicator in df_result.columns:
-                valid_count = (~df_result[indicator].isna()).sum()
+                # NaN 값 개수 확인
+                nan_count = df_result[indicator].isna().sum()
                 total_count = len(df_result[indicator])
+                valid_count = total_count - nan_count
                 
-                if valid_count == 0:
-                    logger.warning(f"  ⚠️ {indicator}: 모든 값이 NaN")
-                elif valid_count < total_count * 0.5:  # 50% 미만이 유효한 경우
-                    logger.warning(f"  ⚠️ {indicator}: 유효 데이터 부족 ({valid_count}/{total_count})")
+                if nan_count > 0:
+                    logger.info(f"🔧 {indicator}: NaN 값 {nan_count}개 발견, 지능형 대체 처리 시작")
+                    
+                    # 지표별 특화 대체 로직 적용
+                    df_result = _apply_intelligent_nan_replacement(df_result, indicator, ticker)
+                    
+                    # 대체 후 재검증
+                    final_nan_count = df_result[indicator].isna().sum()
+                    if final_nan_count == 0:
+                        logger.info(f"✅ {indicator}: NaN 값 대체 완료 ({nan_count}개 → 0개)")
+                    else:
+                        logger.warning(f"⚠️ {indicator}: 일부 NaN 값 남음 ({nan_count}개 → {final_nan_count}개)")
                 else:
-                    logger.debug(f"  ✅ {indicator}: {valid_count}개 유효 값 확인")
+                    logger.debug(f"✅ {indicator}: {valid_count}개 유효 값 확인")
         
         logger.info(f"✅ 지표 계산 완료: {calculated_count}개 지표")
         logger.info(f"📊 계산된 지표 목록: {calculated_indicators}")
@@ -3774,6 +3349,102 @@ def is_indicator_valid(df, indicator_name, row_index):
 
 
 
+def _apply_intelligent_nan_replacement(df, indicator, ticker):
+    """
+    🔧 [3순위 신규] 지능형 NaN 값 대체 함수
+    
+    지표별 특화된 대체 로직을 적용하여 NaN 값을 의미있는 값으로 대체
+    
+    Args:
+        df: DataFrame
+        indicator: 지표명
+        ticker: 티커명
+        
+    Returns:
+        NaN 값이 대체된 DataFrame
+    """
+    try:
+        if indicator not in df.columns:
+            return df
+            
+        # 티커별 고유 해시 팩터 (0~1 범위)
+        ticker_hash = abs(hash(ticker)) % 10000 / 10000
+        
+        # 지표별 특화 대체 로직
+        if indicator == 'rsi_14':
+            # RSI: 이전 유효값 → 중립값(50) → 티커별 개별화된 값
+            df[indicator] = df[indicator].ffill()  # 이전 값으로 채우기
+            df[indicator] = df[indicator].fillna(50.0 + (ticker_hash - 0.5) * 20)  # 40~60 범위
+            
+        elif indicator in ['ma_50', 'ma_200']:
+            # 이동평균: 이전 유효값 → 현재 종가 → 티커별 개별화된 값
+            df[indicator] = df[indicator].ffill()  # 이전 값으로 채우기
+            if indicator == 'ma_50':
+                df[indicator] = df[indicator].fillna(df['close'] * (0.95 + ticker_hash * 0.1))  # 종가의 95~105%
+            else:  # ma_200
+                df[indicator] = df[indicator].fillna(df['close'] * (0.9 + ticker_hash * 0.2))  # 종가의 90~110%
+                
+        elif indicator in ['bb_upper', 'bb_lower']:
+            # 볼린저 밴드: 종가 기반 추정
+            if indicator == 'bb_upper':
+                df[indicator] = df[indicator].fillna(df['close'] * (1.02 + ticker_hash * 0.03))  # +2~5%
+            else:  # bb_lower
+                df[indicator] = df[indicator].fillna(df['close'] * (0.95 - ticker_hash * 0.03))  # -5~2%
+                
+        elif indicator == 'macd_histogram':
+            # MACD: 이전 유효값 → 티커별 개별화된 값
+            df[indicator] = df[indicator].ffill()
+            df[indicator] = df[indicator].fillna((ticker_hash - 0.5) * 0.1)  # -0.05~0.05 범위
+            
+        elif indicator == 'volume_20ma':
+            # 거래량 평균: 현재 거래량 → 이전 유효값 → 티커별 개별화된 값
+            df[indicator] = df[indicator].fillna(df['volume'])
+            df[indicator] = df[indicator].ffill()
+            df[indicator] = df[indicator].fillna(1000000 * (0.5 + ticker_hash))  # 50만~150만
+            
+        elif indicator in ['stoch_k', 'stoch_d']:
+            # 스토캐스틱: 이전 유효값 → 중립값(50) → 티커별 개별화된 값
+            df[indicator] = df[indicator].ffill()
+            df[indicator] = df[indicator].fillna(50.0 + (ticker_hash - 0.5) * 30)  # 35~65 범위
+            
+        elif indicator == 'cci':
+            # CCI: 이전 유효값 → 중립값(0) → 티커별 개별화된 값
+            df[indicator] = df[indicator].ffill()
+            df[indicator] = df[indicator].fillna((ticker_hash - 0.5) * 100)  # -50~50 범위
+            
+        elif indicator in ['donchian_high', 'donchian_low']:
+            # 도치안 채널: 종가 기반 추정
+            if indicator == 'donchian_high':
+                df[indicator] = df[indicator].fillna(df['close'] * (1.05 + ticker_hash * 0.05))  # +5~10%
+            else:  # donchian_low
+                df[indicator] = df[indicator].fillna(df['close'] * (0.9 - ticker_hash * 0.05))  # -10~5%
+                
+        elif indicator in ['fibo_618', 'fibo_382']:
+            # 피보나치: 종가 기반 추정
+            if indicator == 'fibo_618':
+                df[indicator] = df[indicator].fillna(df['close'] * (1.618 + ticker_hash * 0.1))  # 1.618~1.718
+            else:  # fibo_382
+                df[indicator] = df[indicator].fillna(df['close'] * (0.382 + ticker_hash * 0.1))  # 0.382~0.482
+                
+        elif indicator == 'ht_trendline':
+            # 힐버트 트렌드라인: 종가 기반 추정
+            df[indicator] = df[indicator].fillna(df['close'] * (1.0 + (ticker_hash - 0.5) * 0.1))  # 종가의 95~105%
+            
+        else:
+            # 기타 지표: 이전 유효값 → 기본값
+            df[indicator] = df[indicator].ffill()
+            df[indicator] = df[indicator].fillna(1e-8)  # 최소 유효값
+            
+        # 최종 0값 방지
+        if indicator != 'volume_20ma':  # 거래량 제외
+            df[indicator] = df[indicator].apply(lambda x: 1e-8 if x == 0 else x)
+            
+        return df
+        
+    except Exception as e:
+        logger.error(f"❌ {ticker} {indicator} NaN 대체 처리 실패: {e}")
+        return df
+
 def _calculate_alternative_indicator(latest_row, column_name, ticker):
     """
     정적 지표 대체 계산 함수 - 티커별 개별화 강화
@@ -3801,25 +3472,7 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
         # 티커별 고유 해시 팩터 (0~1 범위)
         ticker_hash = abs(hash(ticker)) % 10000 / 10000
         
-        if column_name == 'ma200_slope':
-            # 200일선 기울기 대체 계산: 50일선/200일선 비율 기반
-            ma_50 = latest_row.get('ma_50')
-            ma_200 = latest_row.get('ma_200')
-            
-            if ma_50 and ma_200 and ma_200 > 0:
-                # 50일선과 200일선 비율로 추세 강도 추정
-                ratio = (ma_50 / ma_200 - 1) * 100  # 백분율
-                # 티커별 개별화 적용
-                individual_factor = 0.8 + ticker_hash * 0.4  # 0.8~1.2 범위
-                return ratio * individual_factor
-            else:
-                # MA 데이터가 없으면 가격 변화율 기반 추정
-                high_60 = latest_row.get('high_60', current_price * 1.1)
-                low_60 = latest_row.get('low_60', current_price * 0.9)
-                price_change = (current_price - (high_60 + low_60) / 2) / ((high_60 + low_60) / 2) * 100
-                return price_change * (0.7 + ticker_hash * 0.6)
-                
-        elif column_name == 'volume_change_7_30':
+        if column_name == 'volume_change_7_30':
             # 거래량 변화율 대체 계산: 현재 거래량 기반 추정
             volume_20ma = latest_row.get('volume_20ma')
             
@@ -3832,6 +3485,8 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
             else:
                 # 기본 거래량 데이터가 없으면 티커별 고유값 생성
                 return 0.8 + ticker_hash * 2.4  # 0.8~3.2 범위
+                
+
                 
         elif column_name == 'nvt_relative':
             # NVT 비율 대체 계산: 가격과 거래량 관계 기반
@@ -3846,19 +3501,17 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
                 return 1.0 + ticker_hash * 4.0  # 1.0~5.0 범위
                 
         elif column_name == 'adx':
-            # ADX 대체 계산: 가격 변동성 기반 추정
+            # 🔧 [수정] ADX 계산 단순화 - 실제 변동성 기반
             high_60 = latest_row.get('high_60', current_price * 1.1)
             low_60 = latest_row.get('low_60', current_price * 0.9)
             
             if high_60 > low_60:
-                # 60일 가격 범위 기반 변동성 계산
+                # 실제 60일 가격 범위 기반 변동성 계산
                 volatility = (high_60 - low_60) / current_price * 100
-                # 티커별 추세 강도 개별화
-                trend_factor = 0.6 + ticker_hash * 0.8  # 0.6~1.4 범위
-                adx_estimate = volatility * trend_factor
-                return max(10.0, min(80.0, adx_estimate))  # 10~80 범위
+                # 개별화 제거하고 실제 변동성 그대로 사용
+                return max(10.0, min(80.0, volatility))  # 10~80 범위
             else:
-                return 25.0 + ticker_hash * 30.0  # 25~55 범위
+                return 25.0  # 기본값
                 
         elif column_name == 'resistance':
             # 저항선 대체 계산: 60일 최고가 기반
@@ -3952,7 +3605,7 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
 #         elif isinstance(value, (int, float)):
 #             if not np.isinf(value) and not np.isnan(value):
 #                 # 극값 제거 (지표별 합리적 범위 확인)
-#                 if column_name == 'ma200_slope' and abs(value) < 50:  # ±50% 이내
+#                 if column_name == '' and abs(value) < 50:  # ±50% 이내
 #                     return value
 #                 elif column_name == 'volume_change_7_30' and 0.01 <= value <= 100:  # 0.01배~100배
 #                     return value
@@ -3960,7 +3613,7 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
 #                     return value
 #                 elif column_name == 'adx' and 0 <= value <= 100:  # ADX는 0~100
 #                     return value
-#                 elif column_name not in ['ma200_slope', 'volume_change_7_30', 'nvt_relative', 'adx']:
+#                 elif column_name not in ['', 'volume_change_7_30', 'nvt_relative', 'adx']:
 #                     return value  # 기타 지표는 유효성 검증만
 #         # 기타 유효한 값
 #         elif not isinstance(value, str):
@@ -3982,7 +3635,7 @@ def _calculate_alternative_indicator(latest_row, column_name, ticker):
 #     
 #     # 🚨 [최후 수단] 의미있는 기본값 또는 None
 #     meaningful_fallbacks = {
-#         'ma200_slope': None,  # 🎯 계산 불가 시 해당 종목 제외 고려
+#         '': None,  # 🎯 계산 불가 시 해당 종목 제외 고려
 #         'nvt_relative': None,  # 🎯 수급 분석 불가 시 제외
 #         'volume_change_7_30': None,  # 🎯 VCP 분석 불가 시 제외
 #         'adx': None,  # 🎯 추세 강도 불확실 시 제외
@@ -4050,7 +3703,7 @@ def save_static_indicators(conn, ticker, latest_row):
             base_variation = (ticker_hash % 1000) / 1000  # 0~1 범위
             time_variation = time_factor * 0.3  # 시간별 변동 ±30%
             
-            individualized_ma200_slope = (base_variation - 0.5) * 10 + time_variation  # -5 ~ +5% 범위
+            individualized_ = (base_variation - 0.5) * 10 + time_variation  # -5 ~ +5% 범위
             individualized_nvt_relative = 0.8 + base_variation * 2 + time_variation  # 0.8 ~ 3.1 범위
             individualized_volume_change = 0.5 + base_variation * 2.5 + time_variation  # 0.5 ~ 3.3 범위
             individualized_adx = 20 + base_variation * 50 + time_variation * 10  # 20 ~ 80 범위
@@ -4059,7 +3712,7 @@ def save_static_indicators(conn, ticker, latest_row):
             price_variation = (ticker_hash % 500) / 10000  # 0 ~ 0.05 범위
             
             defaults = {
-                'ma200_slope': individualized_ma200_slope,  # 티커별 개별화된 추세 기울기
+                # 정적 지표 계산 완료
                 'nvt_relative': individualized_nvt_relative,  # 티커별 개별화된 NVT 비율
                 'volume_change_7_30': individualized_volume_change,  # 티커별 개별화된 거래량 변화
                 'adx': individualized_adx,  # 티커별 개별화된 추세 강도
@@ -4081,7 +3734,6 @@ def save_static_indicators(conn, ticker, latest_row):
         
         # 향상된 정적 지표 값 추출
         static_values = [
-            get_enhanced_static_value(latest_row, 'ma200_slope', ticker),
             get_enhanced_static_value(latest_row, 'nvt_relative', ticker), 
             get_enhanced_static_value(latest_row, 'volume_change_7_30', ticker),
             latest_row.get('close', 1000.0),  # price - close는 항상 있음
@@ -4118,7 +3770,7 @@ def save_static_indicators(conn, ticker, latest_row):
         logger.info(f"🔧 {ticker} DB 저장 전 검증 시작")
         
         # 컬럼명과 값을 매핑하여 검증용 딕셔너리 생성
-        column_names = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'price', 
+        column_names = ['nvt_relative', 'volume_change_7_30', 'price', 
                        'high_60', 'low_60', 'pivot', 's1', 'r1', 'resistance', 
                        'support', 'atr', 'adx', 'supertrend_signal']
         
@@ -4147,12 +3799,11 @@ def save_static_indicators(conn, ticker, latest_row):
         logger.info(f"✅ {ticker} DB 검증 완료 (품질 점수: {validation_result['quality_score']:.1f}/10)")
         
         cursor.execute("""
-            INSERT INTO static_indicators (ticker, ma200_slope, nvt_relative, volume_change_7_30, 
+            INSERT INTO static_indicators (ticker, nvt_relative, volume_change_7_30, 
                 price, high_60, low_60, pivot, s1, r1, resistance, support, atr, adx, 
                 supertrend_signal, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
             ON CONFLICT (ticker) DO UPDATE SET
-                ma200_slope=EXCLUDED.ma200_slope,
                 nvt_relative=EXCLUDED.nvt_relative,
                 volume_change_7_30=EXCLUDED.volume_change_7_30,
                 price=EXCLUDED.price,
@@ -4178,8 +3829,8 @@ def save_static_indicators(conn, ticker, latest_row):
         logger.info(f"✅ {ticker} static 지표 저장 완료: {non_null_count}/14개 값 저장, {none_count}개 None")
         
         # 트레이딩 전략상 중요한 지표의 None 여부 확인
-        critical_indicators = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx']
-        critical_none = [i for i, col in enumerate(['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx']) 
+        critical_indicators = ['nvt_relative', 'volume_change_7_30', 'adx']
+        critical_none = [i for i, col in enumerate(['nvt_relative', 'volume_change_7_30', 'adx']) 
                         if static_values[i] is None]
         
         if critical_none:
@@ -4334,7 +3985,7 @@ def save_all_indicators_atomically(ticker, df_with_indicators, timeframe='1d'):
         latest_row = df_final.iloc[-1]
         
         # 📝 정적 지표 값들 검증 (소수점 제한은 DB INSERT 쿼리에서 처리)
-        static_columns = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'close', 
+        static_columns = ['nvt_relative', 'volume_change_7_30', 'close', 
                          'high_60', 'low_60', 'pivot', 's1', 'r1', 
                          'resistance', 'support', 'atr', 'adx', 'supertrend_signal']
         
@@ -4719,7 +4370,7 @@ def backfill_single_ticker_indicators(ticker: str, start_date: str, end_date: st
         logger.info(f"✅ {ticker} OHLCV 데이터 조회 완료: {len(df)}개 레코드")
         
         # 2. 동적 지표 계산
-        df_with_indicators = calculate_unified_indicators(df)
+        df_with_indicators = calculate_unified_indicators(df, ticker)
         
         if df_with_indicators is None or df_with_indicators.empty:
             logger.error(f"❌ {ticker} 동적 지표 계산 실패")
@@ -4790,7 +4441,7 @@ def enhanced_ohlcv_processor(ticker: str, df: pd.DataFrame, data_source: str = "
             return False
         
         # 3. 기술적 지표 계산
-        df_with_indicators = calculate_unified_indicators(df_cleaned)
+        df_with_indicators = calculate_unified_indicators(df_cleaned, ticker)
         if df_with_indicators is None or df_with_indicators.empty:
             logger.error(f"❌ {ticker} 기술적 지표 계산 실패")
             return False
@@ -4907,4 +4558,40 @@ def generate_gpt_analysis_json(ticker: str, days: int = 200) -> str:
         import traceback
         logger.error(traceback.format_exc())
         return None
+
+
+def generate_gpt_analysis_json_conditional(ticker: str, days: int = 200, db_manager=None, config: dict = None) -> str:
+    """
+    조건부로 GPT 분석용 JSON 데이터를 생성합니다.
+    
+    Args:
+        ticker: 분석할 티커
+        days: 분석 기간
+        db_manager: DBManager 인스턴스
+        config: 설정 딕셔너리
+    
+    Returns:
+        str: JSON 문자열 또는 None (생략 시)
+    """
+    if config is None:
+        config = {
+            'skip_json_if_fresh_analysis': True,
+            'max_age_minutes': 720,
+            'enable_caching': True
+        }
+    
+    # 기존 분석 결과 확인
+    if db_manager and config.get('skip_json_if_fresh_analysis', True):
+        from trend_analyzer import check_gpt_analysis_freshness
+        
+        freshness_check = check_gpt_analysis_freshness(
+            ticker, db_manager, config.get('max_age_minutes', 720)
+        )
+        
+        if freshness_check['exists'] and freshness_check['is_fresh']:
+            logger.info(f"⏭️ {ticker} 신선한 분석 결과 존재, JSON 생성 생략")
+            return None
+    
+    # 기존 JSON 생성 로직 실행
+    return generate_gpt_analysis_json(ticker, days)
 

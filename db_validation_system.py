@@ -203,7 +203,10 @@ class DBValidationSystem:
             if validation_result['corrections']:
                 logger.info(f"🔧 {ticker} static_indicators 수정: {len(validation_result['corrections'])}개 항목")
                 for correction in validation_result['corrections']:
-                    logger.debug(f"   • {correction['column']}: {correction['original']:.6f} → {correction['corrected']:.6f} ({correction['reason']})")
+                    # 타입에 따라 적절한 포맷 적용
+                    original_str = f"{correction['original']:.6f}" if isinstance(correction['original'], (int, float)) else str(correction['original'])
+                    corrected_str = f"{correction['corrected']:.6f}" if isinstance(correction['corrected'], (int, float)) else str(correction['corrected'])
+                    logger.debug(f"   • {correction['column']}: {original_str} → {corrected_str} ({correction['reason']})")
             
             return validation_result
             

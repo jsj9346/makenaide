@@ -73,13 +73,52 @@ class PortfolioManager:
     def get_current_positions(self):
         """보유 자산 정보 반환"""
         try:
+            # Upbit 객체에서 get_balances 메서드 호출
             balances = self.upbit.get_balances()
+            
+            # 응답 형식 검증 및 로깅
+            logging.debug(f"🔍 get_balances 응답 타입: {type(balances)}")
+            logging.debug(f"🔍 get_balances 응답 내용: {balances}")
+            
+            # None인 경우 처리
+            if balances is None:
+                logging.warning("⚠️ get_balances가 None을 반환했습니다.")
+                return []
+            
+            # 문자열로 반환된 경우 JSON 파싱 시도
+            if isinstance(balances, str):
+                try:
+                    import json
+                    balances = json.loads(balances)
+                    logging.info("✅ 문자열 응답을 JSON으로 파싱 완료")
+                except json.JSONDecodeError as e:
+                    logging.error(f"❌ JSON 파싱 실패: {e}")
+                    return []
+            
+            # 리스트가 아닌 경우 처리
             if not isinstance(balances, list):
-                logging.error("❌ get_current_positions: balances 반환값이 리스트가 아님")
+                logging.error(f"❌ get_current_positions: balances 반환값이 리스트가 아님 (타입: {type(balances)})")
+                # 딕셔너리인 경우 리스트로 변환 시도
+                if isinstance(balances, dict):
+                    if 'data' in balances:
+                        balances = balances['data']
+                    elif 'result' in balances:
+                        balances = balances['result']
+                    else:
+                        balances = [balances]
+                    logging.info("✅ 딕셔너리를 리스트로 변환 완료")
+                else:
+                    logging.error(f"❌ 예상치 못한 balances 형식: {type(balances)}")
+                    return []
+            
+            # 빈 리스트인 경우
+            if not balances:
+                logging.info("📊 보유 자산이 없습니다.")
                 return []
             
             # 블랙리스트 로드
             try:
+                from filter_tickers import load_blacklist
                 blacklist = load_blacklist()
                 if not blacklist:
                     logging.warning("⚠️ 블랙리스트가 비어있습니다.")
@@ -90,6 +129,11 @@ class PortfolioManager:
             filtered = []
             for item in balances:
                 try:
+                    # item이 딕셔너리가 아닌 경우 처리
+                    if not isinstance(item, dict):
+                        logging.warning(f"⚠️ 예상치 못한 item 형식: {type(item)} - {item}")
+                        continue
+                    
                     currency = item.get('currency')
                     if not currency:
                         continue
@@ -115,106 +159,14 @@ class PortfolioManager:
                     if value >= 1.0:  # 1원 미만 자산 제외
                         filtered.append(item)
                 except (ValueError, TypeError) as e:
-                    logging.error(f"❌ {currency} 포지션 필터링 중 오류: {str(e)}")
+                    logging.error(f"❌ {item.get('currency', 'unknown')} 포지션 필터링 중 오류: {str(e)}")
                     continue
                 
+            logging.info(f"📊 필터링된 보유 자산: {len(filtered)}개")
             return filtered
         except Exception as e:
             logging.error(f"❌ 보유 자산 조회 중 오류 발생: {str(e)}")
             return []
-
-    # UNUSED: 호출되지 않는 함수
-    # def allocate_funds(self, recommendations):
-    #     """
-    #     recommendations: [{'ticker': 'KRW-ETH', 'action': 'BUY'}, ...]
-    #     - 매수 대상 종목 수만큼 비중을 나눠 자금 할당
-    #     """
-    #     total_balance = self.get_total_balance()
-    #     buy_targets = [r for r in recommendations if r['action'] == 'BUY']
-    #     num_targets = len(buy_targets)
-    # 
-    #     if num_targets == 0:
-    #         print("✅ 매수할 종목 없음")
-    #         return
-    # 
-    #     unit_amount = total_balance * 0.98 / num_targets  # 수수료 고려
-    # 
-    #     for rec in buy_targets:
-    #         ticker = rec['ticker']
-    #         # ⚠️ buy_asset는 현재 시장가 매수로 동작하며, 단가를 직접 입력하지 않음
-    #         buy_asset(ticker, price=0, ratio=unit_amount / self.get_total_balance())
-    #         now = datetime.datetime.now().isoformat()
-    #         current_price = pyupbit.get_current_price(ticker)
-    #         self.purchase_info[ticker] = {'price': current_price, 'timestamp': now}
-
-    # UNUSED: 호출되지 않는 함수
-    # def calculate_position_amount(self, ticker, custom_total=None):
-    #     """
-    #     Kelly 비율과 swing_score를 활용한 포지션 사이징 계산
-    #     """
-    #     try:
-    #         # 전략 성과 데이터 조회
-    #         strategy_performance = self.db_mgr.execute_query("""
-    #         SELECT 
-    #             win_rate,
-    #             avg_return,
-    #             mdd,
-    #             kelly_ratio,
-    #             swing_score
-    #         FROM strategy_performance 
-    #         WHERE strategy_combo = (
-    #             SELECT strategy_combo 
-    #             FROM trade_log 
-    #             WHERE ticker = %s 
-    #             ORDER BY executed_at DESC 
-    #             LIMIT 1
-    #         )
-    #     """, (ticker,))
-    # 
-    #         if not strategy_performance:
-    #             # 기본값 설정
-    #             win_rate = 0.5
-    #             avg_return = 0.02
-    #             mdd = 0.1
-    #             kelly_ratio = 0.1
-    #             swing_score = 0.5
-    #         else:
-    #             win_rate = strategy_performance[0][0]
-    #             avg_return = strategy_performance[0][1]
-    #             mdd = strategy_performance[0][2]
-    #             kelly_ratio = strategy_performance[0][3]
-    #             swing_score = strategy_performance[0][4]
-    # 
-    #         # Kelly 비율 계산
-    #         kelly = (win_rate * avg_return - (1 - win_rate) * mdd) / avg_return
-    #         kelly = max(0, min(kelly, 0.5))  # 0~0.5 사이로 제한
-    # 
-    #         # swing_score 반영
-    #         position_ratio = kelly * swing_score
-    # 
-    #         # 총 자산 계산
-    #         total_balance = custom_total or self.get_total_balance()
-    #             
-    #         # 최종 매수 금액 계산
-    #         position_amount = total_balance * position_ratio
-    #             
-    #         # 최소 주문 금액 체크
-    #         if position_amount < 5000:  # 업비트 최소 주문 금액
-    #             return 0, 0
-    # 
-    #         # 현재가 조회
-    #         current_price = pyupbit.get_current_price(ticker)
-    #         if not current_price:
-    #             return 0, 0
-    # 
-    #         # 매수 수량 계산
-    #         quantity = position_amount / current_price
-    # 
-    #         return position_ratio, quantity
-    # 
-    #     except Exception as e:
-    #         logging.error(f"❌ 포지션 사이징 계산 중 오류 발생: {str(e)}")
-    #         return 0, 0
 
     def check_pyramiding(self, ticker):
         """
@@ -562,339 +514,6 @@ class PortfolioManager:
         except Exception as e:
             logging.error(f"❌ {ticker} 피라미딩 거래 로그 기록 실패: {e}")
     
-    # UNUSED: 호출되지 않는 함수
-    # def get_pyramiding_status(self, ticker):
-    #     """피라미딩 상태 조회"""
-    #     try:
-    #         info = self.purchase_info.get(ticker)
-    #         if not info or not info.get('initialized'):
-    #             return None
-    #             
-    #         current_price = pyupbit.get_current_price(ticker)
-    #         if not current_price:
-    #             return None
-    #             
-    #         # 수익률 계산
-    #         avg_entry_price = info.get('avg_entry_price', info.get('entry_price', current_price))
-    #         total_return_pct = (current_price - avg_entry_price) / avg_entry_price * 100
-    #             
-    #         return {
-    #             'ticker': ticker,
-    #             'pyramid_count': info.get('pyramid_count', 0),
-    #             'max_pyramids': info.get('max_pyramids', 3),
-    #             'avg_entry_price': avg_entry_price,
-    #             'current_price': current_price,
-    #             'total_return_pct': total_return_pct,
-    #             'total_quantity': info.get('total_quantity', 0),
-    #             'total_investment': info.get('total_investment', 0),
-    #             'high_water_mark': info.get('high_water_mark', current_price),
-    #             'last_pyramid_price': info.get('last_pyramid_price', avg_entry_price)
-    #         }
-    #             
-    #     except Exception as e:
-    #         logging.error(f"❌ {ticker} 피라미딩 상태 조회 실패: {e}")
-    #         return None
-
-    # UNUSED: 호출되지 않는 함수
-    # def get_portfolio_breakdown(self):
-    #     """
-    #     현재 포트폴리오 내 각 자산(코인 및 현금)의 평가금액 및 비중을 계산하여 출력
-    #     """
-    #     balances = self.upbit.get_balances()
-    #     print("[DEBUG] balances:", balances)
-    #     breakdown = []
-    #     total_value = 0
-    # 
-    #     # 1차: 전체 평가금액 계산
-    #     for item in balances:
-    #         currency = item['currency']
-    #         balance = float(item['balance'])
-    #         avg_price = float(item['avg_buy_price'])
-    # 
-    #         if currency == "KRW":
-    #             value = balance
-    #         else:
-    #             value = balance * avg_price
-    # 
-    #         total_value += value
-    # 
-    #     # 2차: 비중 계산 및 출력
-    #     print("📊 포트폴리오 현황:")
-    #     for item in balances:
-    #         currency = item['currency']
-    #         balance = float(item['balance'])
-    #         avg_price = float(item['avg_buy_price'])
-    # 
-    #         if currency == "KRW":
-    #             value = balance
-    #             ticker = "KRW"
-    #         else:
-    #             value = balance * avg_price
-    #             ticker = f"KRW-{currency}"
-    # 
-    #         if total_value > 0:
-    #             percent = (value / total_value) * 100
-    #         else:
-    #             percent = 0
-    # 
-    #         print(f"[{ticker}] 비중: {percent:.2f}%, 평가금액: {value:,.0f}원")
-
-    # UNUSED: 호출되지 않는 함수
-    # def rebalance(self):
-    #     # TODO: 리밸런싱 전략 추후 구현
-    #     pass
-
-    # UNUSED: 호출되지 않는 함수
-    # def show_portfolio_summary(self):
-    #     """
-    #     현재 포트폴리오 상태를 요약하여 터미널에 출력
-    #     - 현재 보유 종목별 티커, 수량, 평균단가, 현재가, 평가금액, 손익률, 손익금액, 자산 비중 표시
-    #     - 현금 보유량과 비중 표시
-    #     - 전체 자산 = 현금 + 모든 종목 평가금액의 합계
-    #     """
-    #     # 함수 실행 시작 로그 - 명확한 표시
-    #     logging.info("===== PORTFOLIO_SUMMARY_START =====")
-    #         
-    #     summary_lines = ["\n======== 포트폴리오 요약 ========"]
-    #         
-    #     # 현재 보유 종목 정보 가져오기
-    #     balances = self.upbit.get_balances()
-    #         
-    #     # 블랙리스트 로드
-    #     try:
-    #         blacklist = load_blacklist()
-    #         if not blacklist:
-    #             logging.warning("⚠️ 블랙리스트가 비어있습니다.")
-    #     except Exception as e:
-    #         logging.error(f"❌ 블랙리스트 로드 중 오류 발생: {str(e)}")
-    #         blacklist = []
-    #         
-    #     # 전체 평가 금액 계산
-    #     total_value = 0
-    #     positions = []
-    #     cash = 0
-    #         
-    #     # 각 종목별 정보 수집 및 전체 평가 금액 계산
-    #     for item in balances:
-    #         currency = item['currency']
-    #         balance = float(item['balance'])
-    #         avg_price = float(item['avg_buy_price'])
-    #             
-    #         if currency == "KRW":
-    #             cash = balance
-    #             total_value += cash
-    #             continue
-    #             
-    #         ticker = f"KRW-{currency}"
-    #             
-    #         # 블랙리스트에 포함된 종목 필터링
-    #         if ticker in blacklist:
-    #             logging.info(f"⏭️ {ticker}는 블랙리스트에 포함되어 요약에서 제외됩니다.")
-    #             continue
-    #                 
-    #         current_price = pyupbit.get_current_price(ticker)
-    #             
-    #         if not current_price:
-    #             logging.warning(f"⚠️ {ticker} 현재가 조회 실패")
-    #             continue
-    #                 
-    #         # 평가 금액 계산
-    #         evaluation = balance * current_price
-    #         total_value += evaluation
-    #             
-    #         # 손익률, 손익금액 계산
-    #         profit_loss = evaluation - (balance * avg_price)
-    #         profit_loss_pct = (current_price / avg_price - 1) * 100
-    #             
-    #         positions.append({
-    #             'ticker': ticker,
-    #             'balance': balance,
-    #             'avg_price': avg_price,
-    #             'current_price': current_price,
-    #             'evaluation': evaluation,
-    #             'profit_loss': profit_loss,
-    #             'profit_loss_pct': profit_loss_pct
-    #         })
-    #         
-    #     # 정보 출력 - 보유 종목
-    #     if positions:
-    #         summary_lines.append("\n[보유 종목]")
-    #         summary_lines.append(f"{'티커':>10} | {'수량':>12} | {'평균단가':>12} | {'현재가':>12} | {'평가금액':>12} | {'손익률':>8} | {'손익금액':>12} | {'비중':>6}")
-    #         summary_lines.append("-" * 100)
-    #             
-    #         for pos in positions:
-    #             ticker = pos['ticker']
-    #             balance = pos['balance']
-    #             avg_price = pos['avg_price']
-    #             current_price = pos['current_price']
-    #             evaluation = pos['evaluation']
-    #             profit_loss = pos['profit_loss']
-    #             profit_loss_pct = pos['profit_loss_pct']
-    #             weight = (evaluation / total_value) * 100 if total_value > 0 else 0
-    #                 
-    #             # 부호 표시
-    #             profit_loss_sign = "+" if profit_loss >= 0 else ""
-    #             profit_loss_pct_sign = "+" if profit_loss_pct >= 0 else ""
-    #                 
-    #             summary_lines.append(f"{ticker:>10} | {balance:>12,.8f} | {avg_price:>12,.2f} | {current_price:>12,.2f} | {evaluation:>12,.2f} | {profit_loss_pct_sign}{profit_loss_pct:>6.2f}% | {profit_loss_sign}{profit_loss:>10,.2f} | {weight:>5.2f}%")
-    #     else:
-    #         summary_lines.append("\n보유 종목이 없습니다.")
-    #         
-    #     # 정보 출력 - 현금
-    #     cash_weight = (cash / total_value) * 100 if total_value > 0 else 0
-    #     summary_lines.append("\n[현금]")
-    #     summary_lines.append(f"{'보유현금':>10} | {cash:>12,.2f}원 | {'비중':>6} | {cash_weight:>5.2f}%")
-    #         
-    #     # 정보 출력 - 전체 자산
-    #     summary_lines.append("\n[전체 자산]")
-    #     summary_lines.append(f"{'총 평가금액':>10} | {total_value:>12,.2f}원")
-    #     summary_lines.append("\n===============================\n")
-    #         
-    #     # 로그로 출력하고 동시에 터미널에도 출력
-    #     for line in summary_lines:
-    #         logging.info(line)
-    #         print(line)
-    #             
-    #     # 함수 실행 종료 로그 - 명확한 표시
-    #     logging.info("===== PORTFOLIO_SUMMARY_END =====")
-
-    def simple_portfolio_summary(self):
-        """
-        보유 종목의 포지션 요약을 터미널과 로그에 직접 출력합니다.
-        예제 코드를 참고한 단순하고 명확한 출력 방식 사용.
-        """
-        try:
-            # 명확한 로그 식별자
-            logging.info("===== SIMPLE_PORTFOLIO_SUMMARY_START =====")
-            print("\n===== 📦 현재 보유 포지션 요약 =====")
-            
-            balances = self.upbit.get_balances()
-            if not balances:
-                logging.info("보유 중인 자산이 없습니다.")
-                print("보유 중인 자산이 없습니다.")
-                return
-            
-            # 블랙리스트 로드
-            try:
-                blacklist = load_blacklist()
-                if not blacklist:
-                    logging.warning("⚠️ 블랙리스트가 비어있습니다.")
-            except Exception as e:
-                logging.error(f"❌ 블랙리스트 로드 중 오류 발생: {str(e)}")
-                blacklist = []
-                
-            total_valuation = 0
-            portfolio_data = {}
-            cash_krw = 0
-            
-            # 1차: 데이터 준비 및 총 평가금액 계산
-            for item in balances:
-                currency = item['currency']
-                balance = float(item['balance'])
-                avg_price = float(item['avg_buy_price'])
-                
-                if currency == "KRW":
-                    cash_krw = balance
-                    total_valuation += cash_krw
-                    continue
-                
-                # 블랙리스트에 포함된 종목 필터링
-                ticker = f"KRW-{currency}"
-                if ticker in blacklist:
-                    logging.info(f"⏭️ {ticker}는 블랙리스트에 포함되어 요약에서 제외됩니다.")
-                    continue
-                
-                # API 오류 처리 개선
-                try:
-                    current_price = pyupbit.get_current_price(ticker)
-                    if not current_price:
-                        logging.warning(f"⚠️ {ticker} 현재가 조회 실패 (응답이 없음)")
-                        
-                        # 현재가 조회 실패 시 평균 매수가로 대체 (임시)
-                        current_price = avg_price
-                        logging.warning(f"⚠️ {ticker} 현재가를 평균 매수가({avg_price:.2f})로 대체합니다.")
-                except Exception as e:
-                    error_msg = str(e)
-                    logging.warning(f"⚠️ {ticker} 현재가 조회 실패: {error_msg}")
-                    
-                    # 'Code not found' 에러 처리
-                    if "Code not found" in error_msg:
-                        logging.warning(f"⚠️ {ticker}는 현재 거래가 지원되지 않거나 상장 폐지된 종목일 수 있습니다.")
-                    
-                    # 현재가 조회 실패 시 평균 매수가로 대체 (임시)
-                    current_price = avg_price
-                    logging.warning(f"⚠️ {ticker} 현재가를 평균 매수가({avg_price:.2f})로 대체합니다.")
-                
-                portfolio_data[ticker] = {
-                    'quantity': balance,
-                    'avg_price': avg_price,
-                    'current_price': current_price
-                }
-                
-                valuation = balance * current_price
-                total_valuation += valuation
-                portfolio_data[ticker]['valuation'] = valuation
-            
-            # 2차: 출력
-            for ticker, data in portfolio_data.items():
-                avg_price = data['avg_price']
-                quantity = data['quantity']
-                current_price = data['current_price']
-                valuation = data['valuation']
-                
-                # 수익률 계산
-                pnl_rate = ((current_price - avg_price) / avg_price) * 100
-                pnl_value = (current_price - avg_price) * quantity
-                ratio = (valuation / total_valuation) * 100 if total_valuation > 0 else 0
-                
-                # 티커에 대한 추가 정보 (현재가 조회 실패 시 표시)
-                price_status = ""
-                if current_price == avg_price:
-                    price_status = " (추정)"
-                
-                print(f"\n📊 {ticker}{price_status}")
-                print(f" ├ 보유 수량 : {quantity:.8f}")
-                print(f" ├ 평균 단가 : {avg_price:,.2f} KRW")
-                print(f" ├ 현재가    : {current_price:,.2f} KRW{price_status}")
-                print(f" ├ 평가 금액 : {valuation:,.2f} KRW")
-                print(f" ├ 손익률    : {pnl_rate:+.2f}%")
-                print(f" ├ 손익 금액 : {pnl_value:+,.2f} KRW")
-                print(f" └ 자산 비중 : {ratio:.2f}%")
-                
-                # 동일한 정보를 로그에도 기록
-                logging.info(f"📊 {ticker}{price_status}")
-                logging.info(f" ├ 보유 수량 : {quantity:.8f}")
-                logging.info(f" ├ 평균 단가 : {avg_price:,.2f} KRW")
-                logging.info(f" ├ 현재가    : {current_price:,.2f} KRW{price_status}")
-                logging.info(f" ├ 평가 금액 : {valuation:,.2f} KRW")
-                logging.info(f" ├ 손익률    : {pnl_rate:+.2f}%")
-                logging.info(f" ├ 손익 금액 : {pnl_value:+,.2f} KRW")
-                logging.info(f" └ 자산 비중 : {ratio:.2f}%")
-            
-            # 현금 및 전체 자산 정보 출력
-            cash_ratio = (cash_krw / total_valuation) * 100 if total_valuation > 0 else 0
-            
-            print(f"\n💰 보유 현금 : {cash_krw:,.2f} KRW")
-            print(f"💼 전체 자산 : {total_valuation:,.2f} KRW")
-            print(f"🔢 현금 비중 : {cash_ratio:.2f}%")
-            print("\n===============================\n")
-            
-            logging.info(f"💰 보유 현금 : {cash_krw:,.2f} KRW")
-            logging.info(f"💼 전체 자산 : {total_valuation:,.2f} KRW")
-            logging.info(f"🔢 현금 비중 : {cash_ratio:.2f}%")
-            
-            # 명확한 로그 식별자
-            logging.info("===== SIMPLE_PORTFOLIO_SUMMARY_END =====")
-            
-        except Exception as e:
-            err_msg = f"❌ 포트폴리오 요약 출력 중 오류 발생: {str(e)}"
-            logging.error(err_msg)
-            print(err_msg)
-            
-            # 스택 트레이스 출력 (디버깅용)
-            import traceback
-            logging.error(traceback.format_exc())
-
     def check_advanced_sell_conditions(self, portfolio_data=None):
         """
         🔧 [5단계 개선] 켈리 공식 + ATR 통합 고도화된 매도 조건 점검
@@ -1063,21 +682,36 @@ class PortfolioManager:
                         sell_reason = kelly_sell_conditions['stop_loss_reason']
                         sell_type = "kelly_stop_loss"
                     
-                    # 조건 B: ATR 기반 변동성 조정 손절
+                    # 조건 B: ATR 기반 변동성 조정 손절 (개선)
                     elif atr > 0:
-                        atr_ratio = atr / current_price
-                        # 변동성에 따른 동적 손절 비율 조정
-                        if atr_ratio > 0.05:  # 고변동성
-                            atr_multiplier = 1.5  # 더 보수적
-                        elif atr_ratio > 0.03:  # 중변동성
-                            atr_multiplier = 2.0  # 기본
-                        else:  # 저변동성
-                            atr_multiplier = 2.5  # 더 관대
+                        # 🔧 [핵심 개선] 보유기간 및 수익률 제한 추가
+                        from config import TRAILING_STOP_CONFIG
                         
-                        atr_stop_loss_pct = min(max((atr / avg_price) * 100 * atr_multiplier, 2.0), 10.0)
-                        if return_rate <= -atr_stop_loss_pct:
-                            sell_reason = f"ATR 기반 동적 손절 (수익률: {return_rate:.1f}%, 기준: -{atr_stop_loss_pct:.1f}%, 변동성: {atr_ratio:.2%})"
-                            sell_type = "atr_dynamic_stop_loss"
+                        kelly_config = TRAILING_STOP_CONFIG.get('kelly_stop_loss', {})
+                        min_holding_days = kelly_config.get('min_holding_days', 3)
+                        profit_threshold_pct = kelly_config.get('profit_threshold_pct', 5.0)
+                        
+                        # 보유기간 확인 (3일 미만 시 ATR 손절매 비활성화)
+                        if holding_days is not None and holding_days < min_holding_days:
+                            logging.debug(f"📊 {ticker_krw} ATR 손절매 비활성화: 보유기간 {holding_days}일 < {min_holding_days}일")
+                        # 수익률 확인 (5% 미만 수익 시 ATR 손절매 비활성화)
+                        elif return_rate < profit_threshold_pct:
+                            logging.debug(f"📊 {ticker_krw} ATR 손절매 비활성화: 수익률 {return_rate:.1f}% < {profit_threshold_pct}%")
+                        else:
+                            # ATR 기반 손절매 로직 (기존)
+                            atr_ratio = atr / current_price
+                            # 변동성에 따른 동적 손절 비율 조정
+                            if atr_ratio > 0.05:  # 고변동성
+                                atr_multiplier = 1.5  # 더 보수적
+                            elif atr_ratio > 0.03:  # 중변동성
+                                atr_multiplier = 2.0  # 기본
+                            else:  # 저변동성
+                                atr_multiplier = 2.5  # 더 관대
+                            
+                            atr_stop_loss_pct = min(max((atr / avg_price) * 100 * atr_multiplier, 2.0), 10.0)
+                            if return_rate <= -atr_stop_loss_pct:
+                                sell_reason = f"ATR 기반 동적 손절 (수익률: {return_rate:.1f}%, 기준: -{atr_stop_loss_pct:.1f}%, 변동성: {atr_ratio:.2%})"
+                                sell_type = "atr_dynamic_stop_loss"
                     
                     # ========== 2. 켈리 공식 기반 이익실현 조건 ==========
                     
@@ -1086,17 +720,73 @@ class PortfolioManager:
                         sell_reason = kelly_sell_conditions['take_profit_reason']
                         sell_type = "kelly_take_profit"
                     
-                    # 조건 B: ATR 기반 강화된 트레일링 스탑
-                    if not sell_reason and atr > 0 and max_price_since_buy > avg_price * 1.03:  # 3% 이상 상승했을 때만
-                        # 변동성에 따른 동적 트레일링 스탑
-                        if atr_ratio > 0.05:  # 고변동성
-                            trailing_multiplier = 1.5  # 더 관대
-                        elif atr_ratio > 0.03:  # 중변동성
-                            trailing_multiplier = 2.0  # 기본
-                        else:  # 저변동성
-                            trailing_multiplier = 2.5  # 더 보수적
+                    # 조건 B: ATR 기반 강화된 트레일링 스탑 (개선)
+                    # 🔧 [핵심 개선] 트레일링스탑 활성화 조건 강화
+                    from config import TRAILING_STOP_CONFIG
+                    
+                    config = TRAILING_STOP_CONFIG
+                    min_rise_pct = config.get('min_rise_pct', 8.0)  # 3% → 8%로 증가
+                    min_holding_days = config.get('min_holding_days', 3)  # 최소 보유기간 3일
+                    
+                    if not sell_reason and atr > 0 and max_price_since_buy > avg_price * (1 + min_rise_pct/100):
+                        # 🔧 [핵심 개선] 보유기간 체크 추가
+                        if holding_days is None or holding_days < min_holding_days:
+                            if config.get('logging', {}).get('log_deactivation_reasons', True):
+                                logging.debug(f"🔧 {ticker_krw} 트레일링스탑 비활성화: 보유기간 {holding_days}일 < 최소 {min_holding_days}일")
+                            continue
                         
-                        trailing_stop_pct = min(max((atr / current_price) * 100 * trailing_multiplier, 1.5), 8.0)
+                        # 🔧 [핵심 개선] 추가 상승 확인 조건
+                        # 최근 3일간의 상승 추세 확인
+                        recent_trend_days = config.get('recent_trend_check_days', 3)
+                        recent_trend = self._check_recent_price_trend(ticker_krw, recent_trend_days)
+                        if not recent_trend['is_uptrend']:
+                            if config.get('logging', {}).get('log_deactivation_reasons', True):
+                                logging.debug(f"🔧 {ticker_krw} 트레일링스탑 비활성화: 최근 {recent_trend_days}일간 상승추세 아님 ({recent_trend['reason']})")
+                            continue
+                        
+                        # 🔧 [핵심 개선] 강한 상승추세 시 트레일링스탑 비활성화
+                        if config.get('strong_uptrend_disable', True):
+                            strong_uptrend = self._check_strong_uptrend_conditions(
+                                ticker_krw, current_price, avg_price, return_rate, 
+                                rsi, ma20, macd, macd_signal
+                            )
+                            if strong_uptrend['is_strong_uptrend']:
+                                if config.get('logging', {}).get('log_deactivation_reasons', True):
+                                    logging.info(f"🔧 {ticker_krw} 강한 상승추세 감지 - 트레일링스탑 비활성화")
+                                continue
+                        
+                        # 변동성에 따른 동적 트레일링 스탑 (설정 기반)
+                        volatility_multipliers = config.get('volatility_multipliers', {
+                            'high': 1.5, 'medium': 2.0, 'low': 2.5
+                        })
+                        
+                        if atr_ratio > 0.05:  # 고변동성
+                            trailing_multiplier = volatility_multipliers.get('high', 1.5)
+                        elif atr_ratio > 0.03:  # 중변동성
+                            trailing_multiplier = volatility_multipliers.get('medium', 2.0)
+                        else:  # 저변동성
+                            trailing_multiplier = volatility_multipliers.get('low', 2.5)
+                        
+                        # 🔧 [핵심 개선] 보유기간 기반 추가 완화
+                        holding_adjustments = config.get('holding_adjustments', {3: 2.0, 7: 1.5, 14: 1.2})
+                        holding_adjustment = 1.0
+                        
+                        if holding_days is not None:
+                            for days, adjustment in sorted(holding_adjustments.items()):
+                                if holding_days <= days:
+                                    holding_adjustment = adjustment
+                                    if config.get('logging', {}).get('log_activation_conditions', True):
+                                        logging.info(f"🔧 {ticker_krw} 보유 {holding_days}일 이내 - 트레일링스탑 {((adjustment-1)*100):.0f}% 완화")
+                                    break
+                        
+                        # 트레일링스탑 비율에 보유기간 조정 적용
+                        trailing_multiplier *= holding_adjustment
+                        
+                        # 🔧 [핵심 개선] 최소/최대 트레일링스탑 비율 조정
+                        min_trailing_pct = config.get('min_trailing_pct', 3.0)  # 1.5% → 3.0%로 증가
+                        max_trailing_pct = config.get('max_trailing_pct', 10.0)  # 8% → 10%로 증가
+                        
+                        trailing_stop_pct = min(max((atr / current_price) * 100 * trailing_multiplier, min_trailing_pct), max_trailing_pct)
                         drawdown_from_peak = (max_price_since_buy - current_price) / max_price_since_buy * 100
                         
                         if drawdown_from_peak >= trailing_stop_pct:
@@ -1310,16 +1000,58 @@ class PortfolioManager:
             upbit = pyupbit.Upbit(access_key, secret_key)
             balances = upbit.get_balances()
             
+            # 응답 형식 검증 및 로깅
+            logging.debug(f"🔍 _get_actual_holdings 응답 타입: {type(balances)}")
+            logging.debug(f"🔍 _get_actual_holdings 응답 내용: {balances}")
+            
+            # 문자열로 반환된 경우 JSON 파싱 시도
+            if isinstance(balances, str):
+                try:
+                    import json
+                    balances = json.loads(balances)
+                    logging.info("✅ 문자열 응답을 JSON으로 파싱 완료")
+                except json.JSONDecodeError as e:
+                    logging.error(f"❌ JSON 파싱 실패: {e}")
+                    return {}
+            
+            # 리스트가 아닌 경우 처리
+            if not isinstance(balances, list):
+                logging.error(f"❌ _get_actual_holdings: balances 반환값이 리스트가 아님 (타입: {type(balances)})")
+                # 딕셔너리인 경우 리스트로 변환 시도
+                if isinstance(balances, dict):
+                    if 'data' in balances:
+                        balances = balances['data']
+                    elif 'result' in balances:
+                        balances = balances['result']
+                    else:
+                        balances = [balances]
+                    logging.info("✅ 딕셔너리를 리스트로 변환 완료")
+                else:
+                    return {}
+            
             # KRW 제외한 암호화폐만 추출
             actual_holdings = {}
             for balance in balances:
-                if balance['currency'] != 'KRW' and float(balance['balance']) > 0:
-                    ticker = f"KRW-{balance['currency']}"
-                    actual_holdings[ticker] = {
-                        'quantity': float(balance['balance']),
-                        'avg_price': float(balance['avg_buy_price']),
-                        'locked': float(balance['locked']) if balance['locked'] else 0
-                    }
+                try:
+                    # balance가 딕셔너리가 아닌 경우 처리
+                    if not isinstance(balance, dict):
+                        logging.warning(f"⚠️ 예상치 못한 balance 형식: {type(balance)} - {balance}")
+                        continue
+                    
+                    currency = balance.get('currency')
+                    if not currency:
+                        continue
+                    
+                    if currency != 'KRW' and float(balance.get('balance', 0)) > 0:
+                        ticker = f"KRW-{currency}"
+                        actual_holdings[ticker] = {
+                            'quantity': float(balance.get('balance', 0)),
+                            'avg_price': float(balance.get('avg_buy_price', 0)),
+                            'locked': float(balance.get('locked', 0)) if balance.get('locked') else 0
+                        }
+                except (ValueError, TypeError) as e:
+                    logging.error(f"❌ {currency} balance 처리 중 오류: {str(e)}")
+                    continue
             
             logging.info(f"📊 실제 보유 자산: {len(actual_holdings)}개")
             return actual_holdings
@@ -1494,7 +1226,7 @@ class PortfolioManager:
     def _calculate_kelly_based_sell_conditions(self, ticker, current_price, avg_price, atr, return_rate, 
                                              max_price_since_buy, holding_days, market_df):
         """
-        켈리 공식 기반 매도 조건 계산
+        켈리 공식 기반 매도 조건 계산 (개선된 버전)
         
         Args:
             ticker: 티커 심볼
@@ -1510,21 +1242,30 @@ class PortfolioManager:
             dict: 켈리 기반 매도 조건 결과
         """
         try:
-            # 1. 켈리 공식 기반 손절가 계산
-            kelly_stop_loss = self._calculate_kelly_stop_loss(ticker, current_price, avg_price, atr, market_df)
+            # 1. 개선된 켈리 공식 기반 손절가 계산
+            enhanced_kelly_stop = self._calculate_enhanced_kelly_stop_loss(ticker, current_price, avg_price, atr, market_df)
             
-            # 2. 켈리 공식 기반 익절가 계산
+            # 2. 기존 켈리 공식 기반 익절가 계산 (유지)
             kelly_take_profit = self._calculate_kelly_take_profit(ticker, current_price, avg_price, atr, return_rate, market_df)
             
-            # 3. 손절 조건 체크
+            # 3. 손절 조건 체크 (개선된 로직)
             stop_loss_triggered = False
             stop_loss_reason = None
             
-            if kelly_stop_loss['stop_loss_price'] > 0 and current_price <= kelly_stop_loss['stop_loss_price']:
-                stop_loss_triggered = True
-                stop_loss_reason = f"켈리 기반 손절 (현재가: {current_price:,.0f}, 손절가: {kelly_stop_loss['stop_loss_price']:,.0f}, 켈리비율: {kelly_stop_loss['kelly_ratio']:.1%})"
+            if enhanced_kelly_stop['enabled'] and enhanced_kelly_stop['stop_loss_price'] is not None:
+                if current_price <= enhanced_kelly_stop['stop_loss_price']:
+                    stop_loss_triggered = True
+                    stop_loss_reason = f"켈리 기반 손절 (현재가: {current_price:,.0f}, 손절가: {enhanced_kelly_stop['stop_loss_price']:,.0f}, 켈리비율: {enhanced_kelly_stop['kelly_ratio']:.1%}, 승률: {enhanced_kelly_stop['win_rate']:.1%})"
+                else:
+                    # 로깅 (켈리 손절매가 활성화되었지만 아직 발동되지 않음)
+                    if enhanced_kelly_stop.get('enabled', False):
+                        logging.info(f"📊 {ticker} 켈리 손절매 모니터링 - 현재가: {current_price:,.0f}, 손절가: {enhanced_kelly_stop['stop_loss_price']:,.0f}, 켈리비율: {enhanced_kelly_stop['kelly_ratio']:.1%}")
+            else:
+                # 켈리 손절매가 비활성화된 이유 로깅
+                if enhanced_kelly_stop.get('reason'):
+                    logging.debug(f"📊 {ticker} 켈리 손절매 비활성화: {enhanced_kelly_stop['reason']}")
             
-            # 4. 익절 조건 체크
+            # 4. 익절 조건 체크 (기존 로직 유지)
             take_profit_triggered = False
             take_profit_reason = None
             
@@ -1535,8 +1276,11 @@ class PortfolioManager:
             return {
                 'stop_loss_triggered': stop_loss_triggered,
                 'stop_loss_reason': stop_loss_reason,
-                'stop_loss_price': kelly_stop_loss['stop_loss_price'],
-                'kelly_stop_ratio': kelly_stop_loss['kelly_ratio'],
+                'stop_loss_price': enhanced_kelly_stop.get('stop_loss_price', 0),
+                'kelly_stop_ratio': enhanced_kelly_stop.get('kelly_ratio', 0),
+                'win_rate': enhanced_kelly_stop.get('win_rate', 0),
+                'stop_loss_enabled': enhanced_kelly_stop.get('enabled', False),
+                'stop_loss_reason_disabled': enhanced_kelly_stop.get('reason', ''),
                 'take_profit_triggered': take_profit_triggered,
                 'take_profit_reason': take_profit_reason,
                 'take_profit_price': kelly_take_profit['take_profit_price'],
@@ -1550,71 +1294,14 @@ class PortfolioManager:
                 'stop_loss_reason': None,
                 'stop_loss_price': 0,
                 'kelly_stop_ratio': 0,
+                'win_rate': 0,
+                'stop_loss_enabled': False,
+                'stop_loss_reason_disabled': f'오류: {e}',
                 'take_profit_triggered': False,
                 'take_profit_reason': None,
                 'take_profit_price': 0,
                 'kelly_take_ratio': 0
             }
-    
-    def _calculate_kelly_stop_loss(self, ticker, current_price, avg_price, atr, market_df):
-        """켈리 공식 기반 손절가 계산"""
-        try:
-            # 1. 시장 데이터에서 승률 추정
-            market_data = market_df.loc[ticker] if ticker in market_df.index else None
-            if market_data is None:
-                return {'stop_loss_price': 0, 'kelly_ratio': 0}
-            
-            # 2. 기술적 지표 기반 승률 추정
-            rsi = safe_float_convert(market_data.get('rsi_14', 50), context=f"{ticker} RSI")
-            macd = safe_float_convert(market_data.get('macd', 0), context=f"{ticker} MACD")
-            macd_signal = safe_float_convert(market_data.get('macd_signal', 0), context=f"{ticker} MACD Signal")
-            
-            # RSI 기반 승률 추정
-            if rsi > 70:
-                base_win_rate = 0.3  # 과매수 상태
-            elif rsi > 60:
-                base_win_rate = 0.4  # 약간 과매수
-            elif rsi < 30:
-                base_win_rate = 0.6  # 과매도 상태 (반등 기대)
-            elif rsi < 40:
-                base_win_rate = 0.5  # 약간 과매도
-            else:
-                base_win_rate = 0.45  # 중립
-            
-            # MACD 기반 승률 조정
-            if macd > macd_signal:
-                macd_adjustment = 0.1  # 상승 신호
-            else:
-                macd_adjustment = -0.1  # 하락 신호
-            
-            estimated_win_rate = max(0.2, min(base_win_rate + macd_adjustment, 0.8))
-            
-            # 3. 켈리 공식 기반 손절가 계산
-            if atr > 0:
-                # ATR 기반 리스크/리워드 비율 설정
-                risk_reward_ratio = 1.5  # 기본 1.5:1
-                
-                # 켈리 공식: f = (bp - q) / b
-                # b = 리스크/리워드 비율, p = 승률, q = 패배 확률
-                kelly_ratio = (risk_reward_ratio * estimated_win_rate - (1 - estimated_win_rate)) / risk_reward_ratio
-                kelly_ratio = max(0, min(kelly_ratio, 0.3))  # 0-30% 범위로 제한
-                
-                # 켈리 비율 기반 손절가 계산
-                kelly_stop_distance = atr * (2.0 + kelly_ratio * 5.0)  # 2-4.5x ATR
-                stop_loss_price = avg_price - kelly_stop_distance
-                
-                return {
-                    'stop_loss_price': stop_loss_price,
-                    'kelly_ratio': kelly_ratio,
-                    'estimated_win_rate': estimated_win_rate,
-                    'risk_reward_ratio': risk_reward_ratio
-                }
-            else:
-                return {'stop_loss_price': 0, 'kelly_ratio': 0}
-                
-        except Exception as e:
-            logging.error(f"❌ {ticker} 켈리 손절가 계산 오류: {str(e)}")
-            return {'stop_loss_price': 0, 'kelly_ratio': 0}
     
     def _calculate_kelly_take_profit(self, ticker, current_price, avg_price, atr, return_rate, market_df):
         """켈리 공식 기반 익절가 계산"""
@@ -1812,3 +1499,351 @@ class PortfolioManager:
         except Exception as e:
             logging.error(f"❌ {ticker} 포트폴리오 기반 익절 조건 체크 오류: {str(e)}")
             return {'should_exit': False, 'reason': None, 'type': None}
+
+    def simple_portfolio_summary(self):
+        """간단한 포트폴리오 요약"""
+        try:
+            positions = self.get_current_positions()
+            if not positions:
+                return "보유 종목 없음"
+            
+            summary = []
+            total_value = 0
+            
+            # positions가 리스트인 경우 처리
+            if isinstance(positions, list):
+                for item in positions:
+                    if isinstance(item, dict):
+                        currency = item.get('currency', '')
+                        balance = float(item.get('balance', 0))
+                        avg_price = float(item.get('avg_buy_price', 0))
+                        
+                        if currency == 'KRW':
+                            value = balance
+                            summary.append(f"{currency}: {balance:,.0f}원")
+                        else:
+                            ticker = f"KRW-{currency}"
+                            current_price = pyupbit.get_current_price(ticker)
+                            if current_price:
+                                value = balance * current_price
+                                summary.append(f"{ticker}: {balance:.8f}개 @ {avg_price:,.0f}원 (현재가: {current_price:,.0f}원)")
+                            else:
+                                value = balance * avg_price
+                                summary.append(f"{ticker}: {balance:.8f}개 @ {avg_price:,.0f}원")
+                        
+                        total_value += value
+            # positions가 딕셔너리인 경우 처리 (기존 로직)
+            elif isinstance(positions, dict):
+                for ticker, data in positions.items():
+                    value = data['quantity'] * data['avg_price']
+                    total_value += value
+                    summary.append(f"{ticker}: {data['quantity']:.8f}개 @ {data['avg_price']:,.0f}원")
+            else:
+                return f"포트폴리오 요약 실패: 예상치 못한 데이터 형식 ({type(positions)})"
+            
+            return f"총 {len(summary)}개 종목, 총 가치: {total_value:,.0f}원\n" + "\n".join(summary)
+            
+        except Exception as e:
+            logging.error(f"❌ 포트폴리오 요약 생성 중 오류: {e}")
+            return f"포트폴리오 요약 실패: {e}"
+
+    def _check_recent_price_trend(self, ticker, days=3):
+        """최근 N일간의 가격 추세 확인"""
+        try:
+            # 최근 N일간의 OHLCV 데이터 조회
+            ohlcv_data = self._get_ohlcv_from_db(ticker, limit=days+5)  # 여유분 포함
+            
+            if ohlcv_data.empty or len(ohlcv_data) < days:
+                return {'is_uptrend': False, 'reason': '데이터 부족'}
+            
+            # 최근 N일간의 종가 추이 확인
+            recent_closes = ohlcv_data['close'].tail(days).values
+            
+            # 상승 추세 판단 (단순한 조건)
+            price_increases = sum(1 for i in range(1, len(recent_closes)) 
+                                if recent_closes[i] > recent_closes[i-1])
+            
+            # 60% 이상의 날짜에서 상승했으면 상승추세로 판단
+            is_uptrend = price_increases >= len(recent_closes) * 0.6
+            
+            return {
+                'is_uptrend': is_uptrend,
+                'price_increases': price_increases,
+                'total_days': len(recent_closes),
+                'reason': f"상승일: {price_increases}/{len(recent_closes)}"
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 최근 가격 추세 확인 중 오류: {e}")
+            return {'is_uptrend': False, 'reason': f'오류: {e}'}
+
+    def _check_strong_uptrend_conditions(self, ticker, current_price, avg_price, return_rate, 
+                                        rsi, ma20, macd, macd_signal):
+        """강한 상승추세 조건 확인"""
+        try:
+            from config import TRAILING_STOP_CONFIG
+            
+            config = TRAILING_STOP_CONFIG.get('strong_uptrend_conditions', {})
+            
+            # 강한 상승추세 조건 체크
+            conditions = []
+            
+            # RSI 조건
+            rsi_min = config.get('rsi_min', 60)
+            rsi_max = config.get('rsi_max', 80)
+            if rsi_min <= rsi <= rsi_max:
+                conditions.append(True)
+            else:
+                conditions.append(False)
+            
+            # MA20 대비 상승률 조건
+            ma20_rise_pct = config.get('ma20_rise_pct', 2.0)
+            if ma20 > 0 and current_price > ma20 * (1 + ma20_rise_pct/100):
+                conditions.append(True)
+            else:
+                conditions.append(False)
+            
+            # MACD 양수 조건
+            if config.get('macd_positive', True):
+                if macd > macd_signal:
+                    conditions.append(True)
+                else:
+                    conditions.append(False)
+            
+            # 최소 수익률 조건
+            min_profit_pct = config.get('min_profit_pct', 10.0)
+            if return_rate >= min_profit_pct:
+                conditions.append(True)
+            else:
+                conditions.append(False)
+            
+            # 모든 조건이 만족되면 강한 상승추세
+            is_strong_uptrend = all(conditions)
+            
+            return {
+                'is_strong_uptrend': is_strong_uptrend,
+                'conditions_met': sum(conditions),
+                'total_conditions': len(conditions),
+                'reason': f"조건 충족: {conditions_met}/{len(conditions)}"
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 강한 상승추세 조건 확인 중 오류: {e}")
+            return {'is_strong_uptrend': False, 'reason': f'오류: {e}'}
+
+    def _calculate_enhanced_kelly_stop_loss(self, ticker, current_price, avg_price, atr, market_df):
+        """개선된 켈리 공식 기반 손절가 계산"""
+        try:
+            from config import TRAILING_STOP_CONFIG
+            
+            kelly_config = TRAILING_STOP_CONFIG.get('kelly_stop_loss', {})
+            
+            # 1. 기본 설정값 가져오기
+            min_holding_days = kelly_config.get('min_holding_days', 3)
+            min_win_rate = kelly_config.get('min_win_rate', 0.4)
+            min_kelly_ratio = kelly_config.get('min_kelly_ratio', 0.05)
+            max_stop_loss_pct = kelly_config.get('max_stop_loss_pct', 15.0)
+            min_stop_loss_pct = kelly_config.get('min_stop_loss_pct', 5.0)
+            atr_multiplier = kelly_config.get('atr_multiplier', 2.0)
+            profit_threshold_pct = kelly_config.get('profit_threshold_pct', 5.0)
+            
+            # 2. 보유기간 확인
+            holding_days = self._calculate_holding_days(ticker)
+            if holding_days is None or holding_days < min_holding_days:
+                return {
+                    'stop_loss_price': None,
+                    'stop_loss_pct': None,
+                    'kelly_ratio': 0.0,
+                    'win_rate': 0.0,
+                    'reason': f'보유기간 부족 ({holding_days}일 < {min_holding_days}일)',
+                    'enabled': False
+                }
+            
+            # 3. 수익률 확인 (수익 구간에서만 켈리 손절매 적용)
+            return_rate = ((current_price - avg_price) / avg_price) * 100
+            if return_rate < profit_threshold_pct:
+                return {
+                    'stop_loss_price': None,
+                    'stop_loss_pct': None,
+                    'kelly_ratio': 0.0,
+                    'win_rate': 0.0,
+                    'reason': f'수익 구간 미진입 (수익률: {return_rate:.1f}% < {profit_threshold_pct}%)',
+                    'enabled': False
+                }
+            
+            # 4. 시장 데이터에서 승률 추정
+            if ticker not in market_df.index:
+                return {
+                    'stop_loss_price': None,
+                    'stop_loss_pct': None,
+                    'kelly_ratio': 0.0,
+                    'win_rate': 0.0,
+                    'reason': '시장 데이터 없음',
+                    'enabled': False
+                }
+            
+            market_data = market_df.loc[ticker]
+            
+            # 승률 추정 (기술적 지표 기반)
+            win_rate = self._estimate_win_rate_from_indicators(market_data)
+            
+            if win_rate < min_win_rate:
+                return {
+                    'stop_loss_price': None,
+                    'stop_loss_pct': None,
+                    'kelly_ratio': 0.0,
+                    'win_rate': win_rate,
+                    'reason': f'승률 부족 ({win_rate:.1%} < {min_win_rate:.1%})',
+                    'enabled': False
+                }
+            
+            # 5. 켈리비율 계산
+            avg_win_pct = safe_float_convert(market_data.get('avg_win_pct', 8.0), context=f"{ticker} avg_win_pct")
+            avg_loss_pct = safe_float_convert(market_data.get('avg_loss_pct', 5.0), context=f"{ticker} avg_loss_pct")
+            
+            if avg_loss_pct <= 0:
+                avg_loss_pct = 5.0  # 기본값
+            
+            # 켈리 공식: f = (bp - q) / b
+            # b = 평균 수익률 / 평균 손실률
+            # p = 승률, q = 패률 (1-p)
+            b = avg_win_pct / avg_loss_pct
+            p = win_rate
+            q = 1 - p
+            
+            kelly_ratio = (b * p - q) / b if b > 0 else 0.0
+            
+            # 켈리비율 제한 (0.1 ~ 0.3)
+            kelly_ratio = max(0.0, min(kelly_ratio, 0.3))
+            
+            if kelly_ratio < min_kelly_ratio:
+                return {
+                    'stop_loss_price': None,
+                    'stop_loss_pct': None,
+                    'kelly_ratio': kelly_ratio,
+                    'win_rate': win_rate,
+                    'reason': f'켈리비율 부족 ({kelly_ratio:.1%} < {min_kelly_ratio:.1%})',
+                    'enabled': False
+                }
+            
+            # 6. 손절가 계산
+            # ATR 기반 기본 손절 비율
+            if atr > 0:
+                base_stop_loss_pct = (atr / current_price) * 100 * atr_multiplier
+            else:
+                base_stop_loss_pct = 8.0  # 기본값
+            
+            # 켈리비율 기반 조정
+            kelly_adjusted_pct = base_stop_loss_pct * (1 + kelly_ratio)
+            
+            # 최소/최대 제한
+            final_stop_loss_pct = max(min_stop_loss_pct, min(kelly_adjusted_pct, max_stop_loss_pct))
+            
+            # 손절가 계산
+            stop_loss_price = current_price * (1 - final_stop_loss_pct / 100)
+            
+            # 7. 추세 고려 (강한 상승추세 시 손절가 완화)
+            if kelly_config.get('trend_consideration', True):
+                trend_adjustment = self._calculate_trend_adjustment(ticker, current_price, market_data)
+                if trend_adjustment > 1.0:
+                    final_stop_loss_pct *= trend_adjustment
+                    stop_loss_price = current_price * (1 - final_stop_loss_pct / 100)
+            
+            return {
+                'stop_loss_price': stop_loss_price,
+                'stop_loss_pct': final_stop_loss_pct,
+                'kelly_ratio': kelly_ratio,
+                'win_rate': win_rate,
+                'avg_win_pct': avg_win_pct,
+                'avg_loss_pct': avg_loss_pct,
+                'reason': f'켈리 손절매 활성화 (승률: {win_rate:.1%}, 켈리비율: {kelly_ratio:.1%})',
+                'enabled': True
+            }
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 개선된 켈리 손절가 계산 중 오류: {e}")
+            return {
+                'stop_loss_price': None,
+                'stop_loss_pct': None,
+                'kelly_ratio': 0.0,
+                'win_rate': 0.0,
+                'reason': f'계산 오류: {e}',
+                'enabled': False
+            }
+
+    def _estimate_win_rate_from_indicators(self, market_data):
+        """기술적 지표 기반 승률 추정"""
+        try:
+            # 기본 승률
+            base_win_rate = 0.5
+            
+            # RSI 기반 조정
+            rsi = safe_float_convert(market_data.get('rsi_14', 50), context="rsi_14")
+            if 40 <= rsi <= 70:  # 적정 구간
+                base_win_rate += 0.1
+            elif rsi < 30 or rsi > 80:  # 극단 구간
+                base_win_rate -= 0.1
+            
+            # ADX 기반 조정 (추세 강도)
+            adx = safe_float_convert(market_data.get('adx', 25), context="adx")
+            if adx > 25:  # 강한 추세
+                base_win_rate += 0.05
+            elif adx < 20:  # 약한 추세
+                base_win_rate -= 0.05
+            
+            # MACD 기반 조정
+            macd = safe_float_convert(market_data.get('macd', 0), context="macd")
+            macd_signal = safe_float_convert(market_data.get('macd_signal', 0), context="macd_signal")
+            if macd > macd_signal and macd > 0:  # 양수 MACD + 골든크로스
+                base_win_rate += 0.1
+            elif macd < macd_signal and macd < 0:  # 음수 MACD + 데드크로스
+                base_win_rate -= 0.1
+            
+            # 볼린저 밴드 기반 조정
+            bb_position = safe_float_convert(market_data.get('bb_position', 0.5), context="bb_position")
+            if bb_position > 0.8:  # 상단 근처
+                base_win_rate -= 0.05
+            elif bb_position < 0.2:  # 하단 근처
+                base_win_rate += 0.05
+            
+            # 최종 승률 제한 (0.3 ~ 0.8)
+            final_win_rate = max(0.3, min(base_win_rate, 0.8))
+            
+            return final_win_rate
+            
+        except Exception as e:
+            logging.error(f"❌ 승률 추정 중 오류: {e}")
+            return 0.5  # 기본값
+
+    def _calculate_trend_adjustment(self, ticker, current_price, market_data):
+        """추세 기반 손절가 조정 계수"""
+        try:
+            # 기본 조정 계수
+            adjustment = 1.0
+            
+            # RSI 기반 조정
+            rsi = safe_float_convert(market_data.get('rsi_14', 50), context="rsi_14")
+            if 60 <= rsi <= 75:  # 강한 상승추세
+                adjustment *= 1.2
+            elif rsi > 75:  # 과매수 구간
+                adjustment *= 0.8
+            
+            # MACD 기반 조정
+            macd = safe_float_convert(market_data.get('macd', 0), context="macd")
+            macd_signal = safe_float_convert(market_data.get('macd_signal', 0), context="macd_signal")
+            if macd > macd_signal and macd > 0:
+                adjustment *= 1.1
+            
+            # MA20 기반 조정
+            ma20 = safe_float_convert(market_data.get('ma_20', current_price), context="ma_20")
+            if current_price > ma20 * 1.05:  # MA20 대비 5% 이상 상승
+                adjustment *= 1.15
+            
+            # 최종 조정 계수 제한 (0.8 ~ 1.5)
+            final_adjustment = max(0.8, min(adjustment, 1.5))
+            
+            return final_adjustment
+            
+        except Exception as e:
+            logging.error(f"❌ {ticker} 추세 조정 계산 중 오류: {e}")
+            return 1.0  # 기본값

@@ -116,7 +116,7 @@ market_thermometer:
     min_pct_up: 40.0                  # 최소 상승 종목 비율
     max_top10_volume: 100.0           # 최대 상위 10개 집중도 (완전 허용)
     min_ma200_above: 0.0             # 최소 MA200 상회 비율
-    min_sentiment_score: 35.0         # 최소 종합 점수
+    min_sentiment_score: 30.0         # 최소 종합 점수
   
   # === 점수 가중치 ===
   weights:
@@ -133,5 +133,5 @@ market_thermometer:
   score_thresholds:
     bullish: 65                      # 강세장 기준 점수
     neutral: 50                      # 중립장 기준 점수
-    bearish: 35                      # 약세장 기준 점수
+    bearish: 30                      # 약세장 기준 점수
 

@@ -60,6 +60,9 @@ try:
         # 피라미딩 설정
         PYRAMIDING_CONFIG = getattr(root_config, 'PYRAMIDING_CONFIG', {})
         
+        # 트레일링스탑 설정
+        TRAILING_STOP_CONFIG = getattr(root_config, 'TRAILING_STOP_CONFIG', {})
+        
         # GPT 필터링 설정
         GPT_FILTERING_CONFIG = getattr(root_config, 'GPT_FILTERING_CONFIG', {})
         
@@ -109,6 +112,9 @@ except ImportError as e:
     
     # 피라미딩 설정
     PYRAMIDING_CONFIG = {}
+    
+    # 트레일링스탑 설정
+    TRAILING_STOP_CONFIG = {}
     
     # GPT 필터링 설정
     GPT_FILTERING_CONFIG = {}
@@ -185,6 +191,9 @@ __all__ = [
     
     # 피라미딩 설정
     'PYRAMIDING_CONFIG',
+    
+    # 트레일링스탑 설정
+    'TRAILING_STOP_CONFIG',
     
     # GPT 필터링 설정
     'GPT_FILTERING_CONFIG',

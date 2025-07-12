@@ -112,6 +112,97 @@ LOG_MANAGEMENT: Dict[str, Any] = {
     ]
 }
 
+# ===== GPT 분석 결과 보관 및 삭제 설정 =====
+
+# GPT 분석 결과 라이프사이클 관리 설정
+GPT_ANALYSIS_LIFECYCLE: Dict[str, Any] = {
+    'name': 'GPT Analysis Lifecycle Management',
+    'description': 'GPT 분석 결과의 보관, 캐싱, 삭제 정책 관리',
+    'enabled': True,
+    
+    # 기본 보관 정책
+    'retention_policy': {
+        'default_retention_hours': 24,      # 기본 보관 시간 (24시간)
+        'high_confidence_retention_hours': 48,  # 고신뢰도 결과 보관 시간 (48시간)
+        'low_confidence_retention_hours': 12,   # 저신뢰도 결과 보관 시간 (12시간)
+        'error_result_retention_hours': 6,      # 오류 결과 보관 시간 (6시간)
+    },
+    
+    # 캐싱 정책
+    'caching_policy': {
+        'enable_caching': True,              # 캐싱 활성화
+        'cache_ttl_minutes': 720,            # 캐시 유효 시간 (12시간)
+        'max_cache_entries': 1000,           # 최대 캐시 엔트리 수
+        'max_cache_memory_mb': 100,          # 최대 캐시 메모리 사용량 (MB)
+        'cache_cleanup_interval_minutes': 300,  # 캐시 정리 주기 (5분)
+    },
+    
+    # 자동 삭제 정책
+    'cleanup_policy': {
+        'enable_auto_cleanup': True,         # 자동 정리 활성화
+        'cleanup_interval_hours': 6,         # 정리 실행 주기 (6시간)
+        'batch_cleanup_size': 100,           # 배치 정리 크기
+        'dry_run_mode': False,               # 실제 삭제 전 시뮬레이션 모드
+    },
+    
+    # 품질 기반 보관 정책
+    'quality_based_retention': {
+        'enabled': True,
+        'score_thresholds': {
+            'high_quality': 80,              # 고품질 기준 (80점 이상)
+            'medium_quality': 60,            # 중간품질 기준 (60점 이상)
+            'low_quality': 40,               # 저품질 기준 (40점 이상)
+        },
+        'confidence_thresholds': {
+            'high_confidence': 0.8,          # 고신뢰도 기준 (0.8 이상)
+            'medium_confidence': 0.6,        # 중간신뢰도 기준 (0.6 이상)
+            'low_confidence': 0.4,           # 저신뢰도 기준 (0.4 이상)
+        },
+        'retention_multipliers': {
+            'high_quality': 2.0,             # 고품질 결과 보관 시간 배수
+            'medium_quality': 1.5,           # 중간품질 결과 보관 시간 배수
+            'low_quality': 1.0,              # 저품질 결과 보관 시간 배수
+        }
+    },
+    
+    # 시장 상황 기반 보관 정책
+    'market_condition_retention': {
+        'enabled': True,
+        'market_phase_multipliers': {
+            'Stage1': 1.5,                   # Stage1 결과 보관 시간 배수
+            'Stage2': 1.3,                   # Stage2 결과 보관 시간 배수
+            'Stage3': 1.0,                   # Stage3 결과 보관 시간 배수
+            'Stage4': 0.8,                   # Stage4 결과 보관 시간 배수
+        },
+        'action_based_retention': {
+            'BUY': 1.5,                      # 매수 신호 보관 시간 배수
+            'STRONG_BUY': 2.0,               # 강력 매수 신호 보관 시간 배수
+            'HOLD': 1.0,                     # 보유 신호 보관 시간 배수
+            'AVOID': 0.7,                    # 회피 신호 보관 시간 배수
+        }
+    },
+    
+    # 모니터링 및 알림
+    'monitoring': {
+        'enable_cleanup_logging': True,      # 정리 작업 로깅
+        'enable_retention_alerts': True,     # 보관 정책 알림
+        'enable_performance_tracking': True, # 성능 추적
+        'alert_thresholds': {
+            'high_cleanup_rate': 0.3,        # 높은 정리 비율 임계값 (30%)
+            'low_cache_hit_rate': 0.5,       # 낮은 캐시 히트율 임계값 (50%)
+            'memory_usage_threshold': 0.8,   # 메모리 사용량 임계값 (80%)
+        }
+    },
+    
+    # 백업 및 복구
+    'backup_policy': {
+        'enable_backup': True,               # 백업 활성화
+        'backup_interval_hours': 24,         # 백업 주기 (24시간)
+        'backup_retention_days': 7,          # 백업 보관 기간 (7일)
+        'backup_high_quality_only': True,    # 고품질 결과만 백업
+    }
+}
+
 # ===== GPT 분석 필터링 조건 설정 =====
 
 # GPT 분석 결과 기반 매수 조건 필터링 설정
@@ -206,6 +297,68 @@ PYRAMIDING_CONFIG: Dict[str, Any] = {
         'performance_tracking': True,     # 성과 추적
         'alert_on_execution': True,       # 실행 시 알림
         'detailed_analysis': True,        # 상세 분석 로깅
+    }
+}
+
+# ===== 트레일링스탑 설정 =====
+TRAILING_STOP_CONFIG: Dict[str, Any] = {
+    'name': 'Enhanced Trailing Stop Strategy',
+    'description': '트레일링스탑 설정 - 너무 일찍 발동되는 문제 해결',
+    'enabled': True,
+    
+    # 기본 활성화 조건
+    'min_rise_pct': 8.0,                 # 트레일링스탑 활성화 최소 상승률 (3% → 8%)
+    'min_holding_days': 3,               # 최소 보유기간 (일)
+    'recent_trend_check_days': 3,        # 최근 추세 확인 기간
+    
+    # 트레일링스탑 비율 설정
+    'min_trailing_pct': 3.0,             # 최소 트레일링스탑 비율 (1.5% → 3%)
+    'max_trailing_pct': 10.0,            # 최대 트레일링스탑 비율 (8% → 10%)
+    
+    # 보유기간별 조정 계수
+    'holding_adjustments': {
+        3: 2.0,    # 3일 이내: 100% 완화
+        7: 1.5,    # 7일 이내: 50% 완화
+        14: 1.2,   # 14일 이내: 20% 완화
+    },
+    
+    # 변동성별 기본 배수
+    'volatility_multipliers': {
+        'high': 1.5,    # 고변동성 (ATR > 5%)
+        'medium': 2.0,  # 중변동성 (ATR 3-5%)
+        'low': 2.5,     # 저변동성 (ATR < 3%)
+    },
+    
+    # 시장 상황 기반 비활성화
+    'strong_uptrend_disable': True,      # 강한 상승추세 시 비활성화
+    'strong_uptrend_conditions': {
+        'rsi_min': 60,                   # RSI 최소값
+        'rsi_max': 80,                   # RSI 최대값
+        'ma20_rise_pct': 2.0,            # MA20 대비 최소 상승률
+        'macd_positive': True,           # MACD 양수 여부
+        'min_profit_pct': 10.0,          # 최소 수익률
+    },
+    
+    # 켈리 기반 손절매 설정
+    'kelly_stop_loss': {
+        'enabled': True,                 # 켈리 기반 손절매 활성화
+        'min_holding_days': 3,           # 최소 보유기간 (켈리 손절매 적용 전)
+        'min_win_rate': 0.4,             # 최소 승률 (40% 미만 시 비활성화)
+        'min_kelly_ratio': 0.05,         # 최소 켈리비율 (5% 미만 시 비활성화)
+        'max_stop_loss_pct': 15.0,       # 최대 손절 비율 (15%)
+        'min_stop_loss_pct': 5.0,        # 최소 손절 비율 (5%)
+        'atr_multiplier': 2.0,           # ATR 배수 (기본 2배)
+        'profit_threshold_pct': 5.0,     # 수익 구간 진입 임계값 (5% 이상)
+        'volatility_adjustment': True,   # 변동성 기반 조정
+        'trend_consideration': True,     # 추세 고려
+    },
+    
+    # 로깅 설정
+    'logging': {
+        'log_trailing_stop_checks': True,    # 트레일링스탑 체크 로깅
+        'log_activation_conditions': True,   # 활성화 조건 로깅
+        'log_deactivation_reasons': True,    # 비활성화 사유 로깅
+        'log_kelly_calculations': True,      # 켈리 계산 로깅
     }
 }
 

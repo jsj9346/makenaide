@@ -598,7 +598,7 @@ def calculate_hybrid_score(row, weights: dict, config: dict) -> tuple:
         # 1. 가격 > MA200 (필수 조건이므로 높은 가중치)
         try:
             price = row.get('price', 0)
-            ma_200 = row.get('ma_200', 0) or row.get('ma200_slope', 0)
+            ma_200 = row.get('ma_200', 0)
             if price > 0 and ma_200 > 0 and price > ma_200:
                 static_score += 2
                 score_details.append("MA200상향")
@@ -670,7 +670,7 @@ def filter_comprehensive_candidates(combined_df: pd.DataFrame, config: dict = No
     정적+동적 지표를 조합한 하이브리드 필터링으로 돌파 매매 후보를 선별합니다.
     
     데이터 소스:
-    - static_indicators: 정적 지표 (resistance, support, atr, adx, price, high_60, ma200_slope 등)
+    - static_indicators: 정적 지표 (resistance, support, atr, adx, price, high_60 등)
     - ohlcv: 동적 지표 (rsi_14, macd_histogram, bb_upper, bb_lower, volume_20ma 등)
     
     Args:
@@ -740,7 +740,7 @@ def filter_comprehensive_candidates(combined_df: pd.DataFrame, config: dict = No
                 if config.get("require_price_above_ma200", True):
                     try:
                         price = row.get('price', 0)
-                        ma_200 = row.get('ma_200', 0) or row.get('ma200_slope', 0)
+                        ma_200 = row.get('ma_200', 0)
                         price_above_ma200_check = price > ma_200 if ma_200 > 0 else False
                     except:
                         price_above_ma200_check = False

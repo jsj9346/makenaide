@@ -112,3 +112,15 @@ strategy_weights:
   stage_weight: 0.3                    # Stage 분석 가중치
   technical_weight: 0.3                # 기존 기술적 분석 가중치 (테스트용 증가)
   gpt_weight: 0.1                      # GPT 분석 가중치
+
+# GPT 분석 라이프사이클 관리 설정
+gpt_lifecycle:
+  enable_auto_cleanup: true           # 자동 정리 활성화
+  cleanup_interval_hours: 6           # 정리 주기 (6시간)
+  max_age_hours: 24                   # 최대 보관 시간 (24시간)
+  skip_analysis_if_fresh: true        # 신선한 결과가 있으면 분석 건너뛰기
+  skip_json_if_fresh: true            # 신선한 결과가 있으면 JSON 생성 건너뛰기
+  skip_4h_if_fresh_gpt: true          # 신선한 GPT 결과가 있으면 4시간봉 분석 건너뛰기
+  freshness_threshold_minutes: 720    # 신선도 임계값 (12시간)
+  enable_caching: true                # 캐싱 활성화
+  batch_cleanup_size: 1000            # 배치 정리 크기

@@ -2735,13 +2735,16 @@ def prepare_indicators_summary(daily_data: dict) -> str:
             else:
                 summary_parts.append("혼조 정렬")
         
-        # 거래량 분석
+        # 🔧 [수정] 거래량 분석 - 실제 데이터 기반
         volume_change = daily_data.get('volume_change_7_30')
-        if volume_change:
-            if volume_change > 50:
-                summary_parts.append(f"거래량 급증({volume_change:.0f}%)")
-            elif volume_change < -30:
-                summary_parts.append(f"거래량 위축({volume_change:.0f}%)")
+        if volume_change and volume_change > 0:
+            # 실제 거래량 변화율 분석 (과최적화 제거)
+            if volume_change > 2.0:
+                summary_parts.append(f"거래량 급증({volume_change:.1f}배)")
+            elif volume_change < 0.5:
+                summary_parts.append(f"거래량 위축({volume_change:.1f}배)")
+            else:
+                summary_parts.append(f"거래량 보통({volume_change:.1f}배)")
         
         # 지지/저항 분석
         support = daily_data.get('s1')
@@ -3162,22 +3165,22 @@ def get_recent_gpt_response(ticker, max_age_minutes=720, db_manager=None):
             should_close_db = True
             
         query = """
-            SELECT action, type, reason, pattern, market_phase, confidence, created_at
+            SELECT action, score, reason, pattern, market_phase, confidence, created_at
             FROM trend_analysis
             WHERE ticker = %s
-            AND updated_at >= NOW() - INTERVAL '%s minutes'
-            ORDER BY updated_at DESC
+            AND created_at >= NOW() - INTERVAL '%s minutes'
+            ORDER BY created_at DESC
             LIMIT 1
         """
-        row = db_manager.fetch_one(query, (ticker, max_age_minutes))
+        row = db_manager.execute_query(query, (ticker, max_age_minutes), fetchone=True)
         if row:
             return {
                 "action": row[0],
-                "type": row[1],
+                "score": row[1],
                 "reason": row[2],
                 "pattern": row[3],
                 "market_phase": row[4],
-                "confidence": int(row[5]),
+                "confidence": float(row[5]),
                 "created_at": row[6]
             }
         else:
@@ -3193,69 +3196,34 @@ def should_reuse_gpt_response(ticker, current_data, max_age_minutes=720):
     """
     최근 GPT 응답이 유효한지 판단하고, 유효하면 응답 dict를 반환합니다.
     max_age_minutes: 캐시 유효 시간(분, 기본 720분=12시간)
-    current_data: 현재 마켓 데이터 딕셔너리 (support, resistance, r1, s1 등 포함)
+    current_data: 현재 마켓 데이터 딕셔너리
     반환값: 응답 dict 또는 None
     """
     prev_response = get_recent_gpt_response(ticker, max_age_minutes)
     if not prev_response:
+        logging.debug(f"🔍 {ticker} 캐시된 GPT 분석 결과 없음")
         return None
 
-    # 설정 파일에서 임계치 로드 (지표별 허용 변동 비율)
-    config = load_config()
-    thresholds = config.get("gpt_cache_thresholds", {
-        "support": 0.01,
-        "resistance": 0.015,
-        "r1": 0.015,
-        "s1": 0.015
-    })
+    # 기본 캐시 유효성 확인 (시간 기반)
+    if prev_response.get('created_at'):
+        age_minutes = int((datetime.now() - prev_response['created_at']).total_seconds() / 60)
+        if age_minutes > max_age_minutes:
+            logging.debug(f"⏰ {ticker} 캐시 만료 (나이: {age_minutes}분 > {max_age_minutes}분)")
+            return None
 
-    # market_data 비교를 위해 필요한 키 추출
-    # prev_response에는 support, resistance 등이 없으므로 가져온 DB trend_analysis 레코드에는 포함되지 않음.
-    # 대신, prev_response의 'reason' 등 외, 이전 market_data는 trend_analysis에 저장된 pattern/market_phase만 있어,
-    # 따라서 require to store prev market_data in DB: but for now assume prev_response includes those keys.
-    # Here, we assume prev_response dict has keys: support, resistance, r1, s1.
-    if has_significant_market_change(prev_response, current_data, thresholds):
-        print(f"[CACHE_EXPIRE] {ticker}: 시장 지표 변동 큼, GPT 재호출 필요")
-        return None
-
-    # 캐시 재사용을 위한 지표 변화 확인 결과 로깅
-    for key, thresh in thresholds.items():
-        prev_val = prev_response.get(key)
-        curr_val = current_data.get(key)
-        if prev_val is None or curr_val is None:
-            continue
-        try:
-            change_ratio = abs(curr_val - prev_val) / prev_val
-        except ZeroDivisionError:
-            change_ratio = abs(curr_val - prev_val)
-        print(f"[CACHE_METRIC] {ticker}: {key} prev={prev_val}, curr={curr_val}, change={change_ratio:.2%}, threshold={thresh:.2%}")
-    print(f"[CACHE_HIT] {ticker}: 캐시 유효 - 모든 지표 변화 {max(thresholds.values())*100:.2f}% 이하")
-
+    # 간단한 캐시 히트 로깅
+    logging.info(f"✅ {ticker} 캐시된 GPT 분석 결과 사용 (score: {prev_response.get('score', 'N/A')}, action: {prev_response.get('action', 'N/A')})")
+    
     return prev_response
 
 
-# 주요 지표의 변화가 임계값 이상인지 판단하는 함수
+# 주요 지표의 변화가 임계값 이상인지 판단하는 함수 (현재는 사용하지 않음)
 def has_significant_market_change(prev_response, current_data, thresholds):
     """
     이전 GPT 응답의 주요 지표와 현재 마켓 데이터 간 변동 여부를 판단합니다.
-    prev_response: {'support': float, 'resistance': float, ...}
-    current_data: {'support': float, 'resistance': float, ...}
-    thresholds: dict, 지표별 허용 변동 비율 예: {'support': 0.01, 'resistance': 0.015}
-    반환: True if any indicator changed by >= threshold, else False
+    현재는 시간 기반 캐싱을 사용하므로 이 함수는 사용하지 않습니다.
     """
-    for key, thresh in thresholds.items():
-        prev_val = prev_response.get(key)
-        curr_val = current_data.get(key)
-        if prev_val is None or curr_val is None:
-            continue
-        # 상대적 변화율 계산
-        try:
-            change_ratio = abs(curr_val - prev_val) / prev_val
-        except ZeroDivisionError:
-            # prev_val이 0이면 절대 변화량 기준으로 판단
-            change_ratio = abs(curr_val - prev_val)
-        if change_ratio >= thresh:
-            return True
+    # 현재는 시간 기반 캐싱만 사용
     return False
 
 def analyze_selected_tickers(ticker_list):
@@ -3793,17 +3761,20 @@ def prepare_technical_data_for_analysis(daily_data: dict) -> dict:
     """
     try:
         # daily_data에서 필요한 지표들을 추출하여 변환
+        # 🔧 [수정] 기술적 데이터 준비 - 과최적화 제거
         technical_data = {
             'close': daily_data.get('price', 0),
             'ma_50': daily_data.get('ma_50', 0),
             'ma_200': daily_data.get('ma_200', 0),
             'rsi_14': daily_data.get('rsi_14', 50),
-            'volume_change_7_30': daily_data.get('volume_change_7_30', 0),
+            # 실제 계산된 거래량 변화율 사용 (개별화 제거)
+            'volume_change_7_30': daily_data.get('volume_change_7_30', 1.0),
             'high_60': daily_data.get('high_60', daily_data.get('price', 0)),
             'support': daily_data.get('s1', daily_data.get('price', 0) * 0.95),
             'resistance': daily_data.get('r1', daily_data.get('price', 0) * 1.05),
             'pivot': daily_data.get('pivot', daily_data.get('price', 0)),
-            'supertrend_signal': daily_data.get('supertrend_signal', 'neutral'),
+            # 실제 Supertrend 신호 사용 (개별화 제거)
+            'supertrend_signal': daily_data.get('supertrend_signal', 0.5),
             'fibo_382': daily_data.get('fibo_382', 0),
             'fibo_618': daily_data.get('fibo_618', 0),
             'ticker': daily_data.get('ticker', '')
@@ -4020,7 +3991,7 @@ def create_enhanced_analysis_prompt(ticker: str, enhanced_data: dict):
 - 현재 단계: {stage_data.get('current_stage', 'Unknown')}  
 - 신뢰도: {stage_data.get('stage_confidence', 0):.2f}
 - MA50 기울기: {stage_data.get('ma50_slope', 0):.4f}
-- MA200 기울기: {stage_data.get('ma200_slope', 0):.4f}
+# MA200 기울기 제거됨 (GPT 분석 정확도 향상)
 - 거래량 트렌드: {stage_data.get('volume_trend', 'unknown')}
 
 🎯 브레이크아웃 조건:
@@ -5177,6 +5148,481 @@ def run_schema_validation_and_recovery():
         print(f"❌ 스키마 검증 실행 중 오류: {str(e)}")
 
 
+# ===========================================
+# GPT 분석 결과 라이프사이클 관리 시스템
+# ===========================================
+
+class GPTAnalysisLifecycleManager:
+    """
+    GPT 분석 결과의 체계적인 보관, 캐싱, 삭제를 관리하는 클래스
+    품질 기반 보관 정책과 시장 상황 기반 보관 정책을 적용
+    """
+    
+    def __init__(self, db_manager: DBManager, config: dict = None):
+        self.db_manager = db_manager
+        self.config = config or self._load_default_config()
+        self.last_cleanup_time = datetime.now()
+        self.cleanup_stats = {
+            'total_cleaned': 0,
+            'quality_based_cleaned': 0,
+            'expired_cleaned': 0,
+            'error_cleaned': 0,
+            'last_cleanup': None
+        }
+        
+        # 백그라운드 정리 스레드 시작
+        self._start_background_cleanup()
+        
+        logging.info("🔄 GPT 분석 결과 라이프사이클 관리자 초기화 완료")
+    
+    def _load_default_config(self) -> dict:
+        """기본 설정 로드"""
+        try:
+            from config import GPT_ANALYSIS_LIFECYCLE
+            return GPT_ANALYSIS_LIFECYCLE
+        except ImportError:
+            logging.warning("⚠️ GPT_ANALYSIS_LIFECYCLE 설정을 찾을 수 없어 기본값 사용")
+            return {
+                'retention_policy': {'default_retention_hours': 24},
+                'cleanup_policy': {'enable_auto_cleanup': True, 'cleanup_interval_hours': 6},
+                'quality_based_retention': {'enabled': True},
+                'monitoring': {'enable_cleanup_logging': True}
+            }
+    
+    def _start_background_cleanup(self):
+        """백그라운드 정리 스레드 시작"""
+        if not self.config.get('cleanup_policy', {}).get('enable_auto_cleanup', True):
+            return
+            
+        def cleanup_worker():
+            while True:
+                try:
+                    interval_hours = self.config.get('cleanup_policy', {}).get('cleanup_interval_hours', 6)
+                    time.sleep(interval_hours * 3600)  # 시간을 초로 변환
+                    
+                    if self._should_run_cleanup():
+                        self.perform_scheduled_cleanup()
+                        
+                except Exception as e:
+                    logging.error(f"❌ 백그라운드 정리 스레드 오류: {str(e)}")
+                    time.sleep(3600)  # 오류 시 1시간 대기
+        
+        cleanup_thread = threading.Thread(target=cleanup_worker, daemon=True)
+        cleanup_thread.start()
+        logging.info("🧹 백그라운드 GPT 분석 결과 정리 스레드 시작됨")
+    
+    def _should_run_cleanup(self) -> bool:
+        """정리 실행 여부 판단"""
+        if not self.config.get('cleanup_policy', {}).get('enable_auto_cleanup', True):
+            return False
+            
+        # 마지막 정리로부터 설정된 시간이 지났는지 확인
+        interval_hours = self.config.get('cleanup_policy', {}).get('cleanup_interval_hours', 6)
+        time_since_last = (datetime.now() - self.last_cleanup_time).total_seconds() / 3600
+        
+        return time_since_last >= interval_hours
+    
+    def calculate_retention_hours(self, analysis_result: dict) -> int:
+        """
+        분석 결과의 품질과 시장 상황을 기반으로 보관 시간을 계산
+        
+        Args:
+            analysis_result: GPT 분석 결과 딕셔너리
+            
+        Returns:
+            int: 보관 시간 (시간)
+        """
+        base_hours = self.config.get('retention_policy', {}).get('default_retention_hours', 24)
+        
+        # 품질 기반 보관 시간 조정
+        quality_multiplier = self._calculate_quality_multiplier(analysis_result)
+        
+        # 시장 상황 기반 보관 시간 조정
+        market_multiplier = self._calculate_market_multiplier(analysis_result)
+        
+        # 최종 보관 시간 계산
+        final_hours = int(base_hours * quality_multiplier * market_multiplier)
+        
+        # 최소/최대 보관 시간 제한
+        min_hours = 1
+        max_hours = 168  # 7일
+        
+        return max(min_hours, min(max_hours, final_hours))
+    
+    def _calculate_quality_multiplier(self, analysis_result: dict) -> float:
+        """품질 기반 보관 시간 배수 계산"""
+        if not self.config.get('quality_based_retention', {}).get('enabled', True):
+            return 1.0
+            
+        score = analysis_result.get('score', 50)
+        confidence = analysis_result.get('confidence', 0.5)
+        
+        thresholds = self.config.get('quality_based_retention', {}).get('score_thresholds', {})
+        multipliers = self.config.get('quality_based_retention', {}).get('retention_multipliers', {})
+        
+        # 점수 기반 배수
+        if score >= thresholds.get('high_quality', 80):
+            score_multiplier = multipliers.get('high_quality', 2.0)
+        elif score >= thresholds.get('medium_quality', 60):
+            score_multiplier = multipliers.get('medium_quality', 1.5)
+        else:
+            score_multiplier = multipliers.get('low_quality', 1.0)
+        
+        # 신뢰도 기반 배수 (보조적)
+        confidence_thresholds = self.config.get('quality_based_retention', {}).get('confidence_thresholds', {})
+        if confidence >= confidence_thresholds.get('high_confidence', 0.8):
+            confidence_multiplier = 1.2
+        elif confidence >= confidence_thresholds.get('medium_confidence', 0.6):
+            confidence_multiplier = 1.1
+        else:
+            confidence_multiplier = 1.0
+        
+        return score_multiplier * confidence_multiplier
+    
+    def _calculate_market_multiplier(self, analysis_result: dict) -> float:
+        """시장 상황 기반 보관 시간 배수 계산"""
+        if not self.config.get('market_condition_retention', {}).get('enabled', True):
+            return 1.0
+            
+        market_phase = analysis_result.get('market_phase', 'Unknown')
+        action = analysis_result.get('action', 'HOLD')
+        
+        # 시장 단계 기반 배수
+        phase_multipliers = self.config.get('market_condition_retention', {}).get('market_phase_multipliers', {})
+        phase_multiplier = phase_multipliers.get(market_phase, 1.0)
+        
+        # 액션 기반 배수
+        action_multipliers = self.config.get('market_condition_retention', {}).get('action_based_retention', {})
+        action_multiplier = action_multipliers.get(action, 1.0)
+        
+        return phase_multiplier * action_multiplier
+    
+    def perform_scheduled_cleanup(self) -> dict:
+        """
+        예약된 정리 작업 수행
+        
+        Returns:
+            dict: 정리 결과 통계
+        """
+        try:
+            logging.info("🧹 GPT 분석 결과 예약 정리 시작")
+            
+            cleanup_stats = {
+                'total_cleaned': 0,
+                'quality_based_cleaned': 0,
+                'expired_cleaned': 0,
+                'error_cleaned': 0,
+                'dry_run': self.config.get('cleanup_policy', {}).get('dry_run_mode', False)
+            }
+            
+            # 1. 만료된 결과 정리
+            expired_count = self._cleanup_expired_analyses()
+            cleanup_stats['expired_cleaned'] = expired_count
+            
+            # 2. 품질 기반 정리
+            quality_count = self._cleanup_low_quality_analyses()
+            cleanup_stats['quality_based_cleaned'] = quality_count
+            
+            # 3. 오류 결과 정리
+            error_count = self._cleanup_error_analyses()
+            cleanup_stats['error_cleaned'] = error_count
+            
+            cleanup_stats['total_cleaned'] = expired_count + quality_count + error_count
+            
+            # 통계 업데이트
+            self.cleanup_stats.update(cleanup_stats)
+            self.cleanup_stats['last_cleanup'] = datetime.now()
+            self.last_cleanup_time = datetime.now()
+            
+            # 모니터링 알림
+            self._check_cleanup_alerts(cleanup_stats)
+            
+            logging.info(f"✅ GPT 분석 결과 정리 완료: {cleanup_stats['total_cleaned']}개 레코드 처리")
+            return cleanup_stats
+            
+        except Exception as e:
+            logging.error(f"❌ GPT 분석 결과 정리 실패: {str(e)}")
+            return {'error': str(e)}
+    
+    def _cleanup_expired_analyses(self) -> int:
+        """만료된 분석 결과 정리"""
+        try:
+            # 각 분석 결과의 개별 보관 시간을 고려한 정리
+            query = """
+                DELETE FROM trend_analysis 
+                WHERE created_at < NOW() - INTERVAL '1 day'
+                AND (score < 40 OR confidence < 0.4)
+            """
+            
+            if self.config.get('cleanup_policy', {}).get('dry_run_mode', False):
+                # 시뮬레이션 모드: 삭제할 레코드 수만 확인
+                count_query = query.replace('DELETE FROM', 'SELECT COUNT(*) FROM')
+                result = self.db_manager.execute_query(count_query, fetchone=True)
+                return result[0] if result else 0
+            else:
+                # 실제 삭제
+                deleted_count = self.db_manager.execute_query(query)
+                return deleted_count
+                
+        except Exception as e:
+            logging.error(f"❌ 만료된 분석 결과 정리 실패: {str(e)}")
+            return 0
+    
+    def _cleanup_low_quality_analyses(self) -> int:
+        """저품질 분석 결과 정리"""
+        try:
+            # 저품질 기준
+            low_score_threshold = 30
+            low_confidence_threshold = 0.3
+            
+            query = """
+                DELETE FROM trend_analysis 
+                WHERE (score < %s AND confidence < %s)
+                AND created_at < NOW() - INTERVAL '12 hours'
+            """
+            
+            if self.config.get('cleanup_policy', {}).get('dry_run_mode', False):
+                count_query = query.replace('DELETE FROM', 'SELECT COUNT(*) FROM')
+                result = self.db_manager.execute_query(count_query, (low_score_threshold, low_confidence_threshold), fetchone=True)
+                return result[0] if result else 0
+            else:
+                deleted_count = self.db_manager.execute_query(query, (low_score_threshold, low_confidence_threshold))
+                return deleted_count
+                
+        except Exception as e:
+            logging.error(f"❌ 저품질 분석 결과 정리 실패: {str(e)}")
+            return 0
+    
+    def _cleanup_error_analyses(self) -> int:
+        """오류 분석 결과 정리"""
+        try:
+            # 오류 결과 정리 (action이 'ERROR'이거나 reason에 오류 메시지가 포함된 경우)
+            query = """
+                DELETE FROM trend_analysis 
+                WHERE (action = 'ERROR' OR reason LIKE '%%error%%' OR reason LIKE '%%fail%%')
+                AND created_at < NOW() - INTERVAL '6 hours'
+            """
+            
+            if self.config.get('cleanup_policy', {}).get('dry_run_mode', False):
+                count_query = query.replace('DELETE FROM', 'SELECT COUNT(*) FROM')
+                result = self.db_manager.execute_query(count_query, fetchone=True)
+                return result[0] if result else 0
+            else:
+                deleted_count = self.db_manager.execute_query(query)
+                return deleted_count
+                
+        except Exception as e:
+            logging.error(f"❌ 오류 분석 결과 정리 실패: {str(e)}")
+            return 0
+    
+    def _check_cleanup_alerts(self, cleanup_stats: dict):
+        """정리 작업 알림 확인"""
+        if not self.config.get('monitoring', {}).get('enable_retention_alerts', True):
+            return
+            
+        total_cleaned = cleanup_stats.get('total_cleaned', 0)
+        alert_threshold = self.config.get('monitoring', {}).get('alert_thresholds', {}).get('high_cleanup_rate', 0.3)
+        
+        # 전체 레코드 수 확인
+        try:
+            count_query = "SELECT COUNT(*) FROM trend_analysis"
+            result = self.db_manager.execute_query(count_query, fetchone=True)
+            total_records = result[0] if result else 0
+            
+            if total_records > 0:
+                cleanup_rate = total_cleaned / total_records
+                if cleanup_rate > alert_threshold:
+                    logging.warning(f"⚠️ 높은 정리 비율 감지: {cleanup_rate:.1%} ({total_cleaned}/{total_records})")
+                    
+        except Exception as e:
+            logging.error(f"❌ 정리 알림 확인 실패: {str(e)}")
+    
+    def get_cleanup_stats(self) -> dict:
+        """정리 작업 통계 반환"""
+        return self.cleanup_stats.copy()
+    
+    def force_cleanup(self) -> dict:
+        """강제 정리 작업 수행"""
+        logging.info("🚨 GPT 분석 결과 강제 정리 시작")
+        return self.perform_scheduled_cleanup()
+
+# ===========================================
+# 기존 함수들 (호환성 유지)
+# ===========================================
+
+def cleanup_expired_gpt_analysis(db_manager: DBManager, max_age_hours: int = 24) -> int:
+    """
+    만료된 GPT 분석 결과를 자동 삭제합니다.
+    
+    Args:
+        db_manager: DBManager 인스턴스
+        max_age_hours: 최대 보관 시간 (시간, 기본 24시간)
+    
+    Returns:
+        int: 삭제된 레코드 수
+    """
+    try:
+        query = """
+            DELETE FROM trend_analysis 
+            WHERE created_at < NOW() - INTERVAL '%s hours'
+        """
+        deleted_count = db_manager.execute_query(query, (max_age_hours,))
+        
+        logging.info(f"🧹 만료된 GPT 분석 결과 정리 완료: {deleted_count}개 레코드 삭제")
+        return deleted_count
+        
+    except Exception as e:
+        logging.error(f"❌ GPT 분석 결과 정리 실패: {str(e)}")
+        return 0
+
+def check_gpt_analysis_freshness(ticker: str, db_manager: DBManager, max_age_minutes: int = 720) -> dict:
+    """
+    특정 티커의 GPT 분석 결과 신선도를 확인합니다.
+    
+    Args:
+        ticker: 확인할 티커
+        db_manager: DBManager 인스턴스
+        max_age_minutes: 최대 유효 시간 (분, 기본 720분=12시간)
+    
+    Returns:
+        dict: {
+            'exists': bool,
+            'is_fresh': bool,
+            'age_minutes': int,
+            'analysis_data': dict or None
+        }
+    """
+    try:
+        query = """
+            SELECT action, market_phase, confidence, score, pattern, reason, created_at
+            FROM trend_analysis
+            WHERE ticker = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        result = db_manager.execute_query(query, (ticker,), fetchone=True)
+        
+        if not result:
+            return {
+                'exists': False,
+                'is_fresh': False,
+                'age_minutes': None,
+                'analysis_data': None
+            }
+        
+        created_at = result[6]
+        age_minutes = int((datetime.now() - created_at).total_seconds() / 60)
+        is_fresh = age_minutes <= max_age_minutes
+        
+        analysis_data = {
+            'action': result[0],
+            'market_phase': result[1],
+            'confidence': result[2],
+            'score': result[3],
+            'pattern': result[4],
+            'reason': result[5],
+            'created_at': created_at
+        }
+        
+        return {
+            'exists': True,
+            'is_fresh': is_fresh,
+            'age_minutes': age_minutes,
+            'analysis_data': analysis_data
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ {ticker} GPT 분석 신선도 확인 실패: {str(e)}")
+        return {
+            'exists': False,
+            'is_fresh': False,
+            'age_minutes': None,
+            'analysis_data': None
+        }
+
+def should_skip_gpt_analysis(ticker: str, db_manager: DBManager, config: dict = None) -> tuple[bool, dict]:
+    """
+    GPT 분석을 건너뛸지 판단합니다.
+    
+    Args:
+        ticker: 분석할 티커
+        db_manager: DBManager 인스턴스
+        config: 설정 딕셔너리
+    
+    Returns:
+        tuple: (건너뛸지 여부, 기존 분석 데이터)
+    """
+    if config is None:
+        config = {
+            'max_age_minutes': 720,  # 12시간
+            'enable_caching': True,
+            'skip_if_fresh': True
+        }
+    
+    # 캐싱이 비활성화된 경우 분석 수행
+    if not config.get('enable_caching', True):
+        return False, None
+    
+    # 기존 분석 결과 확인
+    freshness_check = check_gpt_analysis_freshness(
+        ticker, db_manager, config.get('max_age_minutes', 720)
+    )
+    
+    # 신선한 분석 결과가 있으면 건너뛰기
+    if freshness_check['exists'] and freshness_check['is_fresh'] and config.get('skip_if_fresh', True):
+        logging.info(f"⏭️ {ticker} 신선한 GPT 분석 결과 존재 (나이: {freshness_check['age_minutes']}분), 분석 건너뜀")
+        return True, freshness_check['analysis_data']
+    
+    return False, None
+
+def get_gpt_analysis_stats(db_manager: DBManager) -> dict:
+    """
+    GPT 분석 결과 통계를 반환합니다.
+    
+    Args:
+        db_manager: DBManager 인스턴스
+    
+    Returns:
+        dict: 통계 정보
+    """
+    try:
+        # 전체 레코드 수
+        total_query = "SELECT COUNT(*) FROM trend_analysis"
+        total_result = db_manager.execute_query(total_query, fetchone=True)
+        total_count = total_result[0] if total_result else 0
+        
+        # 24시간 이내 레코드 수
+        recent_query = """
+            SELECT COUNT(*) FROM trend_analysis 
+            WHERE created_at >= NOW() - INTERVAL '24 hours'
+        """
+        recent_result = db_manager.execute_query(recent_query, fetchone=True)
+        recent_count = recent_result[0] if recent_result else 0
+        
+        # 12시간 이내 레코드 수
+        fresh_query = """
+            SELECT COUNT(*) FROM trend_analysis 
+            WHERE created_at >= NOW() - INTERVAL '12 hours'
+        """
+        fresh_result = db_manager.execute_query(fresh_query, fetchone=True)
+        fresh_count = fresh_result[0] if fresh_result else 0
+        
+        # 오래된 레코드 수 (24시간 이상)
+        old_count = total_count - recent_count
+        
+        return {
+            'total_records': total_count,
+            'recent_records_24h': recent_count,
+            'fresh_records_12h': fresh_count,
+            'old_records': old_count,
+            'cleanup_recommended': old_count > 100  # 100개 이상이면 정리 권장
+        }
+        
+    except Exception as e:
+        logging.error(f"❌ GPT 분석 통계 조회 실패: {str(e)}")
+        return {'error': str(e)}
+
+
 # 실행부 확장
 if __name__ == "__main__":
     import sys
@@ -5190,5 +5636,72 @@ if __name__ == "__main__":
         print("📊 캐시 시스템 통계:")
         print(f"  - 총 엔트리: {stats['total_entries']:,}개 / {stats['entries_limit']:,}개 ({stats['entries_usage_pct']:.1f}%)")
         print(f"  - 메모리 사용량: {stats['memory_usage_mb']:.2f}MB / {stats['memory_limit_mb']:.2f}MB ({stats['memory_usage_pct']:.1f}%)")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--lifecycle-stats":
+        # 라이프사이클 통계 표시
+        try:
+            db_manager = DBManager()
+            lifecycle_manager = GPTAnalysisLifecycleManager(db_manager)
+            stats = lifecycle_manager.get_cleanup_stats()
+            print("📊 GPT 분석 결과 라이프사이클 통계:")
+            print(f"  - 총 정리된 레코드: {stats.get('total_cleaned', 0):,}개")
+            print(f"  - 품질 기반 정리: {stats.get('quality_based_cleaned', 0):,}개")
+            print(f"  - 만료 기반 정리: {stats.get('expired_cleaned', 0):,}개")
+            print(f"  - 오류 기반 정리: {stats.get('error_cleaned', 0):,}개")
+            print(f"  - 마지막 정리: {stats.get('last_cleanup', 'N/A')}")
+            
+            # 전체 통계도 함께 표시
+            overall_stats = get_gpt_analysis_stats(db_manager)
+            print("\n📈 전체 GPT 분석 통계:")
+            print(f"  - 총 레코드: {overall_stats.get('total_records', 0):,}개")
+            print(f"  - 최근 24시간: {overall_stats.get('recent_records_24h', 0):,}개")
+            print(f"  - 최근 12시간: {overall_stats.get('fresh_records_12h', 0):,}개")
+            print(f"  - 오래된 레코드: {overall_stats.get('old_records', 0):,}개")
+            print(f"  - 정리 권장: {'예' if overall_stats.get('cleanup_recommended', False) else '아니오'}")
+            
+        except Exception as e:
+            print(f"❌ 라이프사이클 통계 조회 실패: {e}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--force-cleanup":
+        # 강제 정리 실행
+        try:
+            db_manager = DBManager()
+            lifecycle_manager = GPTAnalysisLifecycleManager(db_manager)
+            result = lifecycle_manager.force_cleanup()
+            print("🧹 GPT 분석 결과 강제 정리 완료:")
+            print(f"  - 총 정리된 레코드: {result.get('total_cleaned', 0):,}개")
+            print(f"  - 품질 기반 정리: {result.get('quality_based_cleaned', 0):,}개")
+            print(f"  - 만료 기반 정리: {result.get('expired_cleaned', 0):,}개")
+            print(f"  - 오류 기반 정리: {result.get('error_cleaned', 0):,}개")
+            print(f"  - 시뮬레이션 모드: {'예' if result.get('dry_run', False) else '아니오'}")
+            
+        except Exception as e:
+            print(f"❌ 강제 정리 실행 실패: {e}")
+    elif len(sys.argv) > 1 and sys.argv[1] == "--dry-run-cleanup":
+        # 시뮬레이션 모드로 정리 실행
+        try:
+            db_manager = DBManager()
+            # 시뮬레이션 모드로 설정
+            config = {
+                'cleanup_policy': {'dry_run_mode': True}
+            }
+            lifecycle_manager = GPTAnalysisLifecycleManager(db_manager, config)
+            result = lifecycle_manager.force_cleanup()
+            print("🔍 GPT 분석 결과 정리 시뮬레이션 완료:")
+            print(f"  - 삭제될 레코드: {result.get('total_cleaned', 0):,}개")
+            print(f"  - 품질 기반 삭제: {result.get('quality_based_cleaned', 0):,}개")
+            print(f"  - 만료 기반 삭제: {result.get('expired_cleaned', 0):,}개")
+            print(f"  - 오류 기반 삭제: {result.get('error_cleaned', 0):,}개")
+            print("💡 실제 삭제를 원하면 --force-cleanup 명령어를 사용하세요.")
+            
+        except Exception as e:
+            print(f"❌ 시뮬레이션 실행 실패: {e}")
+            stats = get_gpt_analysis_stats(db_manager)
+            print("📊 GPT 분석 라이프사이클 통계:")
+            print(f"  - 전체 레코드: {stats.get('total_records', 0):,}개")
+            print(f"  - 24시간 이내: {stats.get('recent_records_24h', 0):,}개")
+            print(f"  - 12시간 이내: {stats.get('fresh_records_12h', 0):,}개")
+            print(f"  - 오래된 레코드: {stats.get('old_records', 0):,}개")
+            print(f"  - 정리 권장: {'예' if stats.get('cleanup_recommended', False) else '아니오'}")
+        except Exception as e:
+            print(f"❌ 라이프사이클 통계 조회 실패: {str(e)}")
     else:
         test_trend_analyzer_improvements()

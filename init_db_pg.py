@@ -306,7 +306,6 @@ def create_tables():
     CREATE TABLE IF NOT EXISTS static_indicators (
         ticker TEXT PRIMARY KEY,
         -- 확정된 정적 지표들
-        ma200_slope REAL,           -- 200일선 기울기 (장기 추세)
         nvt_relative REAL,          -- 온체인 과열/저평가 판단
         volume_change_7_30 REAL,    -- 거래량 변화율
         price REAL,                 -- 현재가 또는 기준 종가
@@ -395,11 +394,11 @@ def create_tables():
     logging.info("✅ 백테스트 전용 테이블 생성 완료")
     
     # 스키마 최적화 완료 - 확정된 지표만 사용
-    # static_indicators: ma200_slope, nvt_relative, volume_change_7_30, price, high_60, low_60, pivot, s1, r1, resistance, support, atr, adx, supertrend_signal
+    # static_indicators: nvt_relative, volume_change_7_30, price, high_60, low_60, pivot, s1, r1, resistance, support, atr, adx, supertrend_signal
     # ohlcv: 14개 확정 동적 지표만 유지 (fibo_618, fibo_382, ht_trendline, 
     #        ma_50, ma_200, bb_upper, bb_lower, donchian_high, donchian_low, macd_histogram, rsi_14, volume_20ma, stoch_k, stoch_d, cci)
     logging.info("✅ 최적화된 스키마 적용 완료")
-    logging.info("   - static_indicators: 14개 확정 정적 지표 (supertrend_signal 추가)")
+    logging.info("   - static_indicators: 13개 확정 정적 지표 (ma200_slope 제거)")
     logging.info("   - ohlcv: 14개 확정 동적 지표 (supertrend_signal 제거됨)")
     
     # Ensure timestamp column exists in portfolio_history (backward compatibility)

@@ -27,33 +27,7 @@ import json
 # ✅ db_manager.py의 함수 사용
 from db_manager import get_db_connection_context
 
-@contextmanager
-def get_db_connection_safe():
-    """표준화된 안전한 DB 연결 컨텍스트 매니저
-    모든 DB 작업에서 사용하도록 표준화
-    """
-    from utils import get_db_connection
-    conn = None
-    try:
-        conn = get_db_connection()
-        if conn is None:
-            raise ConnectionError("DB 연결 실패")
-        yield conn
-    except Exception as e:
-        logger.error(f"❌ 안전한 DB 연결 중 오류: {e}")
-        if conn:
-            try:
-                conn.rollback()
-            except:
-                pass
-        raise
-    finally:
-        if conn:
-            try:
-                conn.close()
-                logger.debug("안전한 DB 연결 종료")
-            except Exception as e:
-                logger.warning(f"⚠️ DB 연결 종료 중 오류: {e}")
+
 
 # 중요 상수 정의
 ONE_HMIL_KRW = 100_000_000  # 1억원 (거래대금 필터링 기준)
@@ -237,10 +211,41 @@ class MakenaideBot:
         # 모듈 속성 초기화 (파이프라인 실행을 위한 모듈 참조)
         self._initialize_modules()
         
+        # GPT 분석 결과 라이프사이클 관리자 초기화
+        self._initialize_gpt_lifecycle_manager()
+        
         # 초기화 완료 상태
         self.initialized = False
         
         logger.info(f"✅ MakenaideBot 초기화 완료 (소요시간: {time.time() - start_time:.2f}초)")
+    
+    @contextmanager
+    def get_db_connection_safe(self):
+        """표준화된 안전한 DB 연결 컨텍스트 매니저
+        모든 DB 작업에서 사용하도록 표준화
+        """
+        from utils import get_db_connection
+        conn = None
+        try:
+            conn = get_db_connection()
+            if conn is None:
+                raise ConnectionError("DB 연결 실패")
+            yield conn
+        except Exception as e:
+            logger.error(f"❌ 안전한 DB 연결 중 오류: {e}")
+            if conn:
+                try:
+                    conn.rollback()
+                except:
+                    pass
+            raise
+        finally:
+            if conn:
+                try:
+                    conn.close()
+                    logger.debug("안전한 DB 연결 종료")
+                except Exception as e:
+                    logger.warning(f"⚠️ DB 연결 종료 중 오류: {e}")
 
     def _initialize_modules(self):
         """모듈 초기화 및 속성 할당"""
@@ -261,6 +266,54 @@ class MakenaideBot:
         except ImportError as e:
             logger.error(f"❌ 모듈 임포트 실패: {e}")
             raise
+    
+    def _initialize_gpt_lifecycle_manager(self):
+        """GPT 분석 결과 라이프사이클 관리자 초기화"""
+        try:
+            from trend_analyzer import GPTAnalysisLifecycleManager
+            
+            # 라이프사이클 관리자 초기화
+            self.gpt_lifecycle_manager = GPTAnalysisLifecycleManager(
+                db_manager=self.db_mgr,
+                config=None  # 기본 설정 사용
+            )
+            
+            logger.info("✅ GPT 분석 결과 라이프사이클 관리자 초기화 완료")
+            
+        except Exception as e:
+            logger.warning(f"⚠️ GPT 라이프사이클 관리자 초기화 실패: {e}")
+            self.gpt_lifecycle_manager = None
+    
+    def _check_gpt_analysis_cache(self, ticker: str) -> tuple[bool, dict]:
+        """
+        GPT 분석 결과 캐시 확인
+        
+        Args:
+            ticker: 확인할 티커
+            
+        Returns:
+            tuple: (건너뛸지 여부, 기존 분석 데이터)
+        """
+        try:
+            from trend_analyzer import should_skip_gpt_analysis
+            
+            # 캐싱 설정
+            cache_config = {
+                'max_age_minutes': 720,  # 12시간
+                'enable_caching': True,
+                'skip_if_fresh': True
+            }
+            
+            # 캐시 확인
+            should_skip, existing_analysis = should_skip_gpt_analysis(
+                ticker, self.db_mgr, cache_config
+            )
+            
+            return should_skip, existing_analysis
+            
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} 캐시 확인 실패: {e}")
+            return False, None
 
     def validate_static_indicators_data(self):
         """static_indicators 테이블의 데이터 무결성을 검증 (에러 처리 강화)"""
@@ -285,7 +338,7 @@ class MakenaideBot:
                 logger.info(f"📊 static_indicators 테이블 컬럼 {len(existing_columns)}개 확인됨")
                 
                 # 문제 컬럼들을 데이터 타입별로 분류
-                problem_columns = ['ma200_slope', 'nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']
+                problem_columns = ['nvt_relative', 'volume_change_7_30', 'adx', 'supertrend_signal']
                 
                 # 실제 존재하는 컬럼만 필터링
                 existing_problem_columns = [col for col in problem_columns if col in existing_columns]
@@ -737,7 +790,7 @@ class MakenaideBot:
             logger.info(f"📝 저장할 데이터 {i+1}: {result}")
             
         try:
-            with get_db_connection_context() as conn:
+            with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 
                 # 테이블 존재 여부 확인
@@ -870,7 +923,7 @@ class MakenaideBot:
             return
             
         try:
-            with get_db_connection_context() as conn:
+            with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 
                 # trade_log 테이블에 데이터 삽입 (action 컬럼 추가)
@@ -955,29 +1008,7 @@ class MakenaideBot:
         delete_old_ohlcv(ticker)
         logger.info(f"✅ {ticker} OHLCV 데이터 업데이트 완료 (추가 {len(df)}개 봉)")
 
-    def calculate_technical_indicators(self, ticker, df):
-        """기술적 지표 계산 - 캐싱 활용 버전"""
-        try:
-            ticker = f"KRW-{ticker}" if not ticker.startswith("KRW-") else ticker
-            
-            # 블랙리스트 체크
-            blacklist = load_blacklist()
-            if ticker in blacklist:
-                logger.info(f"⏭️ {ticker}는 블랙리스트에 있어 기술적 지표 계산 건너뜀")
-                return None
-            
-            # OHLCV 데이터 유효성 검사
-            if df is None or df.empty:
-                logger.warning(f"⚠️ {ticker} OHLCV 데이터 없음 (데이터 누락 또는 DB 오류 가능)")
-                return None
-            
-            from data_fetcher import calculate_technical_indicators
-            indicators_df = calculate_technical_indicators(df)
-            logger.info(f"✅ {ticker} 기술적 지표 계산 완료")
-            return indicators_df
-        except Exception as e:
-            logger.error(f"❌ {ticker} 기술적 지표 계산 중 오류 발생: {str(e)}")
-            return None
+    # 🔧 [제거] 중복 함수 제거 - data_fetcher.calculate_technical_indicators 직접 사용
 
     def save_chart_image(self, ticker: str, df: pd.DataFrame) -> str:
         """차트 이미지를 생성하고 저장합니다"""
@@ -1213,7 +1244,7 @@ class MakenaideBot:
                     if timeframe == '1d':
                         # 통합 지표 계산 사용 (static_indicators + ohlcv 동적지표)
                         from data_fetcher import calculate_unified_indicators
-                        df_with_indicators = calculate_unified_indicators(ohlcv_data)
+                        df_with_indicators = calculate_unified_indicators(ohlcv_data, ticker)
                     else:
                         from data_fetcher import calculate_technical_indicators_4h
                         df_with_indicators = calculate_technical_indicators_4h(ohlcv_data)
@@ -1263,7 +1294,7 @@ class MakenaideBot:
                 logger.warning("⚠️ 처리된 티커가 없습니다.")
                 return pd.DataFrame()
 
-            with get_db_connection_safe() as conn:
+            with self.get_db_connection_safe() as conn:
                 if timeframe == '1d':
                     # 1일봉: static_indicators 테이블에서 조회
                     table_name = "static_indicators"
@@ -1322,13 +1353,39 @@ class MakenaideBot:
             return False
             
         try:
+            # 🔧 [개선] 백테스트 스냅샷 생성 - backtest_ohlcv, backtest_sessions 테이블 업데이트
+            logger.info("📊 백테스트 스냅샷 생성 시작...")
+            from backtester import BacktestDataManager
+            import pandas as pd
+            
+            # 백테스트 데이터 매니저 초기화
+            backtest_manager = BacktestDataManager()
+            
+            # 현재 시간 기준으로 백테스트 세션 생성
+            from datetime import datetime
+            session_name = f"makenaide_backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            
+            # 백테스트 스냅샷 생성 (최근 200일 데이터)
+            session_id = backtest_manager.create_backtest_snapshot(session_name, period_days=200)
+            
+            if session_id:
+                logger.info(f"✅ 백테스트 스냅샷 생성 완료: {session_id}")
+                
+                # 생성된 스냅샷 데이터 확인
+                snapshot_data = backtest_manager.get_backtest_data(session_id)
+                if not snapshot_data.empty:
+                    logger.info(f"📊 스냅샷 데이터 확인: {len(snapshot_data)}개 레코드")
+                else:
+                    logger.warning("⚠️ 스냅샷 데이터가 비어있습니다")
+            else:
+                logger.warning("⚠️ 백테스트 스냅샷 생성 실패")
+            
             # 기존 SPOT_COMBOS 백테스트 + 새로운 하이브리드 전략
             from backtester import (
                 backtest_combo, SPOT_COMBOS, HYBRID_SPOT_COMBOS, 
                 generate_strategy_report, HybridFilteringBacktester,
                 backtest_hybrid_filtering_performance
             )
-            import pandas as pd
             
             # 1. 기존 전략 조합 백테스트
             logger.info("🎯 기존 전략 조합 백테스트 시작")
@@ -1413,6 +1470,30 @@ class MakenaideBot:
                 auto_tune_strategies(report_path='strategy_report.csv', config_path='config/strategy.yaml')
             except ImportError:
                 logger.warning("⚠️ strategy_tuner 모듈을 찾을 수 없어 자동 튜닝을 건너뜁니다.")
+            
+            # 🔧 [개선] 백테스트 결과 검증
+            logger.info("🔍 백테스트 결과 검증 중...")
+            try:
+                # 최신 백테스트 세션 확인
+                from backtester import BacktestDataManager
+                backtest_manager = BacktestDataManager()
+                
+                # 최신 세션 정보 조회
+                latest_session = backtest_manager._get_latest_session_id()
+                if latest_session:
+                    session_info = backtest_manager.get_session_info(latest_session)
+                    if session_info:
+                        logger.info(f"✅ 최신 백테스트 세션 확인: {latest_session}")
+                        logger.info(f"   - 세션명: {session_info.get('name', 'N/A')}")
+                        logger.info(f"   - 기간: {session_info.get('period_start', 'N/A')} ~ {session_info.get('period_end', 'N/A')}")
+                        logger.info(f"   - 생성일: {session_info.get('created_at', 'N/A')}")
+                    else:
+                        logger.warning("⚠️ 세션 정보 조회 실패")
+                else:
+                    logger.warning("⚠️ 최신 백테스트 세션을 찾을 수 없습니다")
+                    
+            except Exception as verify_error:
+                logger.warning(f"⚠️ 백테스트 결과 검증 중 오류: {verify_error}")
             
             logger.info("✅ 확장된 백테스트 및 리포트 생성 완료")
             return True
@@ -1593,7 +1674,7 @@ class MakenaideBot:
         정적+동적 지표를 조합한 하이브리드 필터링으로 돌파 매매 후보를 선별합니다.
         
         데이터 소스:
-        - static_indicators: 정적 지표 (resistance, support, atr, adx, price, high_60, ma200_slope 등)
+        - static_indicators: 정적 지표 (resistance, support, atr, adx, price, high_60 등)
         - ohlcv: 동적 지표 (rsi_14, macd_histogram, bb_upper, bb_lower, volume_20ma 등)
         
         수정된 논리적 순서:
@@ -1692,7 +1773,7 @@ class MakenaideBot:
             # 성능 최적화된 단일 쿼리로 정적+동적 지표 조회 (검증된 티커만 대상)
             hybrid_query = """
                 SELECT 
-                    s.ticker, s.price, s.high_60, s.low_60, s.ma200_slope, s.resistance, s.support, 
+                    s.ticker, s.price, s.high_60, s.low_60, s.resistance, s.support, 
                     s.atr, s.adx, s.updated_at,
                     o.rsi_14, o.macd_histogram, o.bb_upper, o.bb_lower, 
                     o.volume_20ma, o.stoch_k, o.current_close, o.ma_50, o.ma_200
@@ -1715,7 +1796,7 @@ class MakenaideBot:
             
             # 하이브리드 DataFrame 생성 (단일 쿼리 결과)
             combined_df = pd.DataFrame(hybrid_result, columns=[
-                'ticker', 'price', 'high_60', 'low_60', 'ma200_slope', 'resistance', 'support', 
+                'ticker', 'price', 'high_60', 'low_60', 'resistance', 'support', 
                 'atr', 'adx', 'updated_at',
                 'rsi_14', 'macd_histogram', 'bb_upper', 'bb_lower', 
                 'volume_20ma', 'stoch_k', 'current_close', 'ma_50', 'ma_200'
@@ -1723,7 +1804,7 @@ class MakenaideBot:
             combined_df.set_index('ticker', inplace=True)
             
             # 데이터 일관성 검증 (정적/동적 분리하여 검증)
-            static_columns = ['price', 'high_60', 'low_60', 'ma200_slope', 'resistance', 'support', 'atr', 'adx', 'updated_at']
+            static_columns = ['price', 'high_60', 'low_60', 'resistance', 'support', 'atr', 'adx', 'updated_at']
             dynamic_columns = ['rsi_14', 'macd_histogram', 'bb_upper', 'bb_lower', 'volume_20ma', 'stoch_k', 'current_close', 'ma_50', 'ma_200']
             
             static_df = combined_df[static_columns].copy()
@@ -2222,7 +2303,8 @@ class MakenaideBot:
                         return None, ticker
 
                     # 2. 기술적 지표 계산
-                    indicators_df = self.calculate_technical_indicators(ticker, df)
+                    from data_fetcher import calculate_unified_indicators
+                    indicators_df = calculate_unified_indicators(df, ticker)
                     if indicators_df is None or indicators_df.empty:
                         logger.warning(f"⚠️ {ticker} 지표 계산 실패")
                         return None, ticker
@@ -2454,9 +2536,15 @@ class MakenaideBot:
                 
                 logger.info(f"✅ GPT 분석 완료 (소요시간: {time.time() - step_start_gpt:.2f}초)")
                 
-                # GPT 분석 결과 DB 저장
+                # GPT 분석 결과 DB 저장 (라이프사이클 관리 적용)
                 try:
                     self.save_gpt_analysis_to_db(gpt_results)
+                    
+                    # 라이프사이클 관리자 통계 업데이트
+                    if hasattr(self, 'gpt_lifecycle_manager') and self.gpt_lifecycle_manager:
+                        cleanup_stats = self.gpt_lifecycle_manager.get_cleanup_stats()
+                        logger.info(f"📊 GPT 라이프사이클 통계: 총 정리 {cleanup_stats.get('total_cleaned', 0)}개")
+                        
                 except Exception as e:
                     logger.warning(f"⚠️ GPT 분석 결과 저장 중 오류: {str(e)}")
                 
@@ -2616,36 +2704,56 @@ class MakenaideBot:
                                 total_balance=total_balance
                             )
                             
-                            # 2. 기술적 지표 데이터 수집
+                            # 2. 기술적 지표 데이터 수집 (확장)
                             technical_data = self._get_technical_data_for_integration(ticker)
                             
-                            # 3. 시장 상황 데이터 수집
+                            # 3. 시장 상황 데이터 수집 (확장)
                             market_conditions = self._get_market_conditions_for_integration()
                             
-                            # 4. 통합 포지션 사이징 계산
-                            from strategy_analyzer import calculate_integrated_position_size
-                            
-                            kelly_params = {
-                                'kelly_fraction': kelly_result['kelly_fraction'],
-                                'estimated_win_rate': kelly_result['estimated_win_rate'],
-                                'risk_reward_ratio': kelly_result['risk_reward_ratio']
-                            }
-                            
-                            atr_params = {
-                                'atr': kelly_result['atr'],
-                                'current_price': current_price
-                            }
-                            
-                            integrated_result = calculate_integrated_position_size(
-                                technical_data=technical_data,
-                                kelly_params=kelly_params,
-                                atr_params=atr_params,
-                                market_conditions=market_conditions
-                            )
-                            
-                            # 5. 통합 결과 기반 매수 금액 계산
-                            integrated_position_size = integrated_result['final_position_size']
-                            trade_amount_krw = total_balance * integrated_position_size
+                            # 4. 통합 포지션 사이징 계산 (실제 사용)
+                            try:
+                                from strategy_analyzer import calculate_integrated_position_size
+                                
+                                kelly_params = {
+                                    'kelly_fraction': kelly_result['kelly_fraction'],
+                                    'estimated_win_rate': kelly_result['estimated_win_rate'],
+                                    'risk_reward_ratio': kelly_result['risk_reward_ratio']
+                                }
+                                
+                                atr_params = {
+                                    'atr': kelly_result['atr'],
+                                    'current_price': current_price
+                                }
+                                
+                                integrated_result = calculate_integrated_position_size(
+                                    technical_data=technical_data,
+                                    kelly_params=kelly_params,
+                                    atr_params=atr_params,
+                                    market_conditions=market_conditions
+                                )
+                                
+                                # 5. 통합 결과 기반 매수 금액 계산
+                                integrated_position_size = integrated_result['final_position_size']
+                                trade_amount_krw = total_balance * integrated_position_size
+                                
+                                # 통합 결과 로깅
+                                logger.debug(f"💰 {ticker} 통합 포지션 사이징 결과:")
+                                logger.debug(f"   - 켈리 비율: {kelly_result['kelly_fraction']:.1%}")
+                                logger.debug(f"   - 통합 포지션: {integrated_position_size:.1%}")
+                                logger.debug(f"   - 총 조정 계수: {integrated_result['total_adjustment']:.3f}")
+                                logger.debug(f"   - 신뢰도 점수: {integrated_result['confidence_score']:.3f}")
+                                logger.debug(f"   - ATR 조정: {integrated_result['atr_adjustment']:.3f}")
+                                logger.debug(f"   - RSI 조정: {integrated_result['rsi_adjustment']:.3f}")
+                                logger.debug(f"   - MACD 조정: {integrated_result['macd_adjustment']:.3f}")
+                                logger.debug(f"   - MA 조정: {integrated_result['ma_adjustment']:.3f}")
+                                logger.debug(f"   - 시장 조정: {integrated_result['market_adjustment']:.3f}")
+                                logger.debug(f"   - 추세 조정: {integrated_result['trend_adjustment']:.3f}")
+                                
+                            except Exception as e:
+                                logger.warning(f"⚠️ {ticker} 통합 포지션 사이징 실패, 기본 켈리 공식 사용: {e}")
+                                # 통합 실패 시 기본 켈리 공식 사용
+                                integrated_position_size = kelly_result['final_position_size']
+                                trade_amount_krw = total_balance * integrated_position_size
                             
                             # 최소/최대 금액 제한 적용
                             from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
@@ -2789,16 +2897,85 @@ class MakenaideBot:
             
             # 6. 백테스트 및 리포트
             step_start = time.time()
-            ohlcv_df = None  # 캐시 제거됨: 필요 시 외부에서 전달
-            if ohlcv_df is not None and not ohlcv_df.empty and market_df_updated is not None and not market_df_updated.empty:
-                backtest_success = self.run_backtest_and_report(ohlcv_df, market_df_updated)
-                if backtest_success:
-                    logger.info(f"✅ 7단계: 백테스트 및 리포트 생성 완료 (소요시간: {time.time() - step_start:.2f}초)")
-                    step_results["백테스트_리포트"] = True
+            try:
+                # 전달받은 OHLCV 데이터 사용 또는 새로 수집
+                if market_df_4h is not None and not market_df_4h.empty:
+                    logger.info("📊 전달받은 OHLCV 데이터로 백테스팅 실행")
+                    ohlcv_df = market_df_4h
                 else:
-                    logger.warning(f"⚠️ 7단계: 백테스트 및 리포트 생성 실패 (소요시간: {time.time() - step_start:.2f}초)")
-            else:
-                logger.warning("⚠️ 백테스트를 위한 데이터가 부족합니다.")
+                    # OHLCV 데이터 수집 (백테스팅용)
+                    logger.info("📊 백테스팅을 위한 OHLCV 데이터 수집 중...")
+                    ohlcv_data = {}
+                    # 🔧 [개선] 더 많은 종목 데이터 수집 (상위 50개로 확대)
+                    test_tickers = list(market_df_updated.index)[:50]  # 상위 50개 종목으로 확대
+                    logger.info(f"📊 백테스팅 대상 종목: {len(test_tickers)}개")
+                    
+                    for ticker in test_tickers:
+                        try:
+                            df = self.db_mgr.fetch_ohlcv(ticker, days=200)
+                            if df is not None and not df.empty:
+                                ohlcv_data[ticker] = df
+                        except Exception as e:
+                            logger.warning(f"⚠️ {ticker} OHLCV 데이터 수집 실패: {e}")
+                            continue
+                    
+                    if ohlcv_data and len(ohlcv_data) >= 1:  # 🔧 [개선] 최소 1개 종목 데이터로 완화
+                        # OHLCV 데이터를 DataFrame으로 변환
+                        ohlcv_df = pd.concat(ohlcv_data.values(), keys=ohlcv_data.keys(), names=['ticker', 'date'])
+                        ohlcv_df = ohlcv_df.reset_index()
+                        logger.info(f"📊 백테스팅 데이터 준비 완료: {len(ohlcv_data)}개 종목, {len(ohlcv_df)}개 레코드")
+                        
+                        # 🔧 [개선] 데이터 품질 검증 추가
+                        total_records = len(ohlcv_df)
+                        if total_records < 100:
+                            logger.warning(f"⚠️ 백테스팅 데이터가 부족합니다: {total_records}개 레코드 (권장: 100개 이상)")
+                        else:
+                            logger.info(f"✅ 백테스팅 데이터 품질 확인: {total_records}개 레코드")
+                    else:
+                        ohlcv_df = None
+                        logger.warning("⚠️ 백테스팅을 위한 OHLCV 데이터가 없습니다.")
+                        
+                        # 🔧 [개선] 대체 로직: DB에서 직접 OHLCV 데이터 조회
+                        logger.info("🔄 대체 로직: DB에서 직접 OHLCV 데이터 조회 시도...")
+                        try:
+                            from utils import get_db_connection
+                            conn = get_db_connection()
+                            if conn:
+                                # 최근 200일간의 OHLCV 데이터 조회
+                                query = """
+                                    SELECT ticker, date, open, high, low, close, volume
+                                    FROM ohlcv 
+                                    WHERE date >= CURRENT_DATE - INTERVAL '200 days'
+                                    ORDER BY ticker, date
+                                """
+                                ohlcv_df = pd.read_sql_query(query, conn)
+                                conn.close()
+                                
+                                if not ohlcv_df.empty:
+                                    logger.info(f"✅ 대체 데이터 조회 성공: {len(ohlcv_df)}개 레코드")
+                                    # 날짜 컬럼을 datetime으로 변환
+                                    ohlcv_df['date'] = pd.to_datetime(ohlcv_df['date'])
+                                else:
+                                    logger.warning("⚠️ 대체 데이터 조회 결과도 비어있습니다")
+                            else:
+                                logger.warning("⚠️ DB 연결 실패로 대체 데이터 조회 불가")
+                        except Exception as e:
+                            logger.warning(f"⚠️ 대체 데이터 조회 중 오류: {e}")
+                
+                # 백테스트 실행
+                if ohlcv_df is not None and not ohlcv_df.empty:
+                    backtest_success = self.run_backtest_and_report(ohlcv_df, market_df_updated)
+                    if backtest_success:
+                        logger.info(f"✅ 7단계: 백테스트 및 리포트 생성 완료 (소요시간: {time.time() - step_start:.2f}초)")
+                        step_results["백테스트_리포트"] = True
+                    else:
+                        logger.warning(f"⚠️ 7단계: 백테스트 및 리포트 생성 실패 (소요시간: {time.time() - step_start:.2f}초)")
+                else:
+                    logger.warning("⚠️ 백테스팅을 위한 OHLCV 데이터가 없습니다.")
+                    
+            except Exception as e:
+                logger.error(f"❌ 백테스팅 중 오류 발생: {e}")
+                logger.warning("⚠️ 백테스팅을 건너뛰고 파이프라인을 계속 진행합니다.")
                 
             # 실행 요약
             total_time = time.time() - start_time
@@ -2825,127 +3002,8 @@ class MakenaideBot:
             return False
 
     def process_gpt_analysis_chunked(self, gpt_json_data, config):
-        """메모리 최적화가 강화된 청크 단위 GPT 분석 처리 - 새로운 강화된 버전 사용"""
+        """메모리 최적화가 강화된 청크 단위 GPT 분석 처리"""
         return self.process_gpt_analysis_chunked_enhanced(gpt_json_data, config)
-    
-    def process_gpt_analysis_chunked_original(self, gpt_json_data, config):
-        """메모리 최적화가 강화된 청크 단위 GPT 분석 처리 - 원본 버전"""
-        import gc
-        import psutil
-        import os
-        
-        # 동적 청크 크기 계산 (메모리 사용량 기반)
-        initial_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        
-        if initial_memory > 400:
-            chunk_size = 3  # 메모리 부족 시 작게
-            logger.warning(f"⚠️ 높은 메모리 사용량 감지({initial_memory:.1f}MB), 청크 크기를 3으로 축소")
-        elif initial_memory < 200:
-            chunk_size = 8  # 여유 있을 때 크게
-            logger.info(f"✅ 낮은 메모리 사용량({initial_memory:.1f}MB), 청크 크기를 8로 확대")
-        else:
-            chunk_size = config.get('batch_size', 5)
-            logger.info(f"📊 표준 메모리 사용량({initial_memory:.1f}MB), 청크 크기 {chunk_size} 사용")
-        
-        memory_threshold = config.get('memory_threshold_mb', 500)
-        all_results = []
-        memory_alert_count = 0
-        
-        # 데이터를 청크로 분할
-        chunks = [gpt_json_data[i:i+chunk_size] for i in range(0, len(gpt_json_data), chunk_size)]
-        
-        logger.info(f"📊 GPT 분석 청크 처리: {len(chunks)}개 청크, 청크당 {chunk_size}개 티커")
-        
-        for i, chunk in enumerate(chunks):
-            try:
-                # 메모리 사용량 모니터링 (강화된 버전)
-                process = psutil.Process(os.getpid())
-                memory_mb = process.memory_info().rss / 1024 / 1024
-                
-                # 메모리 임계치 도달 시 강제 정리 강화
-                if memory_mb > memory_threshold:
-                    memory_alert_count += 1
-                    logger.warning(f"⚠️ 메모리 사용량 임계값 초과: {memory_mb:.1f}MB > {memory_threshold}MB (횟수: {memory_alert_count})")
-                    
-                    # 단계별 메모리 정리
-                    gc.collect()  # 1단계: 기본 가비지 컬렉션
-                    
-                    # 2단계: 중간 결과를 DB에 저장하고 메모리에서 제거
-                    if len(all_results) > chunk_size:
-                        self._save_intermediate_gpt_results(all_results)
-                        saved_count = len(all_results)
-                        all_results = []  # 메모리에서 제거
-                        logger.info(f"💾 메모리 절약을 위해 {saved_count}개 결과를 DB에 저장하고 메모리 정리")
-                    
-                    # 3단계: 강제 가비지 컬렉션 (세대별)
-                    for generation in range(3):
-                        gc.collect(generation)
-                    
-                    # 4단계: 메모리 사용량 재확인
-                    post_cleanup_memory = process.memory_info().rss / 1024 / 1024
-                    memory_saved = memory_mb - post_cleanup_memory
-                    logger.info(f"🧹 메모리 정리 완료: {memory_mb:.1f}MB → {post_cleanup_memory:.1f}MB (절약: {memory_saved:.1f}MB)")
-                    
-                    # 5단계: 여전히 임계치 초과 시 청크 크기 동적 축소
-                    if post_cleanup_memory > memory_threshold and chunk_size > 1:
-                        new_chunk_size = max(1, chunk_size - 1)
-                        logger.warning(f"🔄 메모리 압박으로 청크 크기 축소: {chunk_size} → {new_chunk_size}")
-                        # 남은 청크들을 새로운 크기로 재분할
-                        if i < len(chunks) - 1:
-                            remaining_data = []
-                            for remaining_chunk in chunks[i+1:]:
-                                remaining_data.extend(remaining_chunk)
-                            chunks = chunks[:i+1] + [remaining_data[j:j+new_chunk_size] for j in range(0, len(remaining_data), new_chunk_size)]
-                            chunk_size = new_chunk_size
-                        
-                logger.info(f"🔄 청크 {i+1}/{len(chunks)} 처리 중 (메모리: {memory_mb:.1f}MB, 청크크기: {len(chunk)})")
-                
-                # GPT 분석 실행 with 재시도 로직
-                chunk_results = self.process_gpt_chunk_with_retry(chunk, config)
-                
-                # 결과 즉시 처리하여 메모리 절약
-                for result in chunk_results:
-                    # 입력 타입 추가 및 score를 숫자 타입으로 보장
-                    result["input_type"] = result.get("analysis_method", "unknown")
-                    result["score"] = safe_float_convert(result.get("score", 0), context=f"GPT분석 result score")
-                    result["confidence"] = safe_float_convert(result.get("confidence", 0), context=f"GPT분석 result confidence")
-                    # chart_path 누락 시 자동 생성
-                    if "chart_path" not in result:
-                        result["chart_path"] = f"charts/{result['ticker']}.png"
-                    all_results.append(result)
-                
-                # 적응형 중간 결과 저장 (메모리 사용량에 따라 주기 조정)
-                save_threshold = max(chunk_size * 2, 10) if memory_mb < 300 else chunk_size
-                if len(all_results) >= save_threshold:
-                    self._save_intermediate_gpt_results(all_results[-save_threshold:])
-                
-                # 청크 처리 완료 후 명시적 정리
-                del chunk_results
-                if i % 3 == 0:  # 3청크마다 정리
-                    gc.collect()
-                
-            except Exception as e:
-                logger.error(f"❌ 청크 {i+1} 처리 중 오류: {e}")
-                # 실패한 청크에 대해 기본값 생성
-                for ticker_data in chunk:
-                    ticker = ticker_data.get("ticker", "Unknown")
-                    all_results.append({
-                        "ticker": ticker,
-                        "score": 50.0,
-                        "confidence": 0.30,
-                        "input_type": "chunk_error",
-                        "chart_path": f"charts/{ticker}.png"
-                    })
-        
-        # 최종 메모리 사용량 리포트
-        final_memory = psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        memory_efficiency = ((initial_memory - final_memory) / initial_memory * 100) if initial_memory > 0 else 0
-        
-        logger.info(f"✅ GPT 분석 청크 처리 완료: {len(all_results)}개 결과")
-        logger.info(f"📊 메모리 사용량: {initial_memory:.1f}MB → {final_memory:.1f}MB (효율성: {memory_efficiency:+.1f}%)")
-        logger.info(f"⚠️ 메모리 경고 발생 횟수: {memory_alert_count}회")
-        
-        return all_results
     
     def process_gpt_chunk_with_retry(self, chunk, config):
         """재시도 로직이 강화된 GPT 청크 처리"""
@@ -2982,7 +3040,7 @@ class MakenaideBot:
             
             logger.info(f"🔄 트레일링 스탑 배치 업데이트 (fallback): {len(batch_updates)}개")
             
-            with get_db_connection_context() as conn:
+            with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 
                 for update in batch_updates:
@@ -3046,8 +3104,10 @@ class MakenaideBot:
     def update_all_tickers(self):
         """
         모든 티커의 데이터를 업데이트하고 기술적 지표를 계산하는 전처리 과정을 수행합니다.
+        🔧 [개선] 중복 호출 제거: 필요한 경우에만 티커 업데이트 수행
+        
         이 함수는 다음 단계를 순차적으로 수행합니다:
-        1. 티커 스캔 및 기본 필터링
+        1. 티커 스캔 및 기본 필터링 (DB에서 기존 티커 사용)
         2. 일봉 OHLCV 및 지표 처리
         
         Returns:
@@ -3056,7 +3116,7 @@ class MakenaideBot:
         try:
             logger.info("🚀 티커 데이터 업데이트 및 전처리 시작")
             
-            # 1. 티커 스캔 및 필터링
+            # 1. 티커 스캔 및 필터링 (DB에서 기존 티커 사용, 중복 업데이트 제거)
             filtered_tickers = self.scan_and_filter_tickers()
             if not filtered_tickers:
                 logger.warning("⚠️ 필터링된 티커가 없어 전처리를 중단합니다.")
@@ -3174,13 +3234,10 @@ class MakenaideBot:
             except Exception as e:
                 logging.error(f"❌ 피라미딩 조건 점검 실패: {e}")
             
-            # 5. 시장 데이터 수집 (에러 처리 강화)
+            # 5. 시장 데이터 수집 및 기술적 지표 업데이트 (통합 처리)
             try:
-                logging.info("📊 시장 데이터 수집 중...")
-                self.scanner.update_tickers()
-                
-                # 6. 기술적 지표 업데이트 및 전처리 (에러 처리 강화)
-                logging.info("📈 기술적 지표 업데이트 중...")
+                logging.info("📊 시장 데이터 수집 및 기술적 지표 업데이트 중...")
+                # 중복 호출 제거: scanner.update_tickers() 대신 update_all_tickers()만 사용
                 filtered_tickers, market_df, _ = self.update_all_tickers()
                 
                 if not filtered_tickers:
@@ -3289,26 +3346,42 @@ class MakenaideBot:
             try:
                 logging.info("🤖 GPT 분석을 위한 JSON 생성 및 분석 실행 중...")
                 
-                # GPT 분석 대상 데이터 준비 (JSON 방식) - filtered_df의 모든 종목 대상
+                # GPT 분석 대상 데이터 준비 (JSON 방식) - 캐싱 로직 적용
                 analysis_candidates = []
-                for ticker in filtered_df.index:
-                    # generate_gpt_analysis_json 함수로 JSON 데이터 생성 (200일로 확장)
-                    from data_fetcher import generate_gpt_analysis_json
-                    json_data = generate_gpt_analysis_json(ticker, days=200)
-                    if json_data:
-                        analysis_candidates.append({
-                            "ticker": ticker,
-                            "base_score": 85,
-                            "json_data": json_data
-                        })
-                    else:
-                        logging.warning(f"⚠️ {ticker} JSON 데이터 생성 실패, 기본 데이터로 진행")
-                        analysis_candidates.append({
-                            "ticker": ticker,
-                            "base_score": 85
-                        })
+                skipped_count = 0
                 
-                logging.info(f"📋 GPT 분석 대상: {len(analysis_candidates)}개 종목")
+                for ticker in filtered_df.index:
+                    # 캐싱 로직 적용: 기존 분석 결과 확인
+                    should_skip, existing_analysis = self._check_gpt_analysis_cache(ticker)
+                    
+                    if should_skip and existing_analysis:
+                        # 기존 분석 결과 사용
+                        analysis_candidates.append({
+                            "ticker": ticker,
+                            "base_score": existing_analysis.get('score', 85),
+                            "cached_result": existing_analysis,
+                            "skip_gpt_call": True
+                        })
+                        skipped_count += 1
+                        logging.info(f"⏭️ {ticker} 캐시된 분석 결과 사용 (score: {existing_analysis.get('score', 85)})")
+                    else:
+                        # 새로운 JSON 데이터 생성
+                        from data_fetcher import generate_gpt_analysis_json
+                        json_data = generate_gpt_analysis_json(ticker, days=200)
+                        if json_data:
+                            analysis_candidates.append({
+                                "ticker": ticker,
+                                "base_score": 85,
+                                "json_data": json_data
+                            })
+                        else:
+                            logging.warning(f"⚠️ {ticker} JSON 데이터 생성 실패, 기본 데이터로 진행")
+                            analysis_candidates.append({
+                                "ticker": ticker,
+                                "base_score": 85
+                            })
+                
+                logging.info(f"📋 GPT 분석 대상: {len(analysis_candidates)}개 종목 (캐시 사용: {skipped_count}개)")
                 
                 # GPT 분석 설정
                 gpt_config = self.get_gpt_config()
@@ -3325,21 +3398,59 @@ class MakenaideBot:
                 # GPT 분석 최적화기 인스턴스 생성
                 optimizer = GPTAnalysisOptimizerSingleton()
                 
-                # _call_gpt_json_batch 호출하여 GPT 분석 실행
-                from trend_analyzer import _call_gpt_json_batch
-                logging.info(f"🧠 GPT JSON 분석 실행: {len(analysis_candidates)}개 종목")
-                gpt_results = _call_gpt_json_batch(analysis_candidates, analysis_config, optimizer)
-                logging.info(f"✅ GPT 분석 완료: {len(gpt_results)}개 결과")
+                # 캐시된 결과와 새로운 GPT 분석 결과 통합
+                gpt_results = []
+                
+                # 1. 캐시된 결과 처리
+                cached_results = [candidate for candidate in analysis_candidates if candidate.get('skip_gpt_call')]
+                for cached_candidate in cached_results:
+                    cached_result = cached_candidate['cached_result']
+                    gpt_results.append({
+                        'ticker': cached_candidate['ticker'],
+                        'score': cached_result.get('score', 85),
+                        'action': cached_result.get('action', 'HOLD'),
+                        'confidence': cached_result.get('confidence', 0.7),
+                        'market_phase': cached_result.get('market_phase', 'Unknown'),
+                        'pattern': cached_result.get('pattern', ''),
+                        'reason': cached_result.get('reason', ''),
+                        'from_cache': True
+                    })
+                
+                # 2. 새로운 GPT 분석 실행 (캐시되지 않은 종목만)
+                new_candidates = [candidate for candidate in analysis_candidates if not candidate.get('skip_gpt_call')]
+                
+                if new_candidates:
+                    from trend_analyzer import _call_gpt_json_batch
+                    logging.info(f"🧠 새로운 GPT JSON 분석 실행: {len(new_candidates)}개 종목")
+                    new_gpt_results = _call_gpt_json_batch(new_candidates, analysis_config, optimizer)
+                    gpt_results.extend(new_gpt_results)
+                    logging.info(f"✅ 새로운 GPT 분석 완료: {len(new_gpt_results)}개 결과")
+                else:
+                    logging.info("⏭️ 새로운 GPT 분석 대상이 없습니다 (모두 캐시 사용)")
+                
+                logging.info(f"✅ 전체 GPT 분석 완료: {len(gpt_results)}개 결과 (캐시: {len(cached_results)}개, 신규: {len(new_candidates)}개)")
                 
                 # GPT 분석 결과 로깅
                 if gpt_results:
                     logging.info("📊 GPT 분석 결과 요약:")
+                    cached_count = 0
+                    new_count = 0
+                    
                     for result in gpt_results:
                         ticker = result.get('ticker', 'Unknown')
                         score = result.get('score', 0)
                         action = result.get('action', 'Unknown')
                         confidence = result.get('confidence', 0)
-                        logging.info(f"   - {ticker}: {score}점, {action}, 신뢰도: {confidence:.2f}")
+                        from_cache = result.get('from_cache', False)
+                        
+                        if from_cache:
+                            cached_count += 1
+                            logging.info(f"   - {ticker}: {score}점, {action}, 신뢰도: {confidence:.2f} [캐시]")
+                        else:
+                            new_count += 1
+                            logging.info(f"   - {ticker}: {score}점, {action}, 신뢰도: {confidence:.2f} [신규]")
+                    
+                    logging.info(f"📊 분석 결과 통계: 캐시 {cached_count}개, 신규 {new_count}개")
                 
             except Exception as e:
                 logging.error(f"❌ GPT 분석 중 오류: {e}")
@@ -3438,7 +3549,30 @@ class MakenaideBot:
                 
             try:
                 logging.info("📋 거래 및 리포트 생성 중...")
-                self.trade_and_report(gpt_results, market_df, None, gpt_results)
+                
+                # 백테스팅을 위한 OHLCV 데이터 준비
+                ohlcv_data_for_trading = {}
+                trading_tickers = [result.get('ticker', '') for result in gpt_results if result.get('ticker')]
+                
+                for ticker in trading_tickers[:10]:  # 상위 10개 종목만
+                    try:
+                        df = self.db_mgr.fetch_ohlcv(ticker, days=200)
+                        if df is not None and not df.empty:
+                            ohlcv_data_for_trading[ticker] = df
+                    except Exception as e:
+                        logging.warning(f"⚠️ {ticker} OHLCV 데이터 수집 실패: {e}")
+                        continue
+                
+                # OHLCV 데이터를 DataFrame으로 변환
+                if ohlcv_data_for_trading:
+                    ohlcv_df_for_trading = pd.concat(ohlcv_data_for_trading.values(), keys=ohlcv_data_for_trading.keys(), names=['ticker', 'date'])
+                    ohlcv_df_for_trading = ohlcv_df_for_trading.reset_index()
+                    logging.info(f"📊 거래용 OHLCV 데이터 준비 완료: {len(ohlcv_data_for_trading)}개 종목")
+                else:
+                    ohlcv_df_for_trading = None
+                    logging.warning("⚠️ 거래용 OHLCV 데이터 수집 실패")
+                
+                self.trade_and_report(gpt_results, market_df, ohlcv_df_for_trading, gpt_results)
                 
             except Exception as e:
                 logging.error(f"❌ 거래 및 리포트 생성 중 오류: {e}")
@@ -3549,10 +3683,9 @@ class MakenaideBot:
             else:
                 logger.info("✅ DB 이미 초기화됨 (건너뜀)")
                 
-            # 티커 정보 업데이트
-            step_start = time.time()
-            self.update_tickers()
-            logger.info(f"✅ 티커 정보 업데이트 완료 (소요시간: {time.time() - step_start:.2f}초)")
+            # 🔧 [개선] 티커 정보 업데이트는 update_all_tickers()에서 통합 처리
+            # 중복 호출 제거로 성능 향상
+            logger.info("✅ 시스템 초기화 완료 (티커 업데이트는 메인 파이프라인에서 처리)")
             
             return True
             
@@ -3817,7 +3950,7 @@ class MakenaideBot:
                 return []
             except:
                 return []
-
+    
     def process_gpt_analysis_chunked_enhanced(self, gpt_json_data, config):
         """강화된 메모리 최적화 GPT 분석 처리"""
         import gc
@@ -3968,8 +4101,8 @@ class MakenaideBot:
             logger.info(f"💾 긴급 저장 완료")
         
         # 2단계: 강화된 가비지 컬렉션
-        for generation in range(3):
-            collected = gc.collect(generation)
+            for generation in range(3):
+                collected = gc.collect(generation)
             logger.debug(f"🧹 GC 세대 {generation}: {collected}개 객체 정리")
         
         # 3단계: 시스템 메모리 정리 요청
@@ -4034,20 +4167,20 @@ class MakenaideBot:
         """실패한 청크에 대한 기본값 생성"""
         fallback_results = []
         for ticker_data in chunk:
-            ticker = ticker_data.get("ticker", "Unknown")
-            fallback_results.append({
-                "ticker": ticker,
-                "score": 50.0,
-                "confidence": 0.30,
+                    ticker = ticker_data.get("ticker", "Unknown")
+                    fallback_results.append({
+                        "ticker": ticker,
+                        "score": 50.0,
+                        "confidence": 0.30,
                 # ✅ DB 스키마 필드들 추가 (trend_analysis 테이블)
                 "action": "HOLD",
                 "market_phase": "Unknown",
                 "pattern": "",
                 "reason": "분석 실패로 인한 기본값",
                 # 기존 필드들 유지
-                "input_type": "chunk_error",
-                "chart_path": f"charts/{ticker}.png"
-            })
+                        "input_type": "chunk_error",
+                        "chart_path": f"charts/{ticker}.png"
+                    })
         return fallback_results
 
     def _handle_pipeline_error(self, stage_name, error):
@@ -4309,21 +4442,21 @@ class MakenaideBot:
         """켈리 계산을 위한 시장 데이터 조회"""
         try:
             # static_indicators에서 ATR 및 기타 지표 조회
-            with get_db_connection_safe() as conn:
+            with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT atr, adx, ma200_slope, price, high_60, low_60
+                    SELECT atr, adx, price, high_60, low_60
                     FROM static_indicators 
                     WHERE ticker = %s
                 """, (ticker,))
                 
                 result = cursor.fetchone()
                 if result:
-                    atr, adx, ma200_slope, price, high_60, low_60 = result
+                    atr, adx, price, high_60, low_60 = result
                     return {
                         'atr': atr or 0,
                         'adx': adx or 25,
-                        'ma200_slope': ma200_slope or 0,
+        
                         'price': price or 0,
                         'high_60': high_60 or 0,
                         'low_60': low_60 or 0
@@ -4357,74 +4490,198 @@ class MakenaideBot:
         }
     
     def _get_technical_data_for_integration(self, ticker: str) -> dict:
-        """통합 포지션 사이징을 위한 기술적 지표 데이터 조회"""
+        """통합 포지션 사이징을 위한 기술적 지표 데이터 조회 (확장)"""
         try:
-            market_data = self._get_market_data_for_kelly(ticker)
-            if not market_data:
-                return self._get_default_technical_data()
-            
-            # MACD 신호 판단
-            macd = market_data.get('macd', 0)
-            macd_signal = market_data.get('macd_signal', 0)
-            macd_signal_type = 'bullish' if macd > macd_signal else 'bearish' if macd < macd_signal else 'neutral'
-            
-            # 이동평균 정렬 판단
-            ma50 = market_data.get('ma_50', 0)
-            ma200 = market_data.get('ma_200', 0)
-            current_price = market_data.get('current_price', 0)
-            
-            if current_price > 0 and ma50 > 0 and ma200 > 0:
-                if current_price > ma50 > ma200:
-                    ma_alignment = 'bullish'
-                elif current_price < ma50 < ma200:
-                    ma_alignment = 'bearish'
+            # static_indicators에서 더 많은 기술적 지표 조회
+            with self.get_db_connection_safe() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT rsi_14, macd, macd_signal, bb_upper, bb_lower, 
+                           ma_50, ma_200, adx, volume_change_7_30, price
+                    FROM static_indicators 
+                    WHERE ticker = %s
+                """, (ticker,))
+                
+                result = cursor.fetchone()
+                if result:
+                    rsi_14, macd, macd_signal, bb_upper, bb_lower, ma_50, ma_200, adx, volume_change_7_30, price = result
+                    
+                    # MACD 신호 판단
+                    macd_signal_type = 'bullish' if macd and macd_signal and macd > macd_signal else 'bearish' if macd and macd_signal and macd < macd_signal else 'neutral'
+                    
+                    # 이동평균 정렬 판단
+                    if price and ma_50 and ma_200 and price > 0 and ma_50 > 0 and ma_200 > 0:
+                        if price > ma_50 > ma_200:
+                            ma_alignment = 'bullish'
+                        elif price < ma_50 < ma_200:
+                            ma_alignment = 'bearish'
+                        else:
+                            ma_alignment = 'neutral'
+                    else:
+                        ma_alignment = 'neutral'
+                    
+                    # ADX 기반 추세 강도 판단
+                    if adx and adx > 0:
+                        if adx > 25:
+                            trend_strength = min(adx / 50.0, 1.0)  # 0-1 범위로 정규화
+                        else:
+                            trend_strength = 0.3  # 약한 추세
+                    else:
+                        trend_strength = 0.3
+                    
+                    # 볼륨 변화 기반 모멘텀 판단
+                    if volume_change_7_30 and volume_change_7_30 > 0:
+                        volume_momentum = min(volume_change_7_30 / 100.0, 1.0)  # 0-1 범위로 정규화
+                    else:
+                        volume_momentum = 0.5
+                    
+                    return {
+                        'rsi_14': rsi_14 or 50,
+                        'macd_signal': macd_signal_type,
+                        'ma_alignment': ma_alignment,
+                        'bb_upper': bb_upper or 0,
+                        'bb_lower': bb_lower or 0,
+                        'trend_strength': trend_strength,
+                        'volume_momentum': volume_momentum,
+                        'adx': adx or 25,
+                        'price': price or 0
+                    }
                 else:
-                    ma_alignment = 'neutral'
-            else:
-                ma_alignment = 'neutral'
-            
-            return {
-                'rsi_14': market_data.get('rsi_14', 50),
-                'macd_signal': macd_signal_type,
-                'ma_alignment': ma_alignment,
-                'bb_upper': market_data.get('bb_upper', 0),
-                'bb_lower': market_data.get('bb_lower', 0)
-            }
-            
+                    logger.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
+                    return self._get_default_technical_data()
+                    
         except Exception as e:
             logger.error(f"❌ {ticker} 기술적 지표 데이터 조회 실패: {str(e)}")
             return self._get_default_technical_data()
     
     def _get_market_conditions_for_integration(self) -> dict:
-        """통합 포지션 사이징을 위한 시장 상황 데이터 조회"""
+        """통합 포지션 사이징을 위한 시장 상황 데이터 조회 (확장)"""
         try:
-            # 전체 시장 변동성 계산 (간단한 구현)
-            market_volatility = 'normal'  # 기본값
-            
-            # 추세 강도 계산 (간단한 구현)
-            trend_strength = 0.5  # 기본값
-            
-            return {
-                'market_volatility': market_volatility,
-                'trend_strength': trend_strength
-            }
-            
+            # 시장 전체 상황 분석
+            with self.get_db_connection_safe() as conn:
+                cursor = conn.cursor()
+                
+                # 1. 전체 시장 변동성 분석 (ATR 기반)
+                cursor.execute("""
+                    SELECT AVG(atr) as avg_atr, STDDEV(atr) as atr_std
+                    FROM static_indicators 
+                    WHERE atr IS NOT NULL AND atr > 0
+                """)
+                atr_result = cursor.fetchone()
+                
+                if atr_result and atr_result[0]:
+                    avg_atr, atr_std = atr_result
+                    if atr_std and atr_std > 0:
+                        # 현재 ATR이 평균 대비 어느 정도인지 계산
+                        atr_z_score = (avg_atr - atr_std) / atr_std if atr_std > 0 else 0
+                        if atr_z_score > 1.5:
+                            market_volatility = 'high'
+                        elif atr_z_score < -1.5:
+                            market_volatility = 'low'
+                        else:
+                            market_volatility = 'normal'
+                    else:
+                        market_volatility = 'normal'
+                else:
+                    market_volatility = 'normal'
+                
+                # 2. 전체 시장 추세 강도 분석 (MA200 기울기 기반)
+                cursor.execute("""
+                    SELECT 
+                           COUNT(*) as total_count,
+                           COUNT(CASE WHEN adx > 20 THEN 1 END) as strong_trend_count,
+                           COUNT(CASE WHEN adx <= 20 THEN 1 END) as weak_trend_count
+                    FROM static_indicators 
+                    WHERE adx IS NOT NULL
+                """)
+                trend_result = cursor.fetchone()
+                
+                if trend_result and trend_result[0] is not None:
+                    avg_slope, positive_count, total_count = trend_result
+                    if total_count > 0:
+                        # 상승 종목 비율
+                        bullish_ratio = positive_count / total_count
+                        # 추세 강도 (0-1 범위)
+                        trend_strength = min(max(bullish_ratio, 0.3), 0.8)
+                    else:
+                        trend_strength = 0.5
+                else:
+                    trend_strength = 0.5
+                
+                # 3. 시장 센티먼트 분석 (ADX 기반)
+                cursor.execute("""
+                    SELECT AVG(adx) as avg_adx
+                    FROM static_indicators 
+                    WHERE adx IS NOT NULL AND adx > 0
+                """)
+                adx_result = cursor.fetchone()
+                
+                if adx_result and adx_result[0]:
+                    avg_adx = adx_result[0]
+                    if avg_adx > 30:
+                        market_sentiment = 'strong_trend'
+                    elif avg_adx > 20:
+                        market_sentiment = 'moderate_trend'
+                    else:
+                        market_sentiment = 'weak_trend'
+                else:
+                    market_sentiment = 'neutral'
+                
+                # 4. 거래량 트렌드 분석
+                cursor.execute("""
+                    SELECT AVG(volume_change_7_30) as avg_volume_change
+                    FROM static_indicators 
+                    WHERE volume_change_7_30 IS NOT NULL
+                """)
+                volume_result = cursor.fetchone()
+                
+                if volume_result and volume_result[0]:
+                    avg_volume_change = volume_result[0]
+                    if avg_volume_change > 50:
+                        volume_trend = 'high'
+                    elif avg_volume_change < -20:
+                        volume_trend = 'low'
+                    else:
+                        volume_trend = 'normal'
+                else:
+                    volume_trend = 'normal'
+                
+                return {
+                    'market_volatility': market_volatility,
+                    'trend_strength': round(trend_strength, 3),
+                    'market_sentiment': market_sentiment,
+                    'volume_trend': volume_trend,
+                    'avg_atr': round(avg_atr, 4) if atr_result and atr_result[0] else 0.02,
+                    'bullish_ratio': round(bullish_ratio, 3) if 'bullish_ratio' in locals() else 0.5,
+                    'avg_adx': round(avg_adx, 1) if adx_result and adx_result[0] else 25,
+                    'avg_volume_change': round(avg_volume_change, 1) if volume_result and volume_result[0] else 0
+                }
+                
         except Exception as e:
             logger.error(f"❌ 시장 상황 데이터 조회 실패: {str(e)}")
             return {
                 'market_volatility': 'normal',
-                'trend_strength': 0.5
+                'trend_strength': 0.5,
+                'market_sentiment': 'neutral',
+                'volume_trend': 'normal',
+                'avg_atr': 0.02,
+                'bullish_ratio': 0.5,
+                'avg_adx': 25,
+                'avg_volume_change': 0
             }
     
     def _get_default_technical_data(self) -> dict:
         """기본 기술적 지표 데이터 (오류 시 사용)"""
         return {
-            'adx': 25,
+            'rsi_14': 50,
             'macd_signal': 'neutral',
             'ma_alignment': 'neutral',
-            'price': 0,
-            'high_60': 0,
-            'low_60': 0
+            'bb_upper': 0,
+            'bb_lower': 0,
+            'trend_strength': 0.5,
+            'volume_momentum': 0.5,
+            'adx': 25,
+            'price': 0
         }
 
 
