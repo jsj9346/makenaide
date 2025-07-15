@@ -259,6 +259,7 @@ def create_tables():
         fibo_382 REAL,
         -- supertrend_signal TEXT,      -- ❌ 제거됨 (정적 지표로 이동)
         ht_trendline REAL,
+        ma_20 REAL,                  -- ✅ 추가: 20일 이동평균선
         ma_50 REAL,
         ma_200 REAL,
         bb_upper REAL,
@@ -268,6 +269,10 @@ def create_tables():
         macd_histogram REAL,
         rsi_14 REAL,
         volume_20ma REAL,
+        volume_ratio REAL,           -- ✅ 추가: 거래량 비율
+        stoch_k REAL,
+        stoch_d REAL,
+        cci REAL,
         PRIMARY KEY (ticker, date)
     );
 
@@ -319,6 +324,10 @@ def create_tables():
         atr REAL,                   -- ATR(14) 지표
         adx REAL,                   -- ADX(14) 지표
         supertrend_signal TEXT,     -- SuperTrend 신호 ('bull' 또는 'bear')
+        rsi_14 REAL,                -- ✅ 추가: RSI(14)
+        ma20 REAL,                  -- ✅ 추가: 20일 이동평균선
+        volume_ratio REAL,          -- ✅ 추가: 거래량 비율
+        volume REAL,                -- ✅ 추가: 거래량
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -365,11 +374,17 @@ def create_tables():
     cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS adx REAL;")
     cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS low_60 REAL;")
     cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS supertrend_signal TEXT;")
-    
+    cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS rsi_14 REAL;")  # ✅ 추가
+    cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS ma20 REAL;")    # ✅ 추가
+    cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS volume_ratio REAL;") # ✅ 추가
+    cur.execute("ALTER TABLE static_indicators ADD COLUMN IF NOT EXISTS volume REAL;")  # ✅ 추가
+
     # Add new ohlcv columns (VCP 전략 강화용)
     cur.execute("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS stoch_k REAL;")
     cur.execute("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS stoch_d REAL;")
     cur.execute("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS cci REAL;")
+    cur.execute("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS ma_20 REAL;")  # ✅ 추가
+    cur.execute("ALTER TABLE ohlcv ADD COLUMN IF NOT EXISTS volume_ratio REAL;")  # ✅ 추가
     
     # Remove duplicate ATR column from ohlcv (moved to static_indicators) - 인덱스 생성 전에 실행
     cur.execute("ALTER TABLE ohlcv DROP COLUMN IF EXISTS atr;")

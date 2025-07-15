@@ -1220,15 +1220,24 @@ def apply_timing_filter_4h(market_df_4h, config=None):
         list: 마켓타이밍 필터를 통과한 최종 후보 티커 목록
     """
     try:
-        if market_df_4h.empty:
+        # 🔧 [핵심 수정] 입력 데이터 검증 강화
+        if market_df_4h is None or market_df_4h.empty:
             logger.warning("⚠️ 4시간봉 시장 데이터가 비어있습니다.")
+            return []
+            
+        # 🔧 [핵심 수정] 필수 컬럼 존재 여부 확인
+        required_columns = ['price', 'ma_200', 'rsi_14', 'macd', 'macds', 'macdh']
+        missing_columns = [col for col in required_columns if col not in market_df_4h.columns]
+        if missing_columns:
+            logger.warning(f"⚠️ 4시간봉 데이터에 필수 컬럼이 누락되었습니다: {missing_columns}")
+            logger.info(f"📊 사용 가능한 컬럼: {list(market_df_4h.columns)}")
             return []
             
         # 기본 설정값
         if config is None:
             config = {
-                "min_score": 5,     # 7개 지표 중 5개 이상 통과
-                "rsi_max": 80       # RSI 과열 임계값
+                "min_score": 4,     # 7개 지표 중 4개 이상 통과 (완화)
+                "rsi_max": 85       # RSI 과열 임계값 완화
             }
         final_candidates = []
         
@@ -1238,7 +1247,7 @@ def apply_timing_filter_4h(market_df_4h, config=None):
                 
                 # === [0] 안전장치 사전 체크 ===
                 safety_checks = []
-                rsi_max = config.get("rsi_max", 80)
+                rsi_max = config.get("rsi_max", 85)  # 기본값 85로 상향
                 
                 # RSI 과열 방지
                 if 'rsi_14' in row and pd.notna(row['rsi_14']):
@@ -1314,7 +1323,7 @@ def apply_timing_filter_4h(market_df_4h, config=None):
                     pass
                 
                 # === [2] 최소 점수 조건 확인 ===
-                min_score = config.get("min_score", 5)
+                min_score = config.get("min_score", 4)  # 기본값 4로 완화
                 if score >= min_score:
                     final_candidates.append(ticker)
                     logger.info(f"✨ {ticker} 마켓타이밍 필터 통과 (점수: {score}/{min_score}) - 통과지표: {', '.join(passed_indicators)}")
@@ -1329,7 +1338,7 @@ def apply_timing_filter_4h(market_df_4h, config=None):
         logger.info(f"🎯 Makenaide 마켓타이밍 필터링 결과: {len(final_candidates)}개 종목 통과")
         if final_candidates:
             logger.info(f"   ✅ 통과 종목: {', '.join(final_candidates)}")
-            logger.info(f"   📊 필터 설정: 최소점수 {config.get('min_score', 5)}/7, RSI최대 {config.get('rsi_max', 80)}")
+            logger.info(f"   📊 필터 설정: 최소점수 {config.get('min_score', 4)}/7, RSI최대 {config.get('rsi_max', 85)}")
         else:
             logger.info("   ❌ 마켓타이밍 조건을 만족하는 종목이 없습니다.")
             

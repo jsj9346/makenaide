@@ -337,43 +337,6 @@ class DBManager:
         """기존 호환성을 위한 execute_query 메서드"""
         return self.execute_query_safe(query, params, fetchone)
     
-    # UNUSED: 호출되지 않는 함수
-    # def bulk_insert(self, table: str, data_list: List[Dict], columns: List[str]):
-    #     """
-    #     대량 INSERT 최적화 메서드
-    #     
-    #     Args:
-    #         table: 테이블 명
-    #         data_list: 삽입할 데이터 리스트
-    #         columns: 컬럼 명 리스트
-    #         
-    #     Returns:
-    #         bool: 성공 여부
-    #     """
-    #     if not data_list:
-    #         return True
-    #         
-    #     try:
-    #         with self.get_connection_context() as conn:
-    #             with conn.cursor() as cur:
-    #                 # COPY를 사용한 대량 삽입
-    #                 from io import StringIO
-    #                 
-    #                 sio = StringIO()
-    #                 for data in data_list:
-    #                     row = [str(data.get(col, '')) for col in columns]
-    #                     sio.write('\t'.join(row) + '\n')
-    #                 
-    #                 sio.seek(0)
-    #                 cur.copy_from(sio, table, columns=columns, sep='\t')
-    #                 
-    #     logger.info(f"✅ {table} 테이블에 {len(data_list)}건 대량 삽입 완료")
-    #         return True
-    #         
-    #     except Exception as e:
-    #         logger.error(f"❌ {table} 대량 삽입 실패: {e}")
-    #         return False
-    
     def health_check(self) -> Dict[str, Any]:
         """
         DB 연결 상태 확인
@@ -444,30 +407,6 @@ class DBManager:
                 
         except Exception as e:
             logger.error(f"❌ DB 연결 풀 종료 중 오류: {e}")
-
-    # ===========================================
-    # 기존 트레이딩 관련 메서드들 (호환성 유지)
-    # ===========================================
-    
-    # UNUSED: 호출되지 않는 함수
-    # def save_gpt_analysis_result(self, ticker: str, gpt_prompt: str, gpt_response_text: str, confidence_score: float | None, raw_gpt_response: dict):
-    #     """
-    #     GPT 추세 분석 결과를 DB에 저장합니다.
-    #     'gpt_trend_analysis' 테이블이 미리 생성되어 있어야 합니다.
-    #     """
-    #     try:
-    #         query = """
-    #             INSERT INTO gpt_trend_analysis 
-    #             (ticker, analysis_datetime, gpt_prompt, gpt_response_text, confidence_score, raw_gpt_response)
-    #             VALUES (%s, %s, %s, %s, %s, %s)
-    #         """
-    #         params = (ticker, datetime.now(), gpt_prompt, gpt_response_text, confidence_score, psycopg2.extras.Json(raw_gpt_response))
-    #         self.execute_query_safe(query, params)
-    #         logger.info(f"✅ {ticker} GPT 분석 결과 저장 완료")
-    #         return True
-    #     except Exception as e:
-    #         logger.error(f"❌ {ticker} GPT 분석 결과 저장 실패: {str(e)}")
-    #         return False
 
     def save_trade_record(self, ticker: str, order_type: str, quantity: float, price: float, 
                           order_id: str | None, status: str, error_message: str | None = None,
@@ -711,25 +650,6 @@ def get_db_connection():
     except Exception as e:
         logger.error(f"❌ 직접 DB 연결 실패: {e}")
         raise
-
-# UNUSED: 호출되지 않는 함수
-# def print_pool_status():
-#     """연결 풀 상태 출력"""
-#     stats = get_db_manager().get_pool_stats()
-#     
-#     print("🔗 DB 연결 풀 상태")
-#     print("=" * 40)
-#     print(f"📊 총 쿼리 수: {stats['total_queries']}")
-#     print(f"🎯 풀 히트율: {stats['hit_rate']:.1f}%")
-#     print(f"🔗 활성 연결: {stats['active_connections']}")
-#     print(f"❌ 실패 연결: {stats['failed_connections']}")
-#     print(f"🧠 메모리 사용량: {stats.get('memory_usage_mb', 0):.1f}MB")
-#     
-#     if 'available_connections' in stats:
-#         print(f"📋 사용 가능: {stats['available_connections']}/{stats['pool_size']}")
-#     
-#     print("=" * 40)
-
 
 if __name__ == '__main__':
     # DB 매니저 테스트

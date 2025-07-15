@@ -303,8 +303,21 @@ PYRAMIDING_CONFIG: Dict[str, Any] = {
 # ===== 트레일링스탑 설정 =====
 TRAILING_STOP_CONFIG: Dict[str, Any] = {
     'name': 'Enhanced Trailing Stop Strategy',
-    'description': '트레일링스탑 설정 - 너무 일찍 발동되는 문제 해결',
+    'description': '트레일링스탑 설정 - 즉시 매도 방지 로직 포함',
     'enabled': True,
+    
+    # 🔧 [3순위 개선] 즉시 매도 방지 설정
+    'immediate_sell_protection': {
+        'enabled': True,
+        'min_holding_hours': 24,        # 최소 보유 시간 (24시간)
+        'min_holding_days': 1,          # 최소 보유 일수
+        'gap_down_thresholds': {
+            'short_term': 5.0,          # 3일 이내 갭하락 임계값
+            'medium_term': 3.0,         # 7일 이내 갭하락 임계값
+            'long_term': 2.0,           # 7일 초과 갭하락 임계값
+        },
+        'profit_threshold_for_gap': -5.0,  # 갭하락 매도 시 최소 손실 임계값
+    },
     
     # 기본 활성화 조건
     'min_rise_pct': 8.0,                 # 트레일링스탑 활성화 최소 상승률 (3% → 8%)
@@ -359,6 +372,7 @@ TRAILING_STOP_CONFIG: Dict[str, Any] = {
         'log_activation_conditions': True,   # 활성화 조건 로깅
         'log_deactivation_reasons': True,    # 비활성화 사유 로깅
         'log_kelly_calculations': True,      # 켈리 계산 로깅
+        'log_immediate_sell_protection': True,  # 즉시 매도 방지 로깅
     }
 }
 

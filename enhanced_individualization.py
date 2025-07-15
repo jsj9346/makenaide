@@ -253,28 +253,17 @@ logger.info(f"   🔧 문제값 모니터링: {len(individualization_system.prob
 logger.info(f"   🎯 개별화 시드: {individualization_system.master_seed}")
 
 def apply_enhanced_individualization_to_static_indicators(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
-    """static_indicators용 강화된 개별화 적용 (메인 함수)"""
+    """static_indicators용 강화된 개별화 적용 (메인 함수) - 실제 계산값 보존"""
     try:
-        logger.info(f"🔧 {ticker} static_indicators 강화 개별화 시작")
+        logger.info(f"🔧 {ticker} static_indicators 실제 계산값 사용 (개별화 시스템 제거)")
         
-        # 개별화된 지표값들 계산
-        individualized_indicators = individualization_system.get_individualized_static_indicators(df, ticker)
-        
-        # DataFrame에 적용
-        for indicator_name, value in individualized_indicators.items():
-            if indicator_name in df.columns:
-                # 개별화된 값으로 대체 (최신값만)
-                df.loc[df.index[-1], indicator_name] = value
-            else:
-                # 새로운 컬럼 추가
-                df[indicator_name] = np.nan
-                df.loc[df.index[-1], indicator_name] = value
-        
-        logger.info(f"✅ {ticker} static_indicators 강화 개별화 완료")
+        # 🔧 [핵심 수정] 개별화 시스템 제거 - 실제 계산값 보존
+        # 과최적화 문제 해결을 위해 실제 지표값 사용
+        logger.info(f"✅ {ticker} 실제 계산값 사용 (개별화 시스템 제거)")
         return df
         
     except Exception as e:
-        logger.error(f"❌ {ticker} static_indicators 강화 개별화 실패: {e}")
+        logger.error(f"❌ {ticker} static_indicators 처리 실패: {e}")
         return df
 
 if __name__ == "__main__":

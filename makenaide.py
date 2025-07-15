@@ -13,7 +13,7 @@ from utils import (
     get_db_connection, load_env, setup_logger, get_current_price_safe,
     MIN_KRW_ORDER, MIN_KRW_SELL_ORDER, TAKER_FEE_RATE,
     retry_on_error, handle_api_error, handle_db_error, handle_network_error,
-    logger, load_blacklist, safe_strftime, safe_float_convert, safe_int_convert
+    logger, load_blacklist, safe_strftime, safe_float_convert
 )
 import psycopg2
 from contextlib import contextmanager
@@ -22,7 +22,6 @@ import pyupbit
 import pandas as pd
 from data_fetcher import get_ohlcv_d
 import json
-
 
 # ✅ db_manager.py의 함수 사용
 from db_manager import get_db_connection_context
@@ -96,32 +95,8 @@ class UpbitClient:
     def __init__(self, jwt_token: str):
         self.jwt_token = jwt_token
         self.headers = {"Authorization": f"Bearer {jwt_token}"}
+   
 
-    # ------- Account endpoints ------- #
-    def get_balances(self):
-        resp = requests.get(f"{self.BASE_URL}/v1/accounts", headers=self.headers, timeout=10)
-        resp.raise_for_status()
-        return resp.json()
-
-    def get_balance(self, currency: str = "KRW"):
-        """
-        Convenience wrapper that mimics `pyupbit.Upbit.get_balance`.
-        """
-        for item in self.get_balances():
-            if item["currency"] == currency:
-                # Upbit returns strings
-                return safe_float_convert(item["balance"], context="계좌 잔액 조회")
-        return 0.0
-    
-    def get_total_balance(self, currency: str = "KRW"):
-        """
-        총 잔액을 반환하는 메서드 (KRW 기준)
-        """
-        try:
-            return self.get_balance(currency)
-        except Exception as e:
-            logger.error(f"❌ 총 잔액 조회 실패: {e}")
-            return 0.0
 from utils import validate_and_correct_phase
 from db_manager import DBManager
 from config_loader import load_config
@@ -1976,17 +1951,18 @@ class MakenaideBot:
                     # 티커별 처리 시작
                     logger.debug(f"🔄 [{i+1}/{len(candidates_1d)}] {ticker} 4시간봉 데이터 처리 시작")
                     
-                    # 데이터 수집 (ma_200 계산을 위해 250개로 증가)
-                    df_4h = get_ohlcv_4h(ticker, limit=250)
+                    # 🔧 [핵심 수정] 매수 후보가 선정된 종목은 강제로 데이터 수집
+                    df_4h = get_ohlcv_4h(ticker, limit=250, force_fetch=True)
                     
                     if df_4h is None or df_4h.empty:
-                        logger.warning(f"⚠️ {ticker} 4시간봉 데이터 없음")
-                        processing_errors.append(f"{ticker}: 데이터 없음")
+                        logger.warning(f"⚠️ {ticker} 4시간봉 데이터 수집 실패 (강제 수집 시도 후)")
+                        processing_errors.append(f"{ticker}: 강제 수집 실패")
                         continue
                     
-                    # 데이터 품질 검증
-                    if len(df_4h) < 20:
-                        logger.warning(f"⚠️ {ticker} 4시간봉 데이터 부족 ({len(df_4h)}개 < 20개)")
+                    # 🔧 [핵심 수정] 데이터 품질 검증 강화
+                    min_required_data = 50  # MA200 계산을 위해 최소 50개 필요
+                    if len(df_4h) < min_required_data:
+                        logger.warning(f"⚠️ {ticker} 4시간봉 데이터 부족 ({len(df_4h)}개 < {min_required_data}개)")
                         processing_errors.append(f"{ticker}: 데이터 부족")
                         continue
                     
@@ -2006,15 +1982,30 @@ class MakenaideBot:
                         logger.warning(f"⚠️ {ticker} 필수 지표 누락: {missing_indicators}")
                         # 누락된 지표가 있어도 계속 진행 (경고만)
                     
-                    # 3. 4시간봉 데이터를 DB에 저장
+                    # 3. 4시간봉 OHLCV 데이터를 DB에 저장
                     try:
-                        save_market_data_4h_to_db(ticker, df_4h_with_indicators)
+                        from data_fetcher import save_ohlcv_4h_to_db
+                        save_ohlcv_4h_to_db(ticker, df_4h)
+                        logger.debug(f"💾 {ticker} 4시간봉 OHLCV DB 저장 완료")
                     except Exception as save_e:
-                        logger.error(f"❌ {ticker} 4시간봉 DB 저장 실패: {save_e}")
+                        logger.error(f"❌ {ticker} 4시간봉 OHLCV DB 저장 실패: {save_e}")
                         # DB 저장 실패해도 메모리에는 저장하여 분석 진행
                     
-                    # 4. 메모리에 저장 (이후 필터링에 사용)
-                    market_data_4h[ticker] = df_4h_with_indicators
+                    # 4. 4시간봉 마켓타이밍 지표를 DB에 저장
+                    try:
+                        save_market_data_4h_to_db(ticker, df_4h_with_indicators)
+                        logger.debug(f"💾 {ticker} 4시간봉 마켓타이밍 지표 DB 저장 완료")
+                    except Exception as save_e:
+                        logger.error(f"❌ {ticker} 4시간봉 마켓타이밍 지표 DB 저장 실패: {save_e}")
+                        # DB 저장 실패해도 메모리에는 저장하여 분석 진행
+                    
+                    # 5. 메모리에 저장 (이후 필터링에 사용)
+                    # 🔧 [핵심 수정] 중복 저장 방지
+                    if ticker not in market_data_4h:
+                        market_data_4h[ticker] = df_4h_with_indicators
+                        logger.debug(f"💾 {ticker} 4시간봉 메모리 저장 완료")
+                    else:
+                        logger.warning(f"⚠️ {ticker} 이미 메모리에 저장되어 있음 (중복 방지)")
                     
                     logger.info(f"✅ [{i+1}/{len(candidates_1d)}] {ticker} 4시간봉 데이터 처리 완료 ({len(df_4h_with_indicators)}개 레코드)")
                     
@@ -2097,13 +2088,16 @@ class MakenaideBot:
                 logger.warning("⚠️ 4시간봉 필터링 통과 종목이 없습니다.")
             
             # 8. 4시간봉 데이터 정리 (필터링 완료 후)
-            try:
-                logger.info("🧹 4시간봉 데이터 정리 시작")
-                self._cleanup_4h_data()
-                logger.info("✅ 4시간봉 데이터 정리 완료")
-            except Exception as cleanup_error:
-                logger.error(f"❌ 4시간봉 데이터 정리 중 오류 발생: {cleanup_error}")
-                # 정리 실패해도 필터링 결과는 반환
+            # 🔧 [핵심 수정] 필터링 완료 후에만 데이터 정리
+            if final_candidates:
+                try:
+                    logger.info("🧹 4시간봉 데이터 정리 시작 (필터링 성공)")
+                    self._cleanup_4h_data()
+                    logger.info("✅ 4시간봉 데이터 정리 완료")
+                except Exception as cleanup_error:
+                    logger.error(f"❌ 4시간봉 데이터 정리 중 오류 발생: {cleanup_error}")
+            else:
+                logger.info("📊 필터링 결과가 없어 4시간봉 데이터 정리를 건너뜁니다.")
             
             return final_candidates
             
@@ -2474,154 +2468,130 @@ class MakenaideBot:
             logger.info(f"✅ 1단계: 돌파 후보 준비 완료 - {len(candidates_1d)}개 후보 (소요시간: {step_time:.2f}초)")
             step_results["돌파_후보_준비"] = True
             
-            # ✅ GPT 분석 단계 (청크 단위 처리로 최적화)
+            # ✅ GPT 분석 결과 처리 (이미 분석 완료된 결과 사용)
             step_start_gpt = time.time()
             gpt_results = []  # GPT 분석 결과 수집용 리스트
             trade_logs = []  # 매수 이력 수집용 리스트 (전역 선언)
             
             if gpt_json_data and len(gpt_json_data) > 0:
-                logger.info("🔄 최적화된 GPT 분석 엔진 실행")
+                logger.info("🔄 기존 GPT 분석 결과 처리 중")
                 
-                # 분석 설정 (메모리 사용량 최적화)
-                analysis_config = {
-                    "mode": "json" if self.use_json_instead_of_chart else "hybrid",
-                    "batch_size": 5,  # 청크 크기 증가
-                    "enable_caching": True,
-                    "cache_ttl_minutes": 720,
-                    "api_timeout_seconds": 30,
-                    "max_retries": 3,
-                    "memory_threshold_mb": 500  # 메모리 사용량 임계값
-                }
-                
-                try:
-                    # 청크 단위 처리로 메모리 사용량 최적화
-                    gpt_results = self.process_gpt_analysis_chunked(gpt_json_data, analysis_config)
-                    
-                    # 성능 메트릭 로깅
-                    self._log_gpt_analysis_metrics(gpt_results, analysis_config)
-                    
-                    # candidates_1d를 기존 형식으로 변환하여 하위 파이프라인 호환성 유지
-                    candidates_1d = [(result["ticker"], result["score"]) for result in gpt_results]
-                    
-                except Exception as e:
-                    logger.error(f"❌ 최적화된 GPT 분석 엔진 실패: {str(e)}")
-                    # 실패 시 원래 데이터로 fallback
-                    for ticker_data in gpt_json_data:
-                        ticker = ticker_data.get("ticker", "Unknown")
-                        score = 50.0  # 기본 점수
-                        # chart_path 누락 시 자동 생성
-                        chart_path = f"charts/{ticker}.png"
-                        
-                        gpt_results.append({
-                            "ticker": ticker,
-                            "score": safe_float_convert(score, context=f"fallback {ticker} score"),
-                            "confidence": 0.50,  # 낮은 기본값
-                            "input_type": "unified_fallback",
-                            "chart_path": chart_path
-                        })
-                
-                # 중복 제거 (GPT 분석 직전)
-                gpt_results_df = pd.DataFrame(gpt_results)
-                gpt_results_df = gpt_results_df.drop_duplicates(subset='ticker')
-                gpt_results = gpt_results_df.to_dict(orient='records')
-                logger.info(f"[중복 제거] GPT 분석 결과 중복 제거 후 티커 수: {len(gpt_results)}")
-                
-                # GPT 분석 결과를 score 기준으로 내림차순 정렬
-                sorted_results = sorted(gpt_results, key=lambda x: safe_float_convert(x.get("score", 0), context="GPT분석 정렬"), reverse=True)
-                
-                # 상위 5개 종목 로그 출력
-                logger.info("[GPT 분석 결과 상위 5개]")
-                for i, result in enumerate(sorted_results[:5], 1):
-                    logger.info(f"{i}. {result['ticker']}: {result['score']}점 (confidence: {result['confidence']:.2f})")
-                
-                logger.info(f"✅ GPT 분석 완료 (소요시간: {time.time() - step_start_gpt:.2f}초)")
-                
-                # GPT 분석 결과 DB 저장 (라이프사이클 관리 적용)
-                try:
-                    self.save_gpt_analysis_to_db(gpt_results)
-                    
-                    # 라이프사이클 관리자 통계 업데이트
-                    if hasattr(self, 'gpt_lifecycle_manager') and self.gpt_lifecycle_manager:
-                        cleanup_stats = self.gpt_lifecycle_manager.get_cleanup_stats()
-                        logger.info(f"📊 GPT 라이프사이클 통계: 총 정리 {cleanup_stats.get('total_cleaned', 0)}개")
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ GPT 분석 결과 저장 중 오류: {str(e)}")
-                
-                # GPT 분석 결과 기반 매수 조건 필터링 (매수 실행 제거)
-                logger.info("🔍 매수 조건 필터링 시작")
-                buy_candidates = []
-                excluded_candidates = []
-                
-                for result in gpt_results:
-                    chart_path = result.get("chart_path")
-                    if not chart_path or not os.path.exists(chart_path):
-                        logger.warning(f"[경고] {result.get('ticker')}의 chart_path가 누락되었거나 존재하지 않음. 시각 분석에 영향 가능성 있음.")
-                    
-                    try:
-                        # 데이터 유효성 검증 강화
-                        ticker = result.get("ticker", "")
-                        if not ticker:
-                            logger.warning(f"⚠️ 티커 정보 누락: {result}")
-                            excluded_candidates.append(result)
-                            continue
-                            
-                        score = safe_float_convert(result.get("score", 0), context=f"GPT분석 {ticker} score")
-                        confidence = safe_float_convert(result.get("confidence", 0), context=f"GPT분석 {ticker} confidence")
-                        
-                        # 점수와 신뢰도 범위 검증
-                        if not (0 <= score <= 100):
-                            logger.warning(f"⚠️ {ticker} 점수 범위 오류: {score} (0-100 범위 초과)")
-                            excluded_candidates.append(result)
-                            continue
-                            
-                        if not (0 <= confidence <= 1):
-                            logger.warning(f"⚠️ {ticker} 신뢰도 범위 오류: {confidence} (0-1 범위 초과)")
-                            excluded_candidates.append(result)
-                            continue
-                        
-                        # 매수 조건 필터링만 수행 (실제 매수는 4시간봉 필터링 후)
-                        action = result.get("action", "AVOID").upper()
-                        
-                        # 설정 기반 엄격한 매수 조건 적용
-                        try:
-                            from config import GPT_FILTERING_CONFIG
-                            strict_config = GPT_FILTERING_CONFIG['strict_mode']
-                        except ImportError:
-                            # fallback 설정
-                            strict_config = {
-                                'min_score': 80,
-                                'min_confidence': 0.9,
-                                'allowed_actions': ['BUY', 'STRONG_BUY'],
-                                'allowed_market_phases': ['Stage1', 'Stage2']
-                            }
-                        
-                        if (score >= strict_config['min_score'] and 
-                            confidence >= strict_config['min_confidence'] and 
-                            action in strict_config['allowed_actions'] and 
-                            result.get("market_phase", "") in strict_config['allowed_market_phases']):
-                            buy_candidates.append(result)
-                            logger.info(f"✅ 매수 후보 선정: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
-                        else:
-                            excluded_candidates.append(result)
-                            logger.info(f"❌ 제외됨: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
-                            
-                    except (ValueError, TypeError) as e:
-                        logger.error(f"❌ 데이터 타입 오류: {result.get('ticker', 'Unknown')} | 오류: {str(e)}")
-                        excluded_candidates.append(result)
-                
-                logger.info(f"✅ 매수 후보 {len(buy_candidates)}개, 제외된 종목 {len(excluded_candidates)}개")
-                
-                # 상세한 필터링 결과 로그
-                if buy_candidates:
-                    logger.info("🎯 최종 매수 후보 목록:")
-                    for candidate in buy_candidates:
-                        logger.info(f"   - {candidate['ticker']}: 점수 {candidate['score']}, 신뢰도 {candidate['confidence']:.2f}, 액션 {candidate.get('action', 'Unknown')}")
-                else:
-                    logger.info("📊 엄격한 필터링으로 인해 매수 후보가 없습니다.")
-                
+                # 이미 GPT 분석이 완료된 결과를 사용 (중복 분석 방지)
+                gpt_results = gpt_json_data
             else:
-                logger.warning("⚠️ gpt_json_data가 없거나 비어있어 GPT 분석을 건너뜁니다.")
+                logger.warning("⚠️ GPT 분석 결과가 없어 기본값으로 진행합니다.")
+                # GPT 분석 결과가 없는 경우 기본값 생성
+                gpt_results = []
+                for ticker, score in candidates_1d:
+                    gpt_results.append({
+                        "ticker": ticker,
+                        "score": score,
+                        "confidence": 0.5,
+                        "action": "HOLD",
+                        "market_phase": "Unknown",
+                        "pattern": "",
+                        "reason": "기본값",
+                        "input_type": "fallback"
+                    })
+            
+            # candidates_1d를 기존 형식으로 변환하여 하위 파이프라인 호환성 유지
+            candidates_1d = [(result["ticker"], result["score"]) for result in gpt_results]
+            
+            # 중복 제거 (GPT 분석 결과 정리)
+            gpt_results_df = pd.DataFrame(gpt_results)
+            gpt_results_df = gpt_results_df.drop_duplicates(subset='ticker')
+            gpt_results = gpt_results_df.to_dict(orient='records')
+            logger.info(f"[중복 제거] GPT 분석 결과 중복 제거 후 티커 수: {len(gpt_results)}")
+            
+            # GPT 분석 결과를 score 기준으로 내림차순 정렬
+            sorted_results = sorted(gpt_results, key=lambda x: safe_float_convert(x.get("score", 0), context="GPT분석 정렬"), reverse=True)
+            
+            # 상위 5개 종목 로그 출력
+            logger.info("[GPT 분석 결과 상위 5개]")
+            for i, result in enumerate(sorted_results[:5], 1):
+                logger.info(f"{i}. {result['ticker']}: {result['score']}점 (confidence: {result['confidence']:.2f})")
+            
+            logger.info(f"✅ GPT 분석 결과 처리 완료 (소요시간: {time.time() - step_start_gpt:.2f}초)")
+            
+            # GPT 분석 결과 DB 저장 (라이프사이클 관리 적용)
+            try:
+                self.save_gpt_analysis_to_db(gpt_results)
+                
+                # 라이프사이클 관리자 통계 업데이트
+                if hasattr(self, 'gpt_lifecycle_manager') and self.gpt_lifecycle_manager:
+                    cleanup_stats = self.gpt_lifecycle_manager.get_cleanup_stats()
+                    logger.info(f"📊 GPT 라이프사이클 통계: 총 정리 {cleanup_stats.get('total_cleaned', 0)}개")
+                    
+            except Exception as e:
+                logger.warning(f"⚠️ GPT 분석 결과 저장 중 오류: {str(e)}")
+            
+            # GPT 분석 결과 기반 매수 조건 필터링 (매수 실행 제거)
+            logger.info("🔍 매수 조건 필터링 시작")
+            buy_candidates = []
+            excluded_candidates = []
+            
+            for result in gpt_results:
+                try:
+                    # 데이터 유효성 검증 강화
+                    ticker = result.get("ticker", "")
+                    if not ticker:
+                        logger.warning(f"⚠️ 티커 정보 누락: {result}")
+                        excluded_candidates.append(result)
+                        continue
+                        
+                    score = safe_float_convert(result.get("score", 0), context=f"GPT분석 {ticker} score")
+                    confidence = safe_float_convert(result.get("confidence", 0), context=f"GPT분석 {ticker} confidence")
+                    
+                    # 점수와 신뢰도 범위 검증
+                    if not (0 <= score <= 100):
+                        logger.warning(f"⚠️ {ticker} 점수 범위 오류: {score} (0-100 범위 초과)")
+                        excluded_candidates.append(result)
+                        continue
+                        
+                    if not (0 <= confidence <= 1):
+                        logger.warning(f"⚠️ {ticker} 신뢰도 범위 오류: {confidence} (0-1 범위 초과)")
+                        excluded_candidates.append(result)
+                        continue
+                    
+                    # 매수 조건 필터링만 수행 (실제 매수는 4시간봉 필터링 후)
+                    action = result.get("action", "AVOID").upper()
+                    
+                    # 설정 기반 엄격한 매수 조건 적용
+                    try:
+                        from config import GPT_FILTERING_CONFIG
+                        strict_config = GPT_FILTERING_CONFIG['strict_mode']
+                    except ImportError:
+                        # fallback 설정
+                        strict_config = {
+                            'min_score': 80,
+                            'min_confidence': 0.9,
+                            'allowed_actions': ['BUY', 'STRONG_BUY'],
+                            'allowed_market_phases': ['Stage1', 'Stage2']
+                        }
+                    
+                    if (score >= strict_config['min_score'] and 
+                        confidence >= strict_config['min_confidence'] and 
+                        action in strict_config['allowed_actions'] and 
+                        result.get("market_phase", "") in strict_config['allowed_market_phases']):
+                        buy_candidates.append(result)
+                        logger.info(f"✅ 매수 후보 선정: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
+                    else:
+                        excluded_candidates.append(result)
+                        logger.info(f"❌ 제외됨: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 액션: {action}")
+                        
+                except (ValueError, TypeError) as e:
+                    logger.error(f"❌ 데이터 타입 오류: {result.get('ticker', 'Unknown')} | 오류: {str(e)}")
+                    excluded_candidates.append(result)
+            
+            logger.info(f"✅ 매수 후보 {len(buy_candidates)}개, 제외된 종목 {len(excluded_candidates)}개")
+            
+            # 상세한 필터링 결과 로그
+            if buy_candidates:
+                logger.info("🎯 최종 매수 후보 목록:")
+                for candidate in buy_candidates:
+                    logger.info(f"   - {candidate['ticker']}: 점수 {candidate['score']}, 신뢰도 {candidate['confidence']:.2f}, 액션 {candidate.get('action', 'Unknown')}")
+            else:
+                logger.info("📊 엄격한 필터링으로 인해 매수 후보가 없습니다.")
                 
             # 2. 4시간봉 분석 및 필터링 (매수 후보가 있을 때만 실행)
             step_start = time.time()
@@ -2653,14 +2623,17 @@ class MakenaideBot:
                 
                 if not passed_4h:
                     logger.warning("⚠️ 4시간봉 필터링을 통과한 후보가 없습니다.")
-                    # 4시간봉 데이터 정리 (필터링 실패해도 정리)
+                    # 🔧 [핵심 수정] 필터링 실패 시에도 데이터 정리 후 False 반환
                     try:
                         logger.info("🧹 4시간봉 데이터 정리 시작 (필터링 실패)")
                         self._cleanup_4h_data()
                         logger.info("✅ 4시간봉 데이터 정리 완료")
                     except Exception as cleanup_error:
                         logger.error(f"❌ 4시간봉 데이터 정리 중 오류 발생: {cleanup_error}")
-                    return False
+                    
+                    # 🔧 [핵심 수정] 필터링 실패 시에도 정상 종료로 처리
+                    step_results["4시간봉_필터링"] = True  # 실패해도 단계 완료로 간주
+                    return True  # False 대신 True 반환하여 파이프라인 계속 진행
                 
                 # GPT 점수를 유지한 채 교집합 추출
                 final_candidates = [(t, s) for (t, s) in candidates_1d if t in passed_4h]
@@ -2675,6 +2648,14 @@ class MakenaideBot:
             if final_candidates:
                 logger.info("💰 최종 매수 실행 시작")
                 
+                # 🔧 [핵심 개선] 현재 보유 종목 조회 및 피라미딩 조건 점검
+                current_positions = self.pm.get_current_positions()
+                current_tickers = {pos['ticker'] for pos in current_positions}
+                
+                logger.info(f"📊 현재 보유 종목: {len(current_positions)}개")
+                if current_tickers:
+                    logger.info(f"   - 보유 종목: {', '.join(current_tickers)}")
+                
                 # 🔧 [3단계 개선] GPT 분석 결과에서 신뢰도 정보 추출
                 gpt_confidence_map = {}
                 if gpt_json_data:
@@ -2684,166 +2665,31 @@ class MakenaideBot:
                         gpt_confidence_map[ticker] = confidence
                 
                 # 🔧 [3단계 개선] 포트폴리오 기반 동적 매수 금액 계산
-                total_balance = self.get_total_balance()
+                total_balance = self.pm.get_total_balance()
                 base_amount = min(100000, total_balance * 0.02)  # 최대 10만원 또는 총 자산의 2%
                 
                 for ticker, score in final_candidates:
                     try:
-                        current_price = get_current_price_safe(ticker)
-                        if current_price and current_price > 0:
-                            # 🔧 [1단계 개선] 켈리 공식 기반 매수 금액 계산
-                            confidence = gpt_confidence_map.get(ticker, 0.5)
+                        # 🔧 [핵심 개선] 보유 종목 확인 및 피라미딩 조건 점검
+                        if ticker in current_tickers:
+                            logger.info(f"🔄 {ticker} 이미 보유 중 - 피라미딩 조건 점검 시작")
                             
-                            # 🔧 [2단계 개선] 통합 포지션 사이징 시스템 사용
-                            # 1. 켈리 공식 기반 기본 사이징
-                            kelly_result = self.calculate_kelly_position_size(
-                                ticker=ticker,
-                                score=score,
-                                confidence=confidence,
-                                current_price=current_price,
-                                total_balance=total_balance
-                            )
+                            # 피라미딩 조건 점검
+                            pyramid_result = self._check_pyramiding_for_existing_position(ticker, score, gpt_confidence_map.get(ticker, 0.5))
                             
-                            # 2. 기술적 지표 데이터 수집 (확장)
-                            technical_data = self._get_technical_data_for_integration(ticker)
-                            
-                            # 3. 시장 상황 데이터 수집 (확장)
-                            market_conditions = self._get_market_conditions_for_integration()
-                            
-                            # 4. 통합 포지션 사이징 계산 (실제 사용)
-                            try:
-                                from strategy_analyzer import calculate_integrated_position_size
-                                
-                                kelly_params = {
-                                    'kelly_fraction': kelly_result['kelly_fraction'],
-                                    'estimated_win_rate': kelly_result['estimated_win_rate'],
-                                    'risk_reward_ratio': kelly_result['risk_reward_ratio']
-                                }
-                                
-                                atr_params = {
-                                    'atr': kelly_result['atr'],
-                                    'current_price': current_price
-                                }
-                                
-                                integrated_result = calculate_integrated_position_size(
-                                    technical_data=technical_data,
-                                    kelly_params=kelly_params,
-                                    atr_params=atr_params,
-                                    market_conditions=market_conditions
-                                )
-                                
-                                # 5. 통합 결과 기반 매수 금액 계산
-                                integrated_position_size = integrated_result['final_position_size']
-                                trade_amount_krw = total_balance * integrated_position_size
-                                
-                                # 통합 결과 로깅
-                                logger.debug(f"💰 {ticker} 통합 포지션 사이징 결과:")
-                                logger.debug(f"   - 켈리 비율: {kelly_result['kelly_fraction']:.1%}")
-                                logger.debug(f"   - 통합 포지션: {integrated_position_size:.1%}")
-                                logger.debug(f"   - 총 조정 계수: {integrated_result['total_adjustment']:.3f}")
-                                logger.debug(f"   - 신뢰도 점수: {integrated_result['confidence_score']:.3f}")
-                                logger.debug(f"   - ATR 조정: {integrated_result['atr_adjustment']:.3f}")
-                                logger.debug(f"   - RSI 조정: {integrated_result['rsi_adjustment']:.3f}")
-                                logger.debug(f"   - MACD 조정: {integrated_result['macd_adjustment']:.3f}")
-                                logger.debug(f"   - MA 조정: {integrated_result['ma_adjustment']:.3f}")
-                                logger.debug(f"   - 시장 조정: {integrated_result['market_adjustment']:.3f}")
-                                logger.debug(f"   - 추세 조정: {integrated_result['trend_adjustment']:.3f}")
-                                
-                            except Exception as e:
-                                logger.warning(f"⚠️ {ticker} 통합 포지션 사이징 실패, 기본 켈리 공식 사용: {e}")
-                                # 통합 실패 시 기본 켈리 공식 사용
-                                integrated_position_size = kelly_result['final_position_size']
-                                trade_amount_krw = total_balance * integrated_position_size
-                            
-                            # 최소/최대 금액 제한 적용
-                            from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
-                            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
-                            max_amount = min(200000, total_balance * 0.05)
-                            trade_amount_krw = max(min_amount_with_fee, min(trade_amount_krw, max_amount))
-                            
-                            # 수수료를 포함한 실제 주문 금액
-                            actual_order_amount = trade_amount_krw * (1 + TAKER_FEE_RATE)
-                            
-                            logger.debug(f"💰 {ticker} 통합 포지션 사이징 결과:")
-                            logger.debug(f"   - 켈리 비율: {kelly_result['kelly_fraction']:.1%}")
-                            logger.debug(f"   - 통합 포지션: {integrated_position_size:.1%}")
-                            logger.debug(f"   - 총 조정 계수: {integrated_result['total_adjustment']:.3f}")
-                            logger.debug(f"   - 신뢰도 점수: {integrated_result['confidence_score']:.3f}")
-                            logger.debug(f"   - 매수 금액: {trade_amount_krw:,.0f}원")
-                            
-                            # 🔧 [3단계 개선] 시장 상황 기반 추가 검증
-                            market_validation = self._validate_market_conditions(ticker, current_price, score, confidence)
-                            if not market_validation['valid']:
-                                logger.warning(f"⚠️ 시장 조건 검증 실패: {ticker} | 사유: {market_validation['reason']}")
-                                trade_logs.append({
-                                    "ticker": ticker,
-                                    "buy_price": current_price,
-                                    "score": score,
-                                    "confidence": confidence,
-                                    "trade_amount_krw": trade_amount_krw,
-                                    "status": "MARKET_VALIDATION_FAILED",
-                                    "error_msg": market_validation['reason']
-                                })
-                                continue
-                            
-                            logger.info(f"🎯 매수 시도: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 금액: {trade_amount_krw:,.0f}원")
-                            
-                            # trade_executor.buy_asset 호출 (수수료 포함한 실제 주문 금액 전달)
-                            from trade_executor import buy_asset
-                            buy_result = buy_asset(
-                                upbit_client=self.upbit,
-                                ticker=ticker,
-                                current_price=current_price,
-                                trade_amount_krw=actual_order_amount,  # 수수료 포함한 실제 주문 금액
-                                gpt_confidence=confidence,
-                                gpt_reason=f"GPT 분석 점수: {score}점, 신뢰도: {confidence:.2f}"
-                            )
-                            
-                            if buy_result.get("status") in ["SUCCESS", "SUCCESS_PARTIAL", "SUCCESS_PARTIAL_NO_AVG", "SUCCESS_NO_AVG_PRICE"]:
-                                buy_price = buy_result.get('price', current_price)
-                                status_msg = "매수 성공" if buy_result.get("status") == "SUCCESS" else "매수 부분 체결 성공"
-                                logger.info(f"💰 {status_msg}: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 체결가: {buy_price:.2f} | 금액: {trade_amount_krw:,.0f}원")
-                                
-                                # 매수 성공 이력 수집
-                                trade_logs.append({
-                                    "ticker": ticker,
-                                    "buy_price": buy_price,
-                                    "score": score,
-                                    "confidence": confidence,
-                                    "trade_amount_krw": trade_amount_krw,
-                                    "status": "SUCCESS",
-                                    "error_msg": None
-                                })
+                            if pyramid_result['should_pyramid']:
+                                logger.info(f"✅ {ticker} 피라미딩 조건 충족 - 추가 매수 진행")
+                                # 피라미딩 매수 실행
+                                self._execute_pyramiding_buy(ticker, score, gpt_confidence_map.get(ticker, 0.5), trade_logs, total_balance)
                             else:
-                                error_msg = buy_result.get('error', 'Unknown')
-                                logger.warning(f"⚠️ 매수 실패: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 오류: {error_msg}")
-                                
-                                # 🔧 [3단계 개선] 상세한 오류 분석
-                                error_analysis = self._analyze_buy_error(error_msg, ticker, current_price, trade_amount_krw)
-                                
-                                # 매수 실패 이력 수집
-                                trade_logs.append({
-                                    "ticker": ticker,
-                                    "buy_price": current_price,
-                                    "score": score,
-                                    "confidence": confidence,
-                                    "trade_amount_krw": trade_amount_krw,
-                                    "status": "FAILED",
-                                    "error_msg": f"{error_msg} | 분석: {error_analysis}"
-                                })
+                                logger.info(f"⏭️ {ticker} 피라미딩 조건 미충족 - 매수 건너뜀")
+                                logger.info(f"   - 사유: {pyramid_result['reason']}")
+                                continue
                         else:
-                            logger.warning(f"⚠️ 현재가 조회 실패: {ticker} | 점수: {score}")
+                            # 새로운 종목 매수 (기존 로직)
+                            logger.info(f"🆕 {ticker} 신규 종목 - 일반 매수 진행")
+                            self._execute_new_position_buy(ticker, score, gpt_confidence_map.get(ticker, 0.5), trade_logs, total_balance)
                             
-                            # 현재가 조회 실패 이력 수집
-                            trade_logs.append({
-                                "ticker": ticker,
-                                "buy_price": 0,
-                                "score": score,
-                                "confidence": gpt_confidence_map.get(ticker, 0.5),
-                                "trade_amount_krw": base_amount,
-                                "status": "PRICE_FETCH_FAILED",
-                                "error_msg": "현재가 조회 실패"
-                            })
                     except Exception as e:
                         logger.error(f"❌ 매수 처리 중 오류: {ticker} | 오류: {str(e)}")
                         
@@ -3572,7 +3418,9 @@ class MakenaideBot:
                     ohlcv_df_for_trading = None
                     logging.warning("⚠️ 거래용 OHLCV 데이터 수집 실패")
                 
-                self.trade_and_report(gpt_results, market_df, ohlcv_df_for_trading, gpt_results)
+                # GPT 분석 결과를 scored_tickers 형식으로 변환
+                scored_tickers = [(result.get('ticker', ''), result.get('score', 0)) for result in gpt_results if result.get('ticker')]
+                self.trade_and_report(scored_tickers, market_df, ohlcv_df_for_trading, gpt_results)
                 
             except Exception as e:
                 logging.error(f"❌ 거래 및 리포트 생성 중 오류: {e}")
@@ -3950,145 +3798,6 @@ class MakenaideBot:
                 return []
             except:
                 return []
-    
-    def process_gpt_analysis_chunked_enhanced(self, gpt_json_data, config):
-        """강화된 메모리 최적화 GPT 분석 처리"""
-        import gc
-        import psutil
-        import os
-        import time
-        from typing import List, Dict, Any
-        
-        # 메모리 모니터링 및 적응형 청크 크기 계산기 초기화
-        memory_monitor = MemoryMonitor(check_interval_mb=100)
-        adaptive_chunker = AdaptiveChunker(
-            initial_size=config.get('batch_size', 5),
-            memory_threshold=config.get('memory_threshold_mb', 500),
-            performance_history=getattr(self, 'chunking_performance_history', [])
-        )
-        
-        # 스트리밍 저장 설정
-        chunk_size = adaptive_chunker.get_optimal_chunk_size()
-        streaming_saver = StreamingSaver(batch_threshold=chunk_size // 2)
-        streaming_saver.bot_instance = self  # bot 인스턴스 연결
-        
-        logger.info(f"🚀 강화된 GPT 분석 시작: {len(gpt_json_data)}개 티커, 초기 청크 크기: {chunk_size}")
-        
-        all_results = []
-        performance_data = []
-        
-        # 데이터를 청크로 분할
-        chunks = adaptive_chunker.create_chunks(gpt_json_data)
-        
-        for i, chunk in enumerate(chunks):
-            chunk_start_time = time.time()
-            
-            try:
-                # 세밀한 메모리 모니터링 (100MB 단위)
-                memory_status = memory_monitor.check_memory_status()
-                
-                # 긴급 정리 모드 활성화 조건
-                if memory_status['critical']:
-                    logger.warning(f"🚨 긴급 정리 모드 활성화! 메모리: {memory_status['current_mb']:.1f}MB")
-                    self._activate_emergency_cleanup(all_results, streaming_saver)
-                    
-                    # 청크 크기 긴급 축소
-                    new_chunk_size = adaptive_chunker.emergency_resize(memory_status['current_mb'])
-                    if new_chunk_size < chunk_size:
-                        chunks = self._resize_remaining_chunks(chunks, i, new_chunk_size)
-                        chunk_size = new_chunk_size
-                
-                # 중간 결과 스트리밍 저장 (배치 크기의 50% 도달 시)
-                if streaming_saver.should_save(len(all_results)):
-                    saved_count = streaming_saver.save_results(all_results)
-                    logger.info(f"💾 스트리밍 저장: {saved_count}개 결과 저장")
-                    all_results = all_results[saved_count:]  # 저장된 결과 메모리에서 제거
-                
-                logger.info(f"🔄 청크 {i+1}/{len(chunks)} 처리 중 (메모리: {memory_status['current_mb']:.1f}MB, "
-                           f"청크크기: {len(chunk)}, 임계값: {memory_status['threshold_mb']}MB)")
-                
-                # GPT 분석 실행
-                chunk_results = self.process_gpt_chunk_with_enhanced_retry(chunk, config, memory_monitor)
-                
-                # 결과 후처리 및 메모리 최적화
-                processed_results = self._process_chunk_results(chunk_results)
-                all_results.extend(processed_results)
-                
-                # 성능 데이터 수집
-                chunk_time = time.time() - chunk_start_time
-                performance_data.append({
-                    'chunk_size': len(chunk),
-                    'processing_time': chunk_time,
-                    'memory_usage': memory_status['current_mb'],
-                    'memory_saved': memory_monitor.get_memory_saved()
-                })
-                
-                # 적응형 청크 크기 조정
-                if len(performance_data) >= 3:  # 3개 청크마다 조정
-                    new_chunk_size = adaptive_chunker.adjust_chunk_size(performance_data[-3:])
-                    if new_chunk_size != chunk_size:
-                        logger.info(f"🔧 적응형 청크 크기 조정: {chunk_size} → {new_chunk_size}")
-                        chunks = self._resize_remaining_chunks(chunks, i, new_chunk_size)
-                        chunk_size = new_chunk_size
-                
-                # 청크별 메모리 정리
-                del chunk_results, processed_results
-                if i % 2 == 0:  # 2청크마다 가비지 컬렉션
-                    memory_monitor.perform_garbage_collection()
-                
-            except Exception as e:
-                logger.error(f"❌ 청크 {i+1} 처리 중 오류: {e}")
-                # 실패한 청크에 대해 기본값 생성
-                fallback_results = self._generate_fallback_results(chunk)
-                all_results.extend(fallback_results)
-        
-        # 성능 히스토리 업데이트
-        self.chunking_performance_history = performance_data[-10:]  # 최근 10개만 유지
-        
-        # 최종 리포트
-        final_memory = memory_monitor.get_final_report()
-        logger.info(f"✅ 강화된 GPT 분석 완료: {len(all_results)}개 결과")
-        logger.info(f"📊 메모리 효율성: {final_memory['efficiency']:.1f}%, "
-                   f"평균 청크 크기: {adaptive_chunker.get_average_chunk_size():.1f}")
-        
-        return all_results
-
-    def process_gpt_chunk_with_enhanced_retry(self, chunk, config, memory_monitor):
-        """강화된 재시도 로직과 메모리 모니터링이 포함된 GPT 청크 처리"""
-        max_retries = config.get('max_retries', 3)
-        base_delay = config.get('retry_base_delay', 2)
-        
-        for attempt in range(max_retries):
-            try:
-                # 메모리 상태 확인
-                memory_status = memory_monitor.check_memory_status()
-                if memory_status['warning']:
-                    logger.warning(f"⚠️ 메모리 경고 상태에서 GPT 분석 시도 {attempt+1}")
-                    memory_monitor.perform_light_cleanup()
-                
-                # unified_gpt_analysis_engine 호출
-                results = unified_gpt_analysis_engine(chunk, config)
-                
-                # 성공 시 메모리 상태 업데이트
-                memory_monitor.record_successful_operation(len(chunk))
-                return results
-                
-            except MemoryError as e:
-                logger.error(f"💥 메모리 부족으로 GPT 분석 실패 (시도 {attempt+1}): {e}")
-                memory_monitor.perform_emergency_cleanup()
-                if attempt < max_retries - 1:
-                    time.sleep(base_delay * (2 ** attempt))
-                else:
-                    raise e
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ GPT 청크 처리 시도 {attempt+1}/{max_retries} 실패: {e}")
-                if attempt < max_retries - 1:
-                    # 지수 백오프 + 지터
-                    delay = base_delay * (2 ** attempt) + (time.time() % 1)
-                    time.sleep(delay)
-                else:
-                    raise e
 
     def _activate_emergency_cleanup(self, all_results, streaming_saver):
         """긴급 정리 모드 활성화"""
@@ -4244,19 +3953,8 @@ class MakenaideBot:
             logger.error(f"❌ 시스템 데이터 검증 중 오류: {e}")
             return False
     
-    def get_total_balance(self):
-        """
-        총 잔액을 반환하는 메서드 (KRW 기준)
-        """
-        try:
-            if self.upbit:
-                return self.upbit.get_balance("KRW")
-            else:
-                logger.warning("⚠️ upbit 객체가 없어 잔액 조회 실패")
-                return 0.0
-        except Exception as e:
-            logger.error(f"❌ 총 잔액 조회 실패: {e}")
-            return 0.0
+    # get_total_balance 함수는 portfolio_manager.py로 통합됨
+    # 위의 get_total_balance 함수를 사용하세요
     
     def _validate_market_conditions(self, ticker, current_price, score, confidence):
         """
@@ -4489,66 +4187,109 @@ class MakenaideBot:
             'atr': 0
         }
     
+    def _get_default_technical_data(self) -> dict:
+        """기본 기술적 지표 데이터 (오류 시 사용)"""
+        return {
+            'rsi_14': 50,
+            'macd_signal': 'neutral',
+            'ma_alignment': 'neutral',
+            'bb_upper': 0,
+            'bb_lower': 0,
+            'trend_strength': 0.3,
+            'volume_momentum': 0.5,
+            'adx': 25,
+            'price': 0
+        }
+    
     def _get_technical_data_for_integration(self, ticker: str) -> dict:
-        """통합 포지션 사이징을 위한 기술적 지표 데이터 조회 (확장)"""
+        """통합 포지션 사이징을 위한 기술적 지표 데이터 조회 (수정됨)"""
         try:
-            # static_indicators에서 더 많은 기술적 지표 조회
+            # 🔧 [수정] 실제 존재하는 컬럼으로 쿼리 변경
             with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
+                
+                # 1. static_indicators에서 기본 지표 조회
                 cursor.execute("""
-                    SELECT rsi_14, macd, macd_signal, bb_upper, bb_lower, 
-                           ma_50, ma_200, adx, volume_change_7_30, price
+                    SELECT price, atr, adx, volume_change_7_30, supertrend_signal
                     FROM static_indicators 
                     WHERE ticker = %s
                 """, (ticker,))
                 
-                result = cursor.fetchone()
-                if result:
-                    rsi_14, macd, macd_signal, bb_upper, bb_lower, ma_50, ma_200, adx, volume_change_7_30, price = result
-                    
-                    # MACD 신호 판단
-                    macd_signal_type = 'bullish' if macd and macd_signal and macd > macd_signal else 'bearish' if macd and macd_signal and macd < macd_signal else 'neutral'
-                    
-                    # 이동평균 정렬 판단
-                    if price and ma_50 and ma_200 and price > 0 and ma_50 > 0 and ma_200 > 0:
-                        if price > ma_50 > ma_200:
-                            ma_alignment = 'bullish'
-                        elif price < ma_50 < ma_200:
-                            ma_alignment = 'bearish'
-                        else:
-                            ma_alignment = 'neutral'
+                static_result = cursor.fetchone()
+                
+                # 2. ohlcv에서 추가 기술적 지표 조회
+                cursor.execute("""
+                    SELECT close, rsi_14, ma_50, ma_200, bb_upper, bb_lower
+                    FROM ohlcv 
+                    WHERE ticker = %s 
+                    ORDER BY date DESC 
+                    LIMIT 1
+                """, (ticker,))
+                
+                ohlcv_result = cursor.fetchone()
+                
+                # 데이터 통합
+                price = 0
+                rsi_14 = 50
+                ma_50 = 0
+                ma_200 = 0
+                bb_upper = 0
+                bb_lower = 0
+                atr = 0
+                adx = 25
+                volume_change_7_30 = 0
+                supertrend_signal = 'neutral'
+                
+                # static_indicators 데이터 처리
+                if static_result:
+                    price, atr, adx, volume_change_7_30, supertrend_signal = static_result
+                
+                # ohlcv 데이터 처리
+                if ohlcv_result:
+                    close, rsi_14, ma_50, ma_200, bb_upper, bb_lower = ohlcv_result
+                    if price == 0:  # static_indicators에 price가 없으면 ohlcv의 close 사용
+                        price = close
+                
+                # MACD 신호 판단 (ohlcv에 macd 데이터가 없으므로 기본값 사용)
+                macd_signal_type = 'neutral'
+                
+                # 이동평균 정렬 판단
+                if price and ma_50 and ma_200 and price > 0 and ma_50 > 0 and ma_200 > 0:
+                    if price > ma_50 > ma_200:
+                        ma_alignment = 'bullish'
+                    elif price < ma_50 < ma_200:
+                        ma_alignment = 'bearish'
                     else:
                         ma_alignment = 'neutral'
-                    
-                    # ADX 기반 추세 강도 판단
-                    if adx and adx > 0:
-                        if adx > 25:
-                            trend_strength = min(adx / 50.0, 1.0)  # 0-1 범위로 정규화
-                        else:
-                            trend_strength = 0.3  # 약한 추세
-                    else:
-                        trend_strength = 0.3
-                    
-                    # 볼륨 변화 기반 모멘텀 판단
-                    if volume_change_7_30 and volume_change_7_30 > 0:
-                        volume_momentum = min(volume_change_7_30 / 100.0, 1.0)  # 0-1 범위로 정규화
-                    else:
-                        volume_momentum = 0.5
-                    
-                    return {
-                        'rsi_14': rsi_14 or 50,
-                        'macd_signal': macd_signal_type,
-                        'ma_alignment': ma_alignment,
-                        'bb_upper': bb_upper or 0,
-                        'bb_lower': bb_lower or 0,
-                        'trend_strength': trend_strength,
-                        'volume_momentum': volume_momentum,
-                        'adx': adx or 25,
-                        'price': price or 0
-                    }
                 else:
-                    logger.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
-                    return self._get_default_technical_data()
+                    ma_alignment = 'neutral'
+                
+                # ADX 기반 추세 강도 판단
+                if adx and adx > 0:
+                    if adx > 25:
+                        trend_strength = min(adx / 50.0, 1.0)  # 0-1 범위로 정규화
+                    else:
+                        trend_strength = 0.3  # 약한 추세
+                else:
+                    trend_strength = 0.3
+                
+                # 볼륨 변화 기반 모멘텀 판단
+                if volume_change_7_30 and volume_change_7_30 > 0:
+                    volume_momentum = min(volume_change_7_30 / 100.0, 1.0)  # 0-1 범위로 정규화
+                else:
+                    volume_momentum = 0.5
+                
+                return {
+                    'rsi_14': rsi_14 or 50,
+                    'macd_signal': macd_signal_type,
+                    'ma_alignment': ma_alignment,
+                    'bb_upper': bb_upper or 0,
+                    'bb_lower': bb_lower or 0,
+                    'trend_strength': trend_strength,
+                    'volume_momentum': volume_momentum,
+                    'adx': adx or 25,
+                    'price': price or 0
+                }
                     
         except Exception as e:
             logger.error(f"❌ {ticker} 기술적 지표 데이터 조회 실패: {str(e)}")
@@ -4669,224 +4410,567 @@ class MakenaideBot:
                 'avg_adx': 25,
                 'avg_volume_change': 0
             }
-    
-    def _get_default_technical_data(self) -> dict:
-        """기본 기술적 지표 데이터 (오류 시 사용)"""
-        return {
-            'rsi_14': 50,
-            'macd_signal': 'neutral',
-            'ma_alignment': 'neutral',
-            'bb_upper': 0,
-            'bb_lower': 0,
-            'trend_strength': 0.5,
-            'volume_momentum': 0.5,
-            'adx': 25,
-            'price': 0
-        }
 
-
-class MemoryMonitor:
-    """메모리 사용량 세밀 모니터링 클래스"""
-    
-    def __init__(self, check_interval_mb=100):
-        self.check_interval_mb = check_interval_mb
-        self.initial_memory = self._get_current_memory()
-        self.peak_memory = self.initial_memory
-        self.cleanup_count = 0
-        self.warning_threshold = 400  # MB
-        self.critical_threshold = 600  # MB
-        
-    def _get_current_memory(self):
-        """현재 메모리 사용량 조회 (MB)"""
+    def get_ohlcv_from_db(self, ticker: str, limit: int = 450) -> pd.DataFrame:
+        """DB에서 OHLCV 데이터를 최근 날짜순으로 정확히 조회"""
         try:
-            return psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024
-        except:
-            return 0
-    
-    def check_memory_status(self):
-        """메모리 상태 확인"""
-        current_mb = self._get_current_memory()
-        self.peak_memory = max(self.peak_memory, current_mb)
-        
-        return {
-            'current_mb': current_mb,
-            'peak_mb': self.peak_memory,
-            'threshold_mb': self.warning_threshold,
-            'warning': current_mb > self.warning_threshold,
-            'critical': current_mb > self.critical_threshold
-        }
-    
-    def perform_light_cleanup(self):
-        """가벼운 메모리 정리"""
-        gc.collect()
-        self.cleanup_count += 1
-    
-    def perform_garbage_collection(self):
-        """표준 가비지 컬렉션"""
-        collected = gc.collect()
-        logger.debug(f"🧹 가비지 컬렉션: {collected}개 객체 정리")
-    
-    def perform_emergency_cleanup(self):
-        """긴급 메모리 정리"""
-        for generation in range(3):
-            gc.collect(generation)
-        self.cleanup_count += 1
-        logger.info("🚨 긴급 메모리 정리 완료")
-    
-    def get_memory_saved(self):
-        """절약된 메모리량 계산"""
-        current = self._get_current_memory()
-        return max(0, self.peak_memory - current)
-    
-    def get_final_report(self):
-        """최종 메모리 리포트"""
-        current = self._get_current_memory()
-        efficiency = ((self.initial_memory - current) / self.initial_memory * 100) if self.initial_memory > 0 else 0
-        
-        return {
-            'initial_mb': self.initial_memory,
-            'final_mb': current,
-            'peak_mb': self.peak_memory,
-            'efficiency': efficiency,
-            'cleanup_count': self.cleanup_count
-        }
-    
-    def record_successful_operation(self, items_processed):
-        """성공적인 작업 기록"""
-        pass  # 필요시 구현
+            with self.get_db_connection_safe() as conn:
+                # 최근 데이터부터 내림차순으로 조회 후 다시 오름차순 정렬
+                query = """
+                SELECT date, open, high, low, close, volume
+                FROM (
+                    SELECT date, open, high, low, close, volume
+                    FROM ohlcv 
+                    WHERE ticker = %s 
+                    ORDER BY date DESC 
+                    LIMIT %s
+                ) subquery
+                ORDER BY date ASC
+                """
+                
+                df = pd.read_sql_query(query, conn, params=[ticker, limit])
+                
+                if not df.empty:
+                    df['date'] = pd.to_datetime(df['date'])
+                    df.set_index('date', inplace=True)
+                    
+                    # 검증 로그
+                    from utils import safe_strftime
+                    start_date = safe_strftime(df.index[0])
+                    end_date = safe_strftime(df.index[-1])
+                    logger.debug(f"🔍 {ticker} DB 조회 완료: {len(df)}개 ({start_date} ~ {end_date})")
+                    
+                return df
+                
+        except Exception as e:
+            logger.error(f"❌ {ticker} DB 조회 실패: {str(e)}")
+            return pd.DataFrame()
 
-
-class StreamingSaver:
-    """스트리밍 저장 관리 클래스"""
-    
-    def __init__(self, batch_threshold=10):
-        self.batch_threshold = batch_threshold
-        self.saved_count = 0
+    def _check_pyramiding_for_existing_position(self, ticker: str, score: float, confidence: float) -> dict:
+        """
+        기존 보유 종목에 대한 피라미딩 조건 점검
         
-    def should_save(self, current_count):
-        """저장 필요 여부 확인"""
-        return current_count >= self.batch_threshold
-    
-    def save_results(self, results):
-        """결과 저장"""
-        try:
-            # DB 저장 로직 (기존 save_gpt_analysis_to_db 활용)
-            if hasattr(self, 'bot_instance') and self.bot_instance.save_to_db:
-                self.bot_instance.save_gpt_analysis_to_db(results[:self.batch_threshold])
+        Args:
+            ticker (str): 티커명
+            score (float): GPT 분석 점수
+            confidence (float): GPT 분석 신뢰도
             
-            saved = min(len(results), self.batch_threshold)
-            self.saved_count += saved
-            return saved
-        except Exception as e:
-            logger.error(f"❌ 스트리밍 저장 실패: {e}")
-            return 0
-    
-    def emergency_save(self, results):
-        """긴급 저장"""
+        Returns:
+            dict: 피라미딩 조건 점검 결과
+        """
         try:
-            if hasattr(self, 'bot_instance') and self.bot_instance.save_to_db:
-                self.bot_instance.save_gpt_analysis_to_db(results)
-            self.saved_count += len(results)
-            logger.info(f"💾 긴급 저장 완료: {len(results)}개")
+            # 포트폴리오 매니저의 피라미딩 조건 점검
+            pyramid_executed = self.pm.check_pyramiding(ticker)
+            
+            if pyramid_executed:
+                return {
+                    'should_pyramid': True,
+                    'reason': '피라미딩 조건 충족 - 추가 매수 실행됨',
+                    'type': 'pyramiding_executed'
+                }
+            else:
+                # 피라미딩 조건이 충족되지 않은 경우 상세 분석
+                current_price = get_current_price_safe(ticker)
+                if not current_price:
+                    return {
+                        'should_pyramid': False,
+                        'reason': '현재가 조회 실패',
+                        'type': 'price_fetch_failed'
+                    }
+                
+                # 피라미딩 조건 상세 분석
+                pyramid_analysis = self._analyze_pyramiding_conditions(ticker, current_price, score, confidence)
+                
+                return {
+                    'should_pyramid': False,
+                    'reason': pyramid_analysis['reason'],
+                    'type': 'conditions_not_met',
+                    'details': pyramid_analysis
+                }
+                
         except Exception as e:
-            logger.error(f"❌ 긴급 저장 실패: {e}")
+            logger.error(f"❌ {ticker} 피라미딩 조건 점검 중 오류: {e}")
+            return {
+                'should_pyramid': False,
+                'reason': f'피라미딩 조건 점검 실패: {str(e)}',
+                'type': 'error'
+            }
 
+    def _analyze_pyramiding_conditions(self, ticker: str, current_price: float, score: float, confidence: float) -> dict:
+        """
+        피라미딩 조건 상세 분석
+        
+        Args:
+            ticker (str): 티커명
+            current_price (float): 현재가
+            score (float): GPT 분석 점수
+            confidence (float): GPT 분석 신뢰도
+            
+        Returns:
+            dict: 피라미딩 조건 분석 결과
+        """
+        try:
+            # 현재 보유 포지션 정보 조회
+            current_positions = self.pm.get_current_positions()
+            position_info = next((pos for pos in current_positions if pos['ticker'] == ticker), None)
+            
+            if not position_info:
+                return {
+                    'reason': '보유 포지션 정보 조회 실패',
+                    'conditions_checked': []
+                }
+            
+            avg_price = position_info.get('avg_buy_price', 0)
+            current_value = position_info.get('value', 0)
+            
+            # 피라미딩 조건들 점검
+            conditions_checked = []
+            
+            # 1. 저항선 돌파 조건
+            resistance_breakout = self._check_resistance_breakout(ticker, current_price)
+            conditions_checked.append({
+                'condition': '저항선 돌파',
+                'met': resistance_breakout['met'],
+                'details': resistance_breakout['details']
+            })
+            
+            # 2. 전고점 돌파 조건
+            high_breakout = self._check_high_breakout(ticker, current_price)
+            conditions_checked.append({
+                'condition': '전고점 돌파',
+                'met': high_breakout['met'],
+                'details': high_breakout['details']
+            })
+            
+            # 3. 기술적 지표 조건
+            technical_conditions = self._check_technical_pyramiding_conditions(ticker, current_price)
+            conditions_checked.append({
+                'condition': '기술적 지표',
+                'met': technical_conditions['met'],
+                'details': technical_conditions['details']
+            })
+            
+            # 4. 수익률 조건
+            return_rate = ((current_price - avg_price) / avg_price * 100) if avg_price > 0 else 0
+            profit_condition = return_rate >= 5.0  # 5% 이상 수익 시에만 피라미딩 고려
+            conditions_checked.append({
+                'condition': '수익률 조건',
+                'met': profit_condition,
+                'details': f'현재 수익률: {return_rate:.1f}% (기준: 5.0%)'
+            })
+            
+            # 조건 충족 여부 판단
+            met_conditions = [c for c in conditions_checked if c['met']]
+            unmet_conditions = [c for c in conditions_checked if not c['met']]
+            
+            if len(met_conditions) >= 2:  # 최소 2개 조건 충족 시 피라미딩 고려
+                reason = f"피라미딩 조건 충족: {', '.join([c['condition'] for c in met_conditions])}"
+            else:
+                reason = f"피라미딩 조건 미충족: {', '.join([c['condition'] for c in unmet_conditions])}"
+            
+            return {
+                'reason': reason,
+                'conditions_checked': conditions_checked,
+                'met_conditions': len(met_conditions),
+                'total_conditions': len(conditions_checked)
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 피라미딩 조건 분석 중 오류: {e}")
+            return {
+                'reason': f'피라미딩 조건 분석 실패: {str(e)}',
+                'conditions_checked': []
+            }
 
-class AdaptiveChunker:
-    """적응형 청크 크기 조정 알고리즘"""
-    
-    def __init__(self, initial_size=5, memory_threshold=500, performance_history=None):
-        self.initial_size = initial_size
-        self.current_size = initial_size
-        self.memory_threshold = memory_threshold
-        self.performance_history = performance_history or []
-        self.min_size = 1
-        self.max_size = 20
+    def _check_resistance_breakout(self, ticker: str, current_price: float) -> dict:
+        """
+        저항선 돌파 조건 점검
         
-    def get_optimal_chunk_size(self):
-        """최적 청크 크기 계산"""
-        if not self.performance_history:
-            return self.initial_size
+        Args:
+            ticker (str): 티커명
+            current_price (float): 현재가
+            
+        Returns:
+            dict: 저항선 돌파 조건 점검 결과
+        """
+        try:
+            # 최근 OHLCV 데이터 조회
+            ohlcv_data = self.get_ohlcv_from_db(ticker, limit=50)
+            if ohlcv_data is None or ohlcv_data.empty:
+                return {
+                    'met': False,
+                    'details': 'OHLCV 데이터 없음'
+                }
+            
+            # 최근 고점들 계산 (20일 기준)
+            recent_highs = ohlcv_data['high'].rolling(window=20).max()
+            current_high = recent_highs.iloc[-1]
+            
+            # 저항선 돌파 여부 (현재가가 최근 고점을 1% 이상 돌파)
+            breakout_threshold = current_high * 1.01
+            is_breakout = current_price > breakout_threshold
+            
+            return {
+                'met': is_breakout,
+                'details': f'현재가: {current_price:,.0f}원, 저항선: {breakout_threshold:,.0f}원, 돌파: {is_breakout}'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 저항선 돌파 조건 점검 중 오류: {e}")
+            return {
+                'met': False,
+                'details': f'점검 실패: {str(e)}'
+            }
+
+    def _check_high_breakout(self, ticker: str, current_price: float) -> dict:
+        """
+        전고점 돌파 조건 점검
         
-        # 최근 성능 데이터 기반 최적화
-        recent_data = self.performance_history[-5:]  # 최근 5개
+        Args:
+            ticker (str): 티커명
+            current_price (float): 현재가
+            
+        Returns:
+            dict: 전고점 돌파 조건 점검 결과
+        """
+        try:
+            # 최근 OHLCV 데이터 조회 (더 긴 기간)
+            ohlcv_data = self.get_ohlcv_from_db(ticker, limit=100)
+            if ohlcv_data is None or ohlcv_data.empty:
+                return {
+                    'met': False,
+                    'details': 'OHLCV 데이터 없음'
+                }
+            
+            # 최근 100일 고점
+            historical_high = ohlcv_data['high'].max()
+            
+            # 전고점 돌파 여부 (현재가가 전고점을 0.5% 이상 돌파)
+            breakout_threshold = historical_high * 1.005
+            is_breakout = current_price > breakout_threshold
+            
+            return {
+                'met': is_breakout,
+                'details': f'현재가: {current_price:,.0f}원, 전고점: {historical_high:,.0f}원, 돌파: {is_breakout}'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 전고점 돌파 조건 점검 중 오류: {e}")
+            return {
+                'met': False,
+                'details': f'점검 실패: {str(e)}'
+            }
+
+    def _check_technical_pyramiding_conditions(self, ticker: str, current_price: float) -> dict:
+        """
+        기술적 지표 기반 피라미딩 조건 점검
         
-        avg_time_per_item = sum(d['processing_time'] / d['chunk_size'] for d in recent_data) / len(recent_data)
-        avg_memory = sum(d['memory_usage'] for d in recent_data) / len(recent_data)
+        Args:
+            ticker (str): 티커명
+            current_price (float): 현재가
+            
+        Returns:
+            dict: 기술적 지표 조건 점검 결과
+        """
+        try:
+            # 시장 데이터 조회
+            market_data = self._get_market_data_for_kelly(ticker)
+            if not market_data:
+                return {
+                    'met': False,
+                    'details': '시장 데이터 조회 실패'
+                }
+            
+            conditions_met = []
+            conditions_failed = []
+            
+            # 1. Supertrend 매수 신호
+            supertrend_signal = market_data.get('supertrend_signal', '')
+            if supertrend_signal == 'bull':
+                conditions_met.append('Supertrend 매수')
+            else:
+                conditions_failed.append(f'Supertrend: {supertrend_signal}')
+            
+            # 2. ADX 강도 (25 이상)
+            adx = market_data.get('adx', 0)
+            if adx > 25:
+                conditions_met.append('ADX 강함')
+            else:
+                conditions_failed.append(f'ADX: {adx:.1f}')
+            
+            # 3. RSI 과매수 방지 (75 미만)
+            rsi = market_data.get('rsi', 50)
+            if rsi < 75:
+                conditions_met.append('RSI 정상')
+            else:
+                conditions_failed.append(f'RSI 과매수: {rsi:.1f}')
+            
+            # 4. MA20 상승
+            ma20 = market_data.get('ma20', current_price)
+            if current_price > ma20:
+                conditions_met.append('MA20 상승')
+            else:
+                conditions_failed.append(f'MA20 하락: {current_price:,.0f} < {ma20:,.0f}')
+            
+            # 최소 3개 조건 충족 시 통과
+            is_met = len(conditions_met) >= 3
+            
+            return {
+                'met': is_met,
+                'details': f'충족: {conditions_met}, 미충족: {conditions_failed}'
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ {ticker} 기술적 지표 조건 점검 중 오류: {e}")
+            return {
+                'met': False,
+                'details': f'점검 실패: {str(e)}'
+            }
+
+    def _execute_pyramiding_buy(self, ticker: str, score: float, confidence: float, trade_logs: list, total_balance: float):
+        """
+        피라미딩 매수 실행
         
-        # 메모리 기반 조정
-        if avg_memory > self.memory_threshold * 0.8:
-            optimal_size = max(self.min_size, self.current_size - 1)
-        elif avg_memory < self.memory_threshold * 0.5:
-            optimal_size = min(self.max_size, self.current_size + 1)
-        else:
-            optimal_size = self.current_size
+        Args:
+            ticker (str): 티커명
+            score (float): GPT 분석 점수
+            confidence (float): GPT 분석 신뢰도
+            trade_logs (list): 거래 로그 리스트
+            total_balance (float): 총 자산
+        """
+        try:
+            current_price = get_current_price_safe(ticker)
+            if not current_price or current_price <= 0:
+                logger.warning(f"⚠️ {ticker} 현재가 조회 실패")
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": 0,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": 0,
+                    "status": "PRICE_FETCH_FAILED",
+                    "error_msg": "현재가 조회 실패"
+                })
+                return
+            
+            # 피라미딩 전용 포지션 사이징 (기존보다 작은 크기)
+            pyramid_position_size = 0.01  # 총 자산의 1% (기본 피라미딩 크기)
+            trade_amount_krw = total_balance * pyramid_position_size
+            
+            # 최소/최대 금액 제한 적용
+            from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
+            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
+            max_amount = min(50000, total_balance * 0.02)  # 피라미딩은 최대 5만원 또는 2%
+            trade_amount_krw = max(min_amount_with_fee, min(trade_amount_krw, max_amount))
+            
+            # 수수료를 포함한 실제 주문 금액
+            actual_order_amount = trade_amount_krw * (1 + TAKER_FEE_RATE)
+            
+            logger.info(f"🔼 피라미딩 매수 시도: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 포지션: {pyramid_position_size:.1%} | 금액: {trade_amount_krw:,.0f}원")
+            
+            # 매수 실행
+            from trade_executor import buy_asset
+            buy_result = buy_asset(
+                upbit_client=self.upbit,
+                ticker=ticker,
+                current_price=current_price,
+                trade_amount_krw=actual_order_amount,
+                gpt_confidence=confidence,
+                gpt_reason=f"피라미딩 매수 - GPT 분석 점수: {score}점, 신뢰도: {confidence:.2f}"
+            )
+            
+            if buy_result.get("status") in ["SUCCESS", "SUCCESS_PARTIAL", "SUCCESS_PARTIAL_NO_AVG", "SUCCESS_NO_AVG_PRICE"]:
+                buy_price = buy_result.get('price', current_price)
+                status_msg = "피라미딩 매수 성공" if buy_result.get("status") == "SUCCESS" else "피라미딩 매수 부분 체결 성공"
+                logger.info(f"🔼 {status_msg}: {ticker} | 체결가: {buy_price:.2f} | 금액: {trade_amount_krw:,.0f}원")
+                
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": buy_price,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": trade_amount_krw,
+                    "status": "PYRAMIDING_SUCCESS",
+                    "error_msg": None
+                })
+            else:
+                error_msg = buy_result.get('error', 'Unknown')
+                logger.warning(f"⚠️ 피라미딩 매수 실패: {ticker} | 오류: {error_msg}")
+                
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": current_price,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": trade_amount_krw,
+                    "status": "PYRAMIDING_FAILED",
+                    "error_msg": error_msg
+                })
+                
+        except Exception as e:
+            logger.error(f"❌ {ticker} 피라미딩 매수 실행 중 오류: {str(e)}")
+            trade_logs.append({
+                "ticker": ticker,
+                "buy_price": 0,
+                "score": score,
+                "confidence": confidence,
+                "trade_amount_krw": 0,
+                "status": "PYRAMIDING_ERROR",
+                "error_msg": str(e)
+            })
+
+    def _execute_new_position_buy(self, ticker: str, score: float, confidence: float, trade_logs: list, total_balance: float):
+        """
+        신규 종목 매수 실행 (기존 로직)
         
-        # 처리 시간 기반 미세 조정
-        if avg_time_per_item > 10:  # 10초 이상/아이템
-            optimal_size = max(self.min_size, optimal_size - 1)
-        elif avg_time_per_item < 3:  # 3초 미만/아이템
-            optimal_size = min(self.max_size, optimal_size + 1)
-        
-        self.current_size = optimal_size
-        return optimal_size
-    
-    def create_chunks(self, data):
-        """데이터를 청크로 분할"""
-        chunk_size = self.get_optimal_chunk_size()
-        return [data[i:i+chunk_size] for i in range(0, len(data), chunk_size)]
-    
-    def adjust_chunk_size(self, recent_performance):
-        """최근 성능 데이터를 기반으로 청크 크기 조정"""
-        if len(recent_performance) < 2:
-            return self.current_size
-        
-        # 성능 추세 분석
-        memory_trend = recent_performance[-1]['memory_usage'] - recent_performance[0]['memory_usage']
-        time_trend = recent_performance[-1]['processing_time'] - recent_performance[0]['processing_time']
-        
-        adjustment = 0
-        
-        # 메모리 사용량 증가 추세
-        if memory_trend > 50:  # 50MB 이상 증가
-            adjustment -= 1
-        elif memory_trend < -50:  # 50MB 이상 감소
-            adjustment += 1
-        
-        # 처리 시간 추세
-        if time_trend > 5:  # 5초 이상 증가
-            adjustment -= 1
-        elif time_trend < -2:  # 2초 이상 감소
-            adjustment += 1
-        
-        new_size = max(self.min_size, min(self.max_size, self.current_size + adjustment))
-        
-        if new_size != self.current_size:
-            self.current_size = new_size
-            return new_size
-        
-        return self.current_size
-    
-    def emergency_resize(self, current_memory_mb):
-        """긴급 상황에서 청크 크기 축소"""
-        if current_memory_mb > self.memory_threshold * 1.2:
-            emergency_size = max(1, self.current_size // 2)
-        else:
-            emergency_size = max(1, self.current_size - 2)
-        
-        self.current_size = emergency_size
-        return emergency_size
-    
-    def get_average_chunk_size(self):
-        """평균 청크 크기 반환"""
-        if not self.performance_history:
-            return self.current_size
-        
-        recent_sizes = [d['chunk_size'] for d in self.performance_history[-10:]]
-        return sum(recent_sizes) / len(recent_sizes)
+        Args:
+            ticker (str): 티커명
+            score (float): GPT 분석 점수
+            confidence (float): GPT 분석 신뢰도
+            trade_logs (list): 거래 로그 리스트
+            total_balance (float): 총 자산
+        """
+        try:
+            current_price = get_current_price_safe(ticker)
+            if not current_price or current_price <= 0:
+                logger.warning(f"⚠️ {ticker} 현재가 조회 실패")
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": 0,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": 0,
+                    "status": "PRICE_FETCH_FAILED",
+                    "error_msg": "현재가 조회 실패"
+                })
+                return
+            
+            # 기존의 통합 포지션 사이징 로직 사용
+            kelly_result = self.calculate_kelly_position_size(
+                ticker=ticker,
+                score=score,
+                confidence=confidence,
+                current_price=current_price,
+                total_balance=total_balance
+            )
+            
+            # 기술적 지표 데이터 수집
+            technical_data = self._get_technical_data_for_integration(ticker)
+            market_conditions = self._get_market_conditions_for_integration()
+            
+            # 통합 포지션 사이징 계산
+            try:
+                from strategy_analyzer import calculate_integrated_position_size
+                
+                kelly_params = {
+                    'kelly_fraction': kelly_result['kelly_fraction'],
+                    'estimated_win_rate': kelly_result['estimated_win_rate'],
+                    'risk_reward_ratio': kelly_result['risk_reward_ratio']
+                }
+                
+                atr_params = {
+                    'atr': kelly_result['atr'],
+                    'current_price': current_price
+                }
+                
+                integrated_result = calculate_integrated_position_size(
+                    technical_data=technical_data,
+                    kelly_params=kelly_params,
+                    atr_params=atr_params,
+                    market_conditions=market_conditions
+                )
+                
+                integrated_position_size = integrated_result['final_position_size']
+                trade_amount_krw = total_balance * integrated_position_size
+                
+            except Exception as e:
+                logger.warning(f"⚠️ {ticker} 통합 포지션 사이징 실패, 기본 켈리 공식 사용: {e}")
+                integrated_position_size = kelly_result['final_position_size']
+                trade_amount_krw = total_balance * integrated_position_size
+            
+            # 최소/최대 금액 제한 적용
+            from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
+            min_amount_with_fee = MIN_KRW_ORDER / (1 + TAKER_FEE_RATE)
+            max_amount = min(200000, total_balance * 0.05)
+            trade_amount_krw = max(min_amount_with_fee, min(trade_amount_krw, max_amount))
+            
+            # 수수료를 포함한 실제 주문 금액
+            actual_order_amount = trade_amount_krw * (1 + TAKER_FEE_RATE)
+            
+            # 시장 상황 기반 추가 검증
+            market_validation = self._validate_market_conditions(ticker, current_price, score, confidence)
+            if not market_validation['valid']:
+                logger.warning(f"⚠️ 시장 조건 검증 실패: {ticker} | 사유: {market_validation['reason']}")
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": current_price,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": trade_amount_krw,
+                    "status": "MARKET_VALIDATION_FAILED",
+                    "error_msg": market_validation['reason']
+                })
+                return
+            
+            logger.info(f"🆕 신규 매수 시도: {ticker} | 점수: {score} | 신뢰도: {confidence:.2f} | 통합포지션: {integrated_position_size:.1%} | 금액: {trade_amount_krw:,.0f}원")
+            
+            # 매수 실행
+            from trade_executor import buy_asset
+            buy_result = buy_asset(
+                upbit_client=self.upbit,
+                ticker=ticker,
+                current_price=current_price,
+                trade_amount_krw=actual_order_amount,
+                gpt_confidence=confidence,
+                gpt_reason=f"신규 매수 - GPT 분석 점수: {score}점, 신뢰도: {confidence:.2f}"
+            )
+            
+            if buy_result.get("status") in ["SUCCESS", "SUCCESS_PARTIAL", "SUCCESS_PARTIAL_NO_AVG", "SUCCESS_NO_AVG_PRICE"]:
+                buy_price = buy_result.get('price', current_price)
+                status_msg = "신규 매수 성공" if buy_result.get("status") == "SUCCESS" else "신규 매수 부분 체결 성공"
+                logger.info(f"💰 {status_msg}: {ticker} | 체결가: {buy_price:.2f} | 금액: {trade_amount_krw:,.0f}원")
+                
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": buy_price,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": trade_amount_krw,
+                    "status": "SUCCESS",
+                    "error_msg": None
+                })
+            else:
+                error_msg = buy_result.get('error', 'Unknown')
+                logger.warning(f"⚠️ 신규 매수 실패: {ticker} | 오류: {error_msg}")
+                
+                error_analysis = self._analyze_buy_error(error_msg, ticker, current_price, trade_amount_krw)
+                
+                trade_logs.append({
+                    "ticker": ticker,
+                    "buy_price": current_price,
+                    "score": score,
+                    "confidence": confidence,
+                    "trade_amount_krw": trade_amount_krw,
+                    "status": "FAILED",
+                    "error_msg": f"{error_msg} | 분석: {error_analysis}"
+                })
+                
+        except Exception as e:
+            logger.error(f"❌ {ticker} 신규 매수 실행 중 오류: {str(e)}")
+            trade_logs.append({
+                "ticker": ticker,
+                "buy_price": 0,
+                "score": score,
+                "confidence": confidence,
+                "trade_amount_krw": 0,
+                "status": "ERROR",
+                "error_msg": str(e)
+            })
 
 def main():
     """메인 실행 함수"""
+    import time
+    
     start_time = time.time()
     
     try:
@@ -4906,7 +4990,7 @@ def main():
         try:
             success = bot.run()
         except Exception as e:
-            logger.error(f"❌ MakenaideBot 실행 중 숈외 발생: {e}")
+            logger.error(f"❌ MakenaideBot 실행 중 오류 발생: {e}")
             import traceback
             logger.error(f"상세 오류: {traceback.format_exc()}")
             return False
