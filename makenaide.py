@@ -901,10 +901,10 @@ class MakenaideBot:
             with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 
-                # trade_log 테이블에 데이터 삽입 (action 컬럼 추가)
+                # trade_log 테이블에 데이터 삽입 (qty 컬럼 추가)
                 insert_query = """
-                INSERT INTO trade_log (ticker, action, buy_price, score, confidence, trade_amount_krw, bought_at, status, error_msg)
-                VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s, %s)
+                INSERT INTO trade_log (ticker, action, buy_price, qty, score, confidence, trade_amount_krw, bought_at, status, error_msg)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
                 """
                 
                 data_to_insert = []
@@ -924,7 +924,12 @@ class MakenaideBot:
                         # action 컬럼 설정 (매수 시도이므로 'BUY'로 설정)
                         action = "BUY"
                         
-                        data_to_insert.append((ticker, action, buy_price, score, confidence, trade_amount_krw, status, error_msg))
+                        # qty 계산 (trade_amount_krw / buy_price)
+                        qty = 0.0
+                        if buy_price > 0:
+                            qty = trade_amount_krw / buy_price
+                        
+                        data_to_insert.append((ticker, action, buy_price, qty, score, confidence, trade_amount_krw, status, error_msg))
                         
                     except Exception as e:
                         logger.warning(f"⚠️ 매수 이력 데이터 변환 오류: {log.get('ticker', 'Unknown')} | {str(e)}")
@@ -1383,6 +1388,42 @@ class MakenaideBot:
                     'trades':'sum','b':'mean','kelly':'mean',
                     'kelly_1_2':'mean','swing_score':'mean'
                 }))
+                
+                # 🔧 [개선] DB 저장 추가
+                try:
+                    from backtester import BacktestDataManager
+                    backtest_manager = BacktestDataManager()
+                    
+                    # 백테스트 결과에 기간 정보 추가
+                    from datetime import datetime, timedelta
+                    period_end = datetime.now().date()
+                    period_start = period_end - timedelta(days=200)  # 200일 기간
+                    
+                    for result in all_results:
+                        result['period_start'] = period_start
+                        result['period_end'] = period_end
+                    
+                    # DB에 결과 저장
+                    if hasattr(backtest_manager, 'save_backtest_results_to_db'):
+                        save_success = backtest_manager.save_backtest_results_to_db(all_results, session_id)
+                        if save_success:
+                            logger.info("✅ 백테스트 결과 DB 저장 완료")
+                            
+                            # 저장된 결과 확인
+                            saved_results = backtest_manager.get_backtest_results_from_db(session_id)
+                            if not saved_results.empty:
+                                logger.info(f"📊 DB 저장 확인: {len(saved_results)}개 전략 결과")
+                            else:
+                                logger.warning("⚠️ DB 저장 확인 실패")
+                        else:
+                            logger.warning("⚠️ 백테스트 결과 DB 저장 실패")
+                    else:
+                        logger.warning("⚠️ save_backtest_results_to_db 메서드가 없습니다")
+                    
+                except Exception as db_error:
+                    logger.warning(f"⚠️ 백테스트 결과 DB 저장 중 오류: {db_error}")
+                
+                # 기존 CSV 저장 유지 (호환성)
                 df_result.to_csv('backtest_spot_results_with_hybrid.csv', index=False, float_format='%.2f')
                 logger.info('결과가 backtest_spot_results_with_hybrid.csv에 저장되었습니다.')
             
@@ -1437,6 +1478,41 @@ class MakenaideBot:
             # 4. 기존 전략 리포트 생성
             logger.info("📄 전략별 성과 리포트 생성")
             generate_strategy_report(period_days=30, output_path='strategy_report.csv', send_email=True)
+            
+            # 🔧 [개선] 백테스트 분석 리포트 생성 추가
+            logger.info("📊 백테스트 분석 리포트 생성")
+            try:
+                if hasattr(backtest_manager, 'generate_backtest_analysis_report'):
+                    # 마크다운 리포트 생성
+                    markdown_report = backtest_manager.generate_backtest_analysis_report(
+                        session_id=session_id, 
+                        output_format="markdown"
+                    )
+                    
+                    if markdown_report and not markdown_report.startswith("⚠️"):
+                        # 리포트 파일 저장
+                        report_filename = f"backtest_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+                        with open(report_filename, 'w', encoding='utf-8') as f:
+                            f.write(markdown_report)
+                        logger.info(f"✅ 백테스트 분석 리포트 생성 완료: {report_filename}")
+                        
+                        # HTML 리포트도 생성
+                        html_report = backtest_manager.generate_backtest_analysis_report(
+                            session_id=session_id, 
+                            output_format="html"
+                        )
+                        if html_report and not html_report.startswith("⚠️"):
+                            html_filename = f"backtest_analysis_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html"
+                            with open(html_filename, 'w', encoding='utf-8') as f:
+                                f.write(html_report)
+                            logger.info(f"✅ HTML 리포트 생성 완료: {html_filename}")
+                    else:
+                        logger.warning("⚠️ 백테스트 분석 리포트 생성 실패 또는 데이터 없음")
+                else:
+                    logger.warning("⚠️ generate_backtest_analysis_report 메서드가 없습니다")
+                    
+            except Exception as report_error:
+                logger.warning(f"⚠️ 백테스트 분석 리포트 생성 중 오류: {report_error}")
             
             # 5. 리포트 기반 자동 튜닝 실행
             logger.info('🔧 전략별 Kelly fraction 자동 튜닝 실행')
@@ -2677,10 +2753,46 @@ class MakenaideBot:
                             # 피라미딩 조건 점검
                             pyramid_result = self._check_pyramiding_for_existing_position(ticker, score, gpt_confidence_map.get(ticker, 0.5))
                             
+                            logger.info(f"🔍 {ticker} 피라미딩 조건 점검 결과: should_pyramid={pyramid_result['should_pyramid']}")
+                            logger.info(f"🔍 {ticker} 사유: {pyramid_result['reason']}")
+                            
                             if pyramid_result['should_pyramid']:
                                 logger.info(f"✅ {ticker} 피라미딩 조건 충족 - 추가 매수 진행")
+                                
+                                # 🔧 [디버깅 강화] 피라미딩 매수 실행 전 상태 로깅
+                                logger.info(f"📊 {ticker} 피라미딩 매수 실행 전 trade_logs 개수: {len(trade_logs)}")
+                                
                                 # 피라미딩 매수 실행
-                                self._execute_pyramiding_buy(ticker, score, gpt_confidence_map.get(ticker, 0.5), trade_logs, total_balance)
+                                try:
+                                    self._execute_pyramiding_buy(ticker, score, gpt_confidence_map.get(ticker, 0.5), trade_logs, total_balance)
+                                    logger.info(f"📊 {ticker} 피라미딩 매수 실행 후 trade_logs 개수: {len(trade_logs)}")
+                                    
+                                    # 실행 결과 확인
+                                    if trade_logs:
+                                        latest_log = trade_logs[-1]
+                                        if latest_log.get('ticker') == ticker:
+                                            logger.info(f"✅ {ticker} 피라미딩 매수 로그 추가됨: {latest_log.get('status')}")
+                                        else:
+                                            logger.warning(f"⚠️ {ticker} 피라미딩 매수 로그 누락")
+                                    else:
+                                        logger.warning(f"⚠️ {ticker} 피라미딩 매수 후 trade_logs가 비어있음")
+                                        
+                                except Exception as pyramid_error:
+                                    logger.error(f"❌ {ticker} 피라미딩 매수 실행 중 예외: {pyramid_error}")
+                                    import traceback
+                                    logger.debug(f"❌ {ticker} 피라미딩 매수 상세 에러: {traceback.format_exc()}")
+                                    
+                                    # 예외 발생 시에도 로그 추가
+                                    trade_logs.append({
+                                        "ticker": ticker,
+                                        "buy_price": 0,
+                                        "score": score,
+                                        "confidence": gpt_confidence_map.get(ticker, 0.5),
+                                        "trade_amount_krw": 0,
+                                        "status": "PYRAMIDING_EXCEPTION",
+                                        "error_msg": str(pyramid_error)
+                                    })
+                                    
                             else:
                                 logger.info(f"⏭️ {ticker} 피라미딩 조건 미충족 - 매수 건너뜀")
                                 logger.info(f"   - 사유: {pyramid_result['reason']}")
@@ -3440,7 +3552,7 @@ class MakenaideBot:
             raise
 
     def _check_pyramiding_conditions(self, portfolio_manager):
-        """보유 종목에 대한 피라미딩 조건 점검 및 실행"""
+        """보유 종목에 대한 피라미딩 조건 점검 및 실행 (안전성 강화)"""
         try:
             # 현재 보유 종목 조회
             current_positions = portfolio_manager.get_current_positions()
@@ -3469,29 +3581,47 @@ class MakenaideBot:
                     # 매수 정보를 portfolio_manager.purchase_info에 등록
                     # (실제 보유 종목이므로 기존 매수 정보로 간주)
                     if ticker not in portfolio_manager.purchase_info:
-                        portfolio_manager.purchase_info[ticker] = {
-                            'price': position.get('avg_price', 0),
-                            'timestamp': position.get('timestamp', ''),
-                            'quantity': position.get('quantity', 0)
-                        }
+                        # 안전한 데이터 추출
+                        avg_price = self._safe_extract_position_data(position, 'avg_price', 'avg_buy_price')
+                        timestamp = self._safe_extract_position_data(position, 'timestamp', 'created_at')
+                        quantity = self._safe_extract_position_data(position, 'quantity', 'balance')
+                        
+                        if avg_price and avg_price > 0:
+                            portfolio_manager.purchase_info[ticker] = {
+                                'price': float(avg_price),
+                                'timestamp': str(timestamp) if timestamp else '',
+                                'quantity': float(quantity) if quantity else 0
+                            }
+                            logging.debug(f"✅ {ticker} 피라미딩 정보 등록: 평균가={avg_price}, 수량={quantity}")
+                        else:
+                            logging.warning(f"⚠️ {ticker} 유효하지 않은 포지션 데이터, 피라미딩 건너뜀")
+                            continue
                     
-                    # 피라미딩 조건 체크
-                    pyramid_executed = portfolio_manager.check_pyramiding(ticker)
+                    # 피라미딩 조건 체크 (안전성 강화)
+                    pyramid_executed = self._safe_check_pyramiding(portfolio_manager, ticker)
                     
-                    if pyramid_executed:
+                    if pyramid_executed is True:
                         pyramiding_results.append({
                             'ticker': ticker,
                             'status': 'executed',
                             'message': f'{ticker} 피라미딩 매수 실행됨'
                         })
                         logging.info(f"✅ {ticker} 피라미딩 매수 실행 완료")
-                    else:
+                    elif pyramid_executed is False:
                         pyramiding_results.append({
                             'ticker': ticker,
                             'status': 'no_action',
                             'message': f'{ticker} 피라미딩 조건 미충족'
                         })
                         logging.debug(f"📊 {ticker} 피라미딩 조건 미충족")
+                    else:
+                        # None 반환 시 (에러 상황)
+                        pyramiding_results.append({
+                            'ticker': ticker,
+                            'status': 'error',
+                            'message': f'{ticker} 피라미딩 체크 중 내부 오류'
+                        })
+                        logging.warning(f"⚠️ {ticker} 피라미딩 체크 결과 None 반환")
                         
                 except Exception as e:
                     pyramiding_results.append({
@@ -3500,6 +3630,9 @@ class MakenaideBot:
                         'message': f'{ticker} 피라미딩 체크 중 오류: {str(e)}'
                     })
                     logging.error(f"❌ {ticker} 피라미딩 체크 중 오류: {e}")
+                    # 상세 에러 정보 로깅
+                    import traceback
+                    logging.debug(f"❌ {ticker} 피라미딩 에러 상세: {traceback.format_exc()}")
             
             # 피라미딩 결과 요약
             executed_count = sum(1 for r in pyramiding_results if r['status'] == 'executed')
@@ -3516,8 +3649,56 @@ class MakenaideBot:
                 executed_tickers = [r['ticker'] for r in pyramiding_results if r['status'] == 'executed']
                 logging.info(f"🔼 피라미딩 실행 종목: {', '.join(executed_tickers)}")
             
+            # 에러가 있으면 상세 로그 출력
+            if error_count > 0:
+                error_details = [f"{r['ticker']}: {r['message']}" for r in pyramiding_results if r['status'] == 'error']
+                logging.warning(f"⚠️ 피라미딩 에러 상세: {'; '.join(error_details)}")
+            
         except Exception as e:
             logging.error(f"❌ 피라미딩 조건 점검 중 전체 오류: {e}")
+            # 상세 에러 정보 로깅
+            import traceback
+            logging.debug(f"❌ 피라미딩 조건 점검 에러 상세: {traceback.format_exc()}")
+            
+    def _safe_extract_position_data(self, position: dict, primary_key: str, fallback_key: str = None):
+        """포지션 데이터에서 안전하게 값 추출"""
+        try:
+            # 1차 키로 조회
+            value = position.get(primary_key)
+            if value is not None and value != 0:
+                return value
+                
+            # 2차 키로 조회 (fallback)
+            if fallback_key:
+                value = position.get(fallback_key)
+                if value is not None and value != 0:
+                    return value
+                    
+            return None
+            
+        except Exception as e:
+            logging.warning(f"⚠️ 포지션 데이터 추출 실패: {e}")
+            return None
+            
+    def _safe_check_pyramiding(self, portfolio_manager, ticker: str):
+        """안전한 피라미딩 조건 체크"""
+        try:
+            # 피라미딩 조건 체크 시도
+            result = portfolio_manager.check_pyramiding(ticker)
+            
+            # 결과 유효성 검증
+            if result is None:
+                logging.warning(f"⚠️ {ticker} 피라미딩 체크 결과가 None")
+                return None
+            elif isinstance(result, bool):
+                return result
+            else:
+                logging.warning(f"⚠️ {ticker} 피라미딩 체크 예상치 못한 결과 타입: {type(result)}")
+                return None
+                
+        except Exception as e:
+            logging.error(f"❌ {ticker} 안전한 피라미딩 체크 실패: {e}")
+            return None
 
     def _initialize_system(self):
         """시스템 초기화 단계"""
@@ -3551,7 +3732,7 @@ class MakenaideBot:
             
             if not filtered_tickers or market_df is None or market_df.empty:
                 logger.warning("⚠️ 시장 데이터 전처리에 실패했습니다.")
-                return None
+            return None
                 
             logger.info(f"✅ 시장 데이터 업데이트 완료 ({len(filtered_tickers)}개 티커, 소요시간: {time.time() - step_start:.2f}초)")
             
@@ -3563,7 +3744,7 @@ class MakenaideBot:
         except Exception as e:
             logger.error(f"❌ 시장 데이터 업데이트 중 오류: {e}")
             return None
-
+            
     def _execute_trading_pipeline(self, market_data):
         """트레이딩 파이프라인 실행"""
         try:
@@ -4161,12 +4342,12 @@ class MakenaideBot:
                     }
                 else:
                     logger.warning(f"⚠️ {ticker} static_indicators 데이터 없음")
-                    return None
-                    
+                return None
+                
         except Exception as e:
             logger.error(f"❌ {ticker} 시장 데이터 조회 실패: {str(e)}")
             return None
-    
+
     def _get_default_kelly_result(self, total_balance: float) -> dict:
         """기본 켈리 계산 결과 (오류 시 사용)"""
         from utils import MIN_KRW_ORDER, TAKER_FEE_RATE
@@ -4459,28 +4640,58 @@ class MakenaideBot:
             dict: 피라미딩 조건 점검 결과
         """
         try:
-            # 포트폴리오 매니저의 피라미딩 조건 점검
-            pyramid_executed = self.pm.check_pyramiding(ticker)
-            
-            if pyramid_executed:
+            # 현재가 조회 먼저 수행
+            current_price = get_current_price_safe(ticker)
+            if not current_price:
                 return {
-                    'should_pyramid': True,
-                    'reason': '피라미딩 조건 충족 - 추가 매수 실행됨',
-                    'type': 'pyramiding_executed'
+                    'should_pyramid': False,
+                    'reason': '현재가 조회 실패',
+                    'type': 'price_fetch_failed'
                 }
-            else:
-                # 피라미딩 조건이 충족되지 않은 경우 상세 분석
-                current_price = get_current_price_safe(ticker)
-                if not current_price:
+            
+            # 🔧 [핵심 수정] 상세 분석을 먼저 수행하여 실제 조건 확인
+            pyramid_analysis = self._analyze_pyramiding_conditions(ticker, current_price, score, confidence)
+            
+            # 분석 결과에서 충족된 조건 개수 확인
+            met_conditions_count = pyramid_analysis.get('met_conditions', 0)
+            total_conditions = pyramid_analysis.get('total_conditions', 4)
+            
+            # 🔧 [핵심 수정] 조건 충족 판단을 reason 텍스트로도 확인
+            reason_text = pyramid_analysis.get('reason', '')
+            conditions_met_by_reason = "피라미딩 조건 충족:" in reason_text
+            
+            # 🔧 [수정] 최소 2개 조건 충족 시 피라미딩 실행 결정
+            should_pyramid_by_analysis = met_conditions_count >= 2 or conditions_met_by_reason
+            
+            logger.info(f"🔍 {ticker} 조건 분석 상세: 충족={met_conditions_count}, 전체={total_conditions}, reason_check={conditions_met_by_reason}, 실행결정={should_pyramid_by_analysis}")
+            logger.info(f"🔍 {ticker} 분석 사유: {pyramid_analysis.get('reason', 'Unknown')}")
+            
+            if should_pyramid_by_analysis:
+                # 조건이 충족되었으면 포트폴리오 매니저를 통해 실제 실행
+                logger.info(f"✅ {ticker} 피라미딩 조건 분석 결과: 조건 충족 확인됨")
+                
+                # 🔧 [수정] 실제 피라미딩 매수 실행 시도 - 자동 실행 먼저 시도
+                pyramid_executed = self.pm.check_pyramiding(ticker)
+                
+                if pyramid_executed:
                     return {
-                        'should_pyramid': False,
-                        'reason': '현재가 조회 실패',
-                        'type': 'price_fetch_failed'
+                        'should_pyramid': True,
+                        'reason': f'피라미딩 조건 충족 및 자동 실행 완료: {pyramid_analysis["reason"]}',
+                        'type': 'pyramiding_executed',
+                        'details': pyramid_analysis
                     }
-                
-                # 피라미딩 조건 상세 분석
-                pyramid_analysis = self._analyze_pyramiding_conditions(ticker, current_price, score, confidence)
-                
+                else:
+                    # 🔧 [핵심 수정] 자동 실행 실패 시에도 조건은 충족되었으므로 수동 실행 진행
+                    logger.warning(f"⚠️ {ticker} 피라미딩 자동 실행 실패, 하지만 조건 충족으로 수동 실행 진행")
+                    return {
+                        'should_pyramid': True,
+                        'reason': f'피라미딩 조건 충족 (수동 실행): {pyramid_analysis["reason"]}',
+                        'type': 'manual_execution_needed',
+                        'details': pyramid_analysis
+                    }
+            else:
+                # 조건 미충족
+                logger.debug(f"📊 {ticker} 피라미딩 조건 미충족: {met_conditions_count}/{total_conditions}개 조건만 충족")
                 return {
                     'should_pyramid': False,
                     'reason': pyramid_analysis['reason'],
@@ -4579,7 +4790,9 @@ class MakenaideBot:
             logger.error(f"❌ {ticker} 피라미딩 조건 분석 중 오류: {e}")
             return {
                 'reason': f'피라미딩 조건 분석 실패: {str(e)}',
-                'conditions_checked': []
+                'conditions_checked': [],
+                'met_conditions': 0,
+                'total_conditions': 4
             }
 
     def _check_resistance_breakout(self, ticker: str, current_price: float) -> dict:

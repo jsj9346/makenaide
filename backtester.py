@@ -292,6 +292,493 @@ class BacktestDataManager:
         except Exception as e:
             logger.error(f"❌ 활성 세션 조회 실패: {e}")
             return []
+    
+    def save_backtest_results_to_db(self, results: List[Dict], session_id: str) -> bool:
+        """
+        백테스트 결과를 DB에 저장
+        
+        Args:
+            results: 백테스트 결과 리스트
+            session_id: 백테스트 세션 ID
+            
+        Returns:
+            bool: 저장 성공 여부
+        """
+        try:
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                for result in results:
+                    # 메인 결과 저장
+                    cursor.execute("""
+                        INSERT INTO backtest_results (
+                            session_id, strategy_name, combo_name, period_start, period_end,
+                            win_rate, avg_return, mdd, total_trades, winning_trades, losing_trades,
+                            kelly_fraction, kelly_1_2, b_value, swing_score, sharpe_ratio,
+                            sortino_ratio, profit_factor, parameters
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (
+                        session_id,
+                        result.get('strategy_name', result.get('combo', 'Unknown')),
+                        result.get('combo', 'Unknown'),
+                        result.get('period_start'),
+                        result.get('period_end'),
+                        result.get('win_rate', 0.0),
+                        result.get('avg_return', 0.0),
+                        result.get('mdd', 0.0),
+                        result.get('trades', 0),
+                        result.get('winning_trades', 0),
+                        result.get('losing_trades', 0),
+                        result.get('kelly', 0.0),
+                        result.get('kelly_1_2', 0.0),
+                        result.get('b', 0.0),
+                        result.get('swing_score', 0.0),
+                        result.get('sharpe_ratio', 0.0),
+                        result.get('sortino_ratio', 0.0),
+                        result.get('profit_factor', 0.0),
+                        json.dumps(result.get('parameters', {}))
+                    ))
+                    
+                    result_id = cursor.fetchone()[0]
+                    
+                    # 개별 거래 기록 저장 (있는 경우)
+                    trades = result.get('trade_details', [])
+                    for trade in trades:
+                        cursor.execute("""
+                            INSERT INTO backtest_trades (
+                                result_id, ticker, entry_date, exit_date, entry_price,
+                                exit_price, quantity, pnl, return_pct, hold_days, strategy_signal
+                            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """, (
+                            result_id,
+                            trade.get('ticker'),
+                            trade.get('entry_date'),
+                            trade.get('exit_date'),
+                            trade.get('entry_price'),
+                            trade.get('exit_price'),
+                            trade.get('quantity'),
+                            trade.get('pnl'),
+                            trade.get('return_pct'),
+                            trade.get('hold_days'),
+                            trade.get('signal')
+                        ))
+                
+                conn.commit()
+                logger.info(f"✅ 백테스트 결과 DB 저장 완료: {len(results)}개 전략")
+                return True
+                
+        except Exception as e:
+            logger.error(f"❌ 백테스트 결과 DB 저장 실패: {e}")
+            return False
+    
+    def get_backtest_results_from_db(self, session_id: str = None, strategy_name: str = None, 
+                                    limit_days: int = None) -> pd.DataFrame:
+        """
+        DB에서 백테스트 결과 조회
+        
+        Args:
+            session_id: 세션 ID (None이면 최근 세션)
+            strategy_name: 전략명 필터
+            limit_days: 최근 N일 결과만
+            
+        Returns:
+            pd.DataFrame: 백테스트 결과
+        """
+        try:
+            query = """
+                SELECT 
+                    br.*, bs.name as session_name, bs.period_start, bs.period_end
+                FROM backtest_results br
+                JOIN backtest_sessions bs ON br.session_id = bs.session_id
+                WHERE 1=1
+            """
+            params = []
+            
+            if session_id:
+                query += " AND br.session_id = %s"
+                params.append(session_id)
+            else:
+                # 최근 세션 사용
+                query += " AND br.session_id = (SELECT session_id FROM backtest_sessions ORDER BY created_at DESC LIMIT 1)"
+            
+            if strategy_name:
+                query += " AND br.strategy_name = %s"
+                params.append(strategy_name)
+                
+            if limit_days:
+                query += " AND br.created_at >= NOW() - INTERVAL '%s days'"
+                params.append(limit_days)
+                
+            query += " ORDER BY br.created_at DESC"
+            
+            df = pd.read_sql_query(query, self.db_manager.get_connection(), params=params)
+            
+            if not df.empty:
+                logger.info(f"✅ 백테스트 결과 조회: {len(df)}개 레코드")
+            else:
+                logger.warning("⚠️ 백테스트 결과가 없습니다")
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ 백테스트 결과 조회 실패: {e}")
+            return pd.DataFrame()
+    
+    def get_backtest_trades_from_db(self, result_id: int) -> pd.DataFrame:
+        """
+        특정 백테스트 결과의 개별 거래 기록 조회
+        
+        Args:
+            result_id: 백테스트 결과 ID
+            
+        Returns:
+            pd.DataFrame: 거래 기록
+        """
+        try:
+            query = """
+                SELECT * FROM backtest_trades 
+                WHERE result_id = %s
+                ORDER BY entry_date
+            """
+            
+            df = pd.read_sql_query(query, self.db_manager.get_connection(), params=[result_id])
+            
+            if not df.empty:
+                logger.info(f"✅ 백테스트 거래 기록 조회: {len(df)}개 거래")
+            else:
+                logger.warning("⚠️ 백테스트 거래 기록이 없습니다")
+                
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ 백테스트 거래 기록 조회 실패: {e}")
+            return pd.DataFrame()
+    
+    def generate_backtest_analysis_report(self, session_id: str = None, output_format: str = "markdown") -> str:
+        """
+        백테스트 결과 분석 리포트 생성
+        
+        Args:
+            session_id: 세션 ID (None이면 최근 세션)
+            output_format: 출력 형식 ("markdown", "html", "json")
+            
+        Returns:
+            str: 생성된 리포트
+        """
+        try:
+            # 백테스트 결과 조회
+            results_df = self.get_backtest_results_from_db(session_id)
+            
+            if results_df.empty:
+                return "⚠️ 분석할 백테스트 결과가 없습니다."
+            
+            # 기본 통계 계산
+            total_strategies = len(results_df)
+            avg_win_rate = results_df['win_rate'].mean()
+            avg_return = results_df['avg_return'].mean()
+            avg_mdd = results_df['mdd'].mean()
+            best_strategy = results_df.loc[results_df['avg_return'].idxmax()]
+            worst_strategy = results_df.loc[results_df['avg_return'].idxmin()]
+            
+            # 성과 순위
+            top_strategies = results_df.nlargest(3, 'avg_return')
+            worst_strategies = results_df.nsmallest(3, 'avg_return')
+            
+            # 리스크 대비 수익률 계산
+            results_df['risk_adjusted_return'] = results_df['avg_return'] / results_df['mdd']
+            
+            if output_format == "markdown":
+                report = self._generate_markdown_report(
+                    results_df, total_strategies, avg_win_rate, avg_return, avg_mdd,
+                    best_strategy, worst_strategy, top_strategies, worst_strategies
+                )
+            elif output_format == "html":
+                report = self._generate_html_report(
+                    results_df, total_strategies, avg_win_rate, avg_return, avg_mdd,
+                    best_strategy, worst_strategy, top_strategies, worst_strategies
+                )
+            elif output_format == "json":
+                report = self._generate_json_report(
+                    results_df, total_strategies, avg_win_rate, avg_return, avg_mdd,
+                    best_strategy, worst_strategy, top_strategies, worst_strategies
+                )
+            else:
+                report = self._generate_markdown_report(
+                    results_df, total_strategies, avg_win_rate, avg_return, avg_mdd,
+                    best_strategy, worst_strategy, top_strategies, worst_strategies
+                )
+            
+            logger.info(f"✅ 백테스트 분석 리포트 생성 완료: {output_format} 형식")
+            return report
+            
+        except Exception as e:
+            logger.error(f"❌ 백테스트 분석 리포트 생성 실패: {e}")
+            return f"❌ 리포트 생성 중 오류 발생: {e}"
+    
+    def _generate_markdown_report(self, results_df, total_strategies, avg_win_rate, avg_return, 
+                                 avg_mdd, best_strategy, worst_strategy, top_strategies, worst_strategies):
+        """마크다운 형식 리포트 생성"""
+        
+        report = f"""# 📊 백테스트 결과 분석 리포트
+
+## 📈 전체 성과 요약
+
+- **총 전략 수**: {total_strategies}개
+- **평균 승률**: {avg_win_rate:.2%}
+- **평균 수익률**: {avg_return:.2%}
+- **평균 최대 낙폭**: {avg_mdd:.2%}
+
+## 🏆 최고 성과 전략
+
+**전략명**: {best_strategy['strategy_name']}
+- **수익률**: {best_strategy['avg_return']:.2%}
+- **승률**: {best_strategy['win_rate']:.2%}
+- **최대 낙폭**: {best_strategy['mdd']:.2%}
+- **총 거래 수**: {best_strategy['total_trades']}회
+
+## 📉 최저 성과 전략
+
+**전략명**: {worst_strategy['strategy_name']}
+- **수익률**: {worst_strategy['avg_return']:.2%}
+- **승률**: {worst_strategy['win_rate']:.2%}
+- **최대 낙폭**: {worst_strategy['mdd']:.2%}
+- **총 거래 수**: {worst_strategy['total_trades']}회
+
+## 🥇 Top 3 전략
+
+"""
+        
+        for i, (_, strategy) in enumerate(top_strategies.iterrows(), 1):
+            report += f"""### {i}위: {strategy['strategy_name']}
+- **수익률**: {strategy['avg_return']:.2%}
+- **승률**: {strategy['win_rate']:.2%}
+- **최대 낙폭**: {strategy['mdd']:.2%}
+- **총 거래 수**: {strategy['total_trades']}회
+
+"""
+        
+        report += """## 📊 상세 전략별 성과
+
+| 전략명 | 수익률 | 승률 | 최대낙폭 | 거래수 | 켈리비율 | 스윙점수 |
+|--------|--------|------|----------|--------|----------|----------|
+"""
+        
+        for _, strategy in results_df.iterrows():
+            report += f"| {strategy['strategy_name']} | {strategy['avg_return']:.2%} | {strategy['win_rate']:.2%} | {strategy['mdd']:.2%} | {strategy['total_trades']} | {strategy['kelly_fraction']:.3f} | {strategy['swing_score']:.1f} |\n"
+        
+        report += f"""
+
+## 📅 리포트 생성일
+
+{datetime.now().strftime('%Y년 %m월 %d일 %H:%M:%S')}
+
+---
+*이 리포트는 자동으로 생성되었습니다.*
+"""
+        
+        return report
+    
+    def _generate_html_report(self, results_df, total_strategies, avg_win_rate, avg_return, 
+                             avg_mdd, best_strategy, worst_strategy, top_strategies, worst_strategies):
+        """HTML 형식 리포트 생성"""
+        
+        html = f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>백테스트 결과 분석 리포트</title>
+    <style>
+        body {{ font-family: Arial, sans-serif; margin: 20px; }}
+        .header {{ background-color: #f0f0f0; padding: 20px; border-radius: 5px; }}
+        .summary {{ display: flex; justify-content: space-around; margin: 20px 0; }}
+        .metric {{ text-align: center; padding: 10px; background-color: #e8f4f8; border-radius: 5px; }}
+        .strategy-table {{ width: 100%; border-collapse: collapse; margin: 20px 0; }}
+        .strategy-table th, .strategy-table td {{ border: 1px solid #ddd; padding: 8px; text-align: left; }}
+        .strategy-table th {{ background-color: #f2f2f2; }}
+        .positive {{ color: green; }}
+        .negative {{ color: red; }}
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>📊 백테스트 결과 분석 리포트</h1>
+        <p>생성일: {datetime.now().strftime('%Y년 %m월 %d일 %H:%M:%S')}</p>
+    </div>
+    
+    <div class="summary">
+        <div class="metric">
+            <h3>총 전략 수</h3>
+            <p>{total_strategies}개</p>
+        </div>
+        <div class="metric">
+            <h3>평균 승률</h3>
+            <p>{avg_win_rate:.2%}</p>
+        </div>
+        <div class="metric">
+            <h3>평균 수익률</h3>
+            <p class="{'positive' if avg_return > 0 else 'negative'}">{avg_return:.2%}</p>
+        </div>
+        <div class="metric">
+            <h3>평균 최대 낙폭</h3>
+            <p class="negative">{avg_mdd:.2%}</p>
+        </div>
+    </div>
+    
+    <h2>📊 상세 전략별 성과</h2>
+    <table class="strategy-table">
+        <thead>
+            <tr>
+                <th>전략명</th>
+                <th>수익률</th>
+                <th>승률</th>
+                <th>최대낙폭</th>
+                <th>거래수</th>
+                <th>켈리비율</th>
+                <th>스윙점수</th>
+            </tr>
+        </thead>
+        <tbody>
+"""
+        
+        for _, strategy in results_df.iterrows():
+            return_class = "positive" if strategy['avg_return'] > 0 else "negative"
+            html += f"""
+            <tr>
+                <td>{strategy['strategy_name']}</td>
+                <td class="{return_class}">{strategy['avg_return']:.2%}</td>
+                <td>{strategy['win_rate']:.2%}</td>
+                <td class="negative">{strategy['mdd']:.2%}</td>
+                <td>{strategy['total_trades']}</td>
+                <td>{strategy['kelly_fraction']:.3f}</td>
+                <td>{strategy['swing_score']:.1f}</td>
+            </tr>
+"""
+        
+        html += """
+        </tbody>
+    </table>
+</body>
+</html>
+"""
+        
+        return html
+    
+    def _generate_json_report(self, results_df, total_strategies, avg_win_rate, avg_return, 
+                             avg_mdd, best_strategy, worst_strategy, top_strategies, worst_strategies):
+        """JSON 형식 리포트 생성"""
+        
+        report_data = {
+            "report_info": {
+                "title": "백테스트 결과 분석 리포트",
+                "generated_at": datetime.now().isoformat(),
+                "total_strategies": total_strategies
+            },
+            "summary": {
+                "average_win_rate": float(avg_win_rate),
+                "average_return": float(avg_return),
+                "average_mdd": float(avg_mdd)
+            },
+            "best_strategy": {
+                "name": best_strategy['strategy_name'],
+                "return": float(best_strategy['avg_return']),
+                "win_rate": float(best_strategy['win_rate']),
+                "mdd": float(best_strategy['mdd']),
+                "total_trades": int(best_strategy['total_trades'])
+            },
+            "worst_strategy": {
+                "name": worst_strategy['strategy_name'],
+                "return": float(worst_strategy['avg_return']),
+                "win_rate": float(worst_strategy['win_rate']),
+                "mdd": float(worst_strategy['mdd']),
+                "total_trades": int(worst_strategy['total_trades'])
+            },
+            "top_strategies": [],
+            "all_strategies": []
+        }
+        
+        # Top 3 전략
+        for _, strategy in top_strategies.iterrows():
+            report_data["top_strategies"].append({
+                "name": strategy['strategy_name'],
+                "return": float(strategy['avg_return']),
+                "win_rate": float(strategy['win_rate']),
+                "mdd": float(strategy['mdd']),
+                "total_trades": int(strategy['total_trades'])
+            })
+        
+        # 모든 전략
+        for _, strategy in results_df.iterrows():
+            report_data["all_strategies"].append({
+                "name": strategy['strategy_name'],
+                "return": float(strategy['avg_return']),
+                "win_rate": float(strategy['win_rate']),
+                "mdd": float(strategy['mdd']),
+                "total_trades": int(strategy['total_trades']),
+                "kelly_fraction": float(strategy['kelly_fraction']),
+                "swing_score": float(strategy['swing_score'])
+            })
+        
+        return json.dumps(report_data, indent=2, ensure_ascii=False)
+    
+    def cleanup_old_backtest_results(self, days_to_keep: int = 30) -> Dict[str, int]:
+        """
+        오래된 백테스트 결과 정리
+        
+        Args:
+            days_to_keep: 보관할 일수 (기본: 30일)
+            
+        Returns:
+            Dict: 정리 결과 통계
+        """
+        try:
+            cleanup_stats = {
+                'deleted_results': 0,
+                'deleted_trades': 0,
+                'deleted_sessions': 0
+            }
+            cutoff_date = datetime.now() - timedelta(days=days_to_keep)
+            
+            with self.db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 1. 오래된 백테스트 결과의 거래 기록 먼저 삭제
+                cursor.execute("""
+                    DELETE FROM backtest_trades bt
+                    USING backtest_results br
+                    WHERE bt.result_id = br.id
+                    AND br.created_at < %s
+                """, (cutoff_date,))
+                cleanup_stats['deleted_trades'] = cursor.rowcount
+                
+                # 2. 오래된 백테스트 결과 삭제
+                cursor.execute("""
+                    DELETE FROM backtest_results 
+                    WHERE created_at < %s
+                """, (cutoff_date,))
+                cleanup_stats['deleted_results'] = cursor.rowcount
+                
+                # 3. 결과가 없는 오래된 세션 삭제
+                cursor.execute("""
+                    DELETE FROM backtest_sessions 
+                    WHERE created_at < %s
+                    AND NOT EXISTS (
+                        SELECT 1 FROM backtest_results br
+                        WHERE br.session_id = backtest_sessions.session_id
+                    )
+                """, (cutoff_date,))
+                cleanup_stats['deleted_sessions'] = cursor.rowcount
+                
+                logger.info(f"✅ 백테스트 결과 정리 완료")
+                logger.info(f"   - 삭제된 결과: {cleanup_stats['deleted_results']}개")
+                logger.info(f"   - 삭제된 거래 기록: {cleanup_stats['deleted_trades']}개")
+                logger.info(f"   - 삭제된 세션: {cleanup_stats['deleted_sessions']}개")
+                
+            return cleanup_stats
+            
+        except Exception as e:
+            logger.error(f"❌ 백테스트 결과 정리 실패: {e}")
+            return {'error': str(e)}
 
 # 1. 스윗스팟 후보 조건 조합 정의 (예시)
 SPOT_COMBOS = [

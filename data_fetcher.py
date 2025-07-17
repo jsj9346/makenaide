@@ -2,7 +2,7 @@ import psycopg2
 import pyupbit
 import pandas as pd
 import pandas_ta as ta
-import talib
+# import talib  # TA-Lib 대신 pandas-ta 사용
 import matplotlib
 matplotlib.use('Agg')  # 비대화형 백엔드 설정
 import matplotlib.pyplot as plt
@@ -799,10 +799,10 @@ def calculate_static_indicators(df, ticker="Unknown"):
             logger.warning(f"   ❌ {ticker} supertrend_signal 계산 실패: {e}")
             df['supertrend_signal'] = _calculate_simple_trend_signal(df)
         
-        # HT Trendline (talib 사용)
-        if len(df) >= 63:  # HT_TRENDLINE 최소 요구사항
+        # HT Trendline (pandas-ta EMA로 대체 - 추세선 역할)
+        if len(df) >= 21:  # EMA(21) 최소 요구사항
             df['ht_trendline'] = safe_calculate_indicator(
-                lambda: talib.HT_TRENDLINE(df['close'].values),
+                lambda: ta.ema(df['close'], length=21),  # HT_TRENDLINE 대신 EMA(21) 사용
                 indicator_name="ht_trendline"
             )
         else:
@@ -927,19 +927,17 @@ def calculate_static_indicators(df, ticker="Unknown"):
         # 🔧 [NEW] 동일값 문제 해결을 위한 개별화 적용
         logger.debug(f"🔧 {ticker} Enhanced Individualization 적용 시작")
         
-        # 문제가 되는 지표들에 개별화 적용
+        # 🔧 [핵심 수정] 문제가 되는 지표들의 개별화 적용 완전 비활성화
         problematic_indicators = ['volume_change_7_30', 'nvt_relative', 'adx', 'supertrend_signal']
         
         for indicator in problematic_indicators:
             if indicator in df.columns:
                 latest_value = df[indicator].iloc[-1]
                 if pd.notna(latest_value):
-                    # 개별화 적용
-                    individualized_value = individualization_system.apply_enhanced_individualization(
-                        latest_value, indicator, individualization_factors, ticker
-                    )
-                    df.loc[df.index[-1], indicator] = individualized_value
-                    logger.debug(f"🔧 {ticker} {indicator}: {latest_value:.6f} → {individualized_value:.6f}")
+                    # 🔧 [수정] 개별화 완전 제거 - 실제 계산값 그대로 사용
+                    logger.debug(f"✅ {ticker} {indicator}: 실제 계산값 사용 - {latest_value:.6f}")
+                else:
+                    logger.warning(f"⚠️ {ticker} {indicator}: 계산값이 NaN")
         
         # ===== 8.5단계: 동일값 방지 시스템 강화 =====
         logger.info(f"🔧 {ticker} 동일값 방지 시스템 적용")
@@ -1595,8 +1593,8 @@ def calculate_technical_indicators(df):
         # Volume Ratio (현재 거래량 / 20일 평균 거래량)
         df['volume_ratio'] = df['volume'] / df['volume'].rolling(window=20).mean()
 
-        # HT Trendline (스몰캡 지원: 적응형 소수점 처리 적용)
-        df['ht_trendline'] = talib.HT_TRENDLINE(df['close'])
+        # HT Trendline (pandas-ta EMA로 대체 - 추세선 역할)
+        df['ht_trendline'] = ta.ema(df['close'], length=21)
 
         # Additional indicators
         df['high_60'] = df['high'].rolling(window=60).max()
@@ -3145,13 +3143,12 @@ def calculate_unified_indicators(df, ticker="Unknown"):
                 except Exception as e:
                     logger.warning(f"  ❌ 피보나치 레벨 계산 실패: {e}")
         
-        # Hilbert Transform Trendline (복잡한 계산)
-        if data_length >= 30 and 'ht_trendline' in available_columns:
+        # Hilbert Transform Trendline (pandas-ta EMA로 대체)
+        if data_length >= 21 and 'ht_trendline' in available_columns:
             try:
-                import talib
-                df_result['ht_trendline'] = talib.HT_TRENDLINE(df_result['close'])
+                df_result['ht_trendline'] = ta.ema(df_result['close'], length=21)
                 ht_valid = (~df_result['ht_trendline'].isnull()).sum()
-                logger.info(f"  ✅ HT Trendline: {ht_valid}개 유효값")
+                logger.info(f"  ✅ HT Trendline (EMA21): {ht_valid}개 유효값")
                 calculated_indicators.append('ht_trendline')
             except Exception as e:
                 logger.warning(f"  ❌ HT Trendline 계산 실패: {e}")
@@ -4734,4 +4731,81 @@ def generate_gpt_analysis_json_conditional(ticker: str, days: int = 200, db_mana
     
     # 기존 JSON 생성 로직 실행
     return generate_gpt_analysis_json(ticker, days)
+
+def _calculate_enhanced_adx(df, ticker):
+    """ADX 계산 실패 시 대체 계산 (실제 변동성 기반)"""
+    try:
+        if len(df) < 14:
+            return pd.Series([25.0] * len(df), index=df.index)
+        
+        # True Range 계산
+        high_low = df['high'] - df['low']
+        high_close_prev = abs(df['high'] - df['close'].shift(1))
+        low_close_prev = abs(df['low'] - df['close'].shift(1))
+        
+        true_range = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+        
+        # ATR 계산
+        atr = true_range.rolling(window=14, min_periods=1).mean()
+        
+        # 가격 변동률 기반 ADX 근사치 계산
+        price_change = abs(df['close'].pct_change())
+        normalized_change = price_change / (atr / df['close'])
+        
+        # ADX 범위로 스케일링 (0-100)
+        adx_proxy = normalized_change.rolling(window=14, min_periods=1).mean() * 100
+        adx_proxy = adx_proxy.clip(lower=0, upper=100)
+        
+        # 실제 변동성에 기반한 값 보장
+        adx_proxy = adx_proxy.fillna(25.0)
+        
+        logger.debug(f"✅ {ticker} 대체 ADX 계산 완료: 평균={adx_proxy.mean():.1f}")
+        return adx_proxy
+        
+    except Exception as e:
+        logger.warning(f"⚠️ {ticker} 대체 ADX 계산 실패: {e}")
+        return pd.Series([25.0] * len(df), index=df.index)
+
+def _calculate_simple_trend_signal(df):
+    """간단한 추세 신호 계산 (supertrend 대체)"""
+    try:
+        if len(df) < 20:
+            return 'neutral'
+        
+        # 현재가와 20일 이동평균 비교
+        ma20 = df['close'].rolling(window=20, min_periods=10).mean()
+        current_price = df['close'].iloc[-1]
+        current_ma20 = ma20.iloc[-1]
+        
+        if pd.notna(current_ma20) and current_price > current_ma20:
+            # 추가 조건: 최근 3일 상승 추세 확인
+            recent_trend = df['close'].iloc[-3:].is_monotonic_increasing
+            return 'bull' if recent_trend else 'neutral'
+        elif pd.notna(current_ma20) and current_price < current_ma20:
+            # 추가 조건: 최근 3일 하락 추세 확인
+            recent_trend = df['close'].iloc[-3:].is_monotonic_decreasing
+            return 'bear' if recent_trend else 'neutral'
+        else:
+            return 'neutral'
+            
+    except Exception as e:
+        logger.warning(f"⚠️ 간단한 추세 신호 계산 실패: {e}")
+        return 'neutral'
+
+def convert_supertrend_to_signal(close_price, supertrend_value):
+    """Supertrend 값을 신호로 변환"""
+    try:
+        if pd.isna(close_price) or pd.isna(supertrend_value):
+            return None
+        
+        # 가격이 Supertrend 위에 있으면 bull, 아래면 bear
+        if close_price > supertrend_value:
+            return 'bull'
+        elif close_price < supertrend_value:
+            return 'bear'
+        else:
+            return 'neutral'
+    except Exception as e:
+        logger.warning(f"⚠️ Supertrend 신호 변환 실패: {e}")
+        return 'neutral'
 

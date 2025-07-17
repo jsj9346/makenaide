@@ -409,8 +409,8 @@ class DBManager:
             logger.error(f"❌ DB 연결 풀 종료 중 오류: {e}")
 
     def save_trade_record(self, ticker: str, order_type: str, quantity: float, price: float, 
-                          order_id: str | None, status: str, error_message: str | None = None,
-                          gpt_confidence: float | None = None, gpt_summary: str | None = None):
+                          order_id: Union[str, None], status: str, error_message: Union[str, None] = None,
+                          gpt_confidence: Union[float, None] = None, gpt_summary: Union[str, None] = None):
         """
         거래 기록과 함께 GPT 분석 결과를 DB에 저장합니다.
         'trade_history' 테이블에 gpt_confidence, gpt_summary 컬럼이 추가되어 있어야 합니다.

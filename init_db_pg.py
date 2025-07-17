@@ -70,6 +70,56 @@ def create_backtest_tables():
         )
         """,
         
+        # 백테스트 결과 저장 테이블
+        """
+        CREATE TABLE IF NOT EXISTS backtest_results (
+            id SERIAL PRIMARY KEY,
+            session_id UUID REFERENCES backtest_sessions(session_id),
+            strategy_name VARCHAR(100) NOT NULL,
+            combo_name VARCHAR(100),
+            period_start DATE,
+            period_end DATE,
+            -- 성과 지표
+            win_rate DECIMAL(5,4),
+            avg_return DECIMAL(10,6),
+            mdd DECIMAL(5,4),  -- Max Drawdown
+            total_trades INTEGER,
+            winning_trades INTEGER,
+            losing_trades INTEGER,
+            -- 켈리 공식 관련
+            kelly_fraction DECIMAL(5,4),
+            kelly_1_2 DECIMAL(5,4),
+            -- 추가 지표
+            b_value DECIMAL(10,6),
+            swing_score DECIMAL(10,6),
+            sharpe_ratio DECIMAL(10,6),
+            sortino_ratio DECIMAL(10,6),
+            profit_factor DECIMAL(10,6),
+            -- 메타데이터
+            parameters JSONB,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        
+        # 백테스트 결과 상세 테이블 (개별 거래 기록)
+        """
+        CREATE TABLE IF NOT EXISTS backtest_trades (
+            id SERIAL PRIMARY KEY,
+            result_id INTEGER REFERENCES backtest_results(id),
+            ticker VARCHAR(20),
+            entry_date DATE,
+            exit_date DATE,
+            entry_price DECIMAL(15,8),
+            exit_price DECIMAL(15,8),
+            quantity DECIMAL(20,8),
+            pnl DECIMAL(15,8),
+            return_pct DECIMAL(10,6),
+            hold_days INTEGER,
+            strategy_signal TEXT,
+            created_at TIMESTAMP DEFAULT NOW()
+        )
+        """,
+        
         # 백테스트 인덱스들
         """
         CREATE INDEX IF NOT EXISTS idx_backtest_ohlcv_ticker_date 
@@ -84,6 +134,26 @@ def create_backtest_tables():
         """
         CREATE INDEX IF NOT EXISTS idx_backtest_sessions_status 
         ON backtest_sessions(status)
+        """,
+        
+        """
+        CREATE INDEX IF NOT EXISTS idx_backtest_results_session 
+        ON backtest_results(session_id)
+        """,
+        
+        """
+        CREATE INDEX IF NOT EXISTS idx_backtest_results_strategy 
+        ON backtest_results(strategy_name)
+        """,
+        
+        """
+        CREATE INDEX IF NOT EXISTS idx_backtest_results_created 
+        ON backtest_results(created_at)
+        """,
+        
+        """
+        CREATE INDEX IF NOT EXISTS idx_backtest_trades_result 
+        ON backtest_trades(result_id)
         """
     ]
     

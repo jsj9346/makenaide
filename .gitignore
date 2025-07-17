@@ -49,6 +49,7 @@ backtest_output/
 *.backtest
 backtest_*.json
 backtest_*.csv
+backtest_analysis_report.*
 
 # 데이터 캐시
 cache/
@@ -112,6 +113,7 @@ db_backup/
 database_backup/
 *.backup
 *.bak
+*_backup_*
 
 # =============================================================================
 # 🐍 Python 관련 파일
@@ -206,6 +208,7 @@ Thumbs.db
 auto-save-list
 tramp
 .\#*
+/aws_setup_scripts/*
 
 # =============================================================================
 # 📁 프로젝트 특화 파일
@@ -314,6 +317,9 @@ statistics/
 stats_data/
 *.stats
 *.stat
+backtest_analysis_report_*.html
+backtest_analysis_report_*.md
+env.aws.*
 
 # =============================================================================
 # 🎯 특정 파일 패턴

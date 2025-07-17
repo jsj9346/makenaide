@@ -1,16 +1,19 @@
-pyupbit
-pandas
-pandas_ta
-TA-Lib
-psycopg2
-python-dotenv
-matplotlib
-numpy
-mplfinance
-sqlalchemy
-openai
-PyJWT
-pyyaml
-loguru
-tiktoken
-psutil
+# requirements.txt (AWS 최적화 버전)
+#AWS 운영시 호환성 문제 발생 해결을 위해 버전 고정
+pyupbit==0.2.31
+pandas==2.0.3
+pandas-ta==0.3.14b0
+# TA-Lib==0.4.28  # pandas-ta로 대체됨
+psycopg2-binary==2.9.7
+python-dotenv==1.0.0
+matplotlib==3.7.2
+numpy==1.24.3
+mplfinance==0.12.10b0
+sqlalchemy==2.0.20
+openai==0.28.1
+PyJWT==2.8.0
+pyyaml==6.0.1
+loguru==0.7.0
+tiktoken==0.4.0
+psutil==5.9.5
+boto3==1.28.44  # AWS SDK 추가

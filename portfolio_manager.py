@@ -402,7 +402,7 @@ class PortfolioManager:
             return False
     
     def _get_market_data_for_pyramiding(self, ticker):
-        """피라미딩을 위한 시장 데이터 조회"""
+        """피라미딩을 위한 시장 데이터 조회 (안전성 강화)"""
         try:
             # static_indicators에서 기술적 지표 조회
             query = """
@@ -415,30 +415,88 @@ class PortfolioManager:
             result = self.db_mgr.execute_query(query, (ticker,))
             
             if not result:
+                logging.warning(f"⚠️ {ticker} static_indicators 테이블에서 데이터 없음")
                 return None
             
-            atr, rsi, adx, ma20, supertrend_signal, volume_ratio, volume = result[0]
-            
-            # OHLCV 데이터에서 최근 고점 조회
-            ohlcv_data = self._get_ohlcv_from_db(ticker, limit=20)
-            recent_high = 0
-            if not ohlcv_data.empty:
-                recent_high = ohlcv_data['high'].max()
-            
-            return {
-                'atr': safe_float_convert(atr, context=f"{ticker} ATR"),
-                'rsi': safe_float_convert(rsi, context=f"{ticker} RSI"),
-                'adx': safe_float_convert(adx, context=f"{ticker} ADX"),
-                'ma20': safe_float_convert(ma20, context=f"{ticker} MA20"),
-                'supertrend_signal': supertrend_signal,
-                'volume_ratio': safe_float_convert(volume_ratio, context=f"{ticker} Volume Ratio"),
-                'volume': safe_float_convert(volume, context=f"{ticker} Volume"),
-                'recent_high': recent_high
-            }
+            try:
+                atr, rsi, adx, ma20, supertrend_signal, volume_ratio, volume = result[0]
+                
+                # 데이터 유효성 검증 및 안전한 변환
+                market_data = {
+                    'atr': self._safe_convert_to_float(atr, f"{ticker} ATR", 0.0),
+                    'rsi': self._safe_convert_to_float(rsi, f"{ticker} RSI", 50.0),
+                    'adx': self._safe_convert_to_float(adx, f"{ticker} ADX", 25.0),
+                    'ma20': self._safe_convert_to_float(ma20, f"{ticker} MA20", 0.0),
+                    'supertrend_signal': supertrend_signal if supertrend_signal else 'neutral',
+                    'volume_ratio': self._safe_convert_to_float(volume_ratio, f"{ticker} Volume Ratio", 1.0),
+                    'volume': self._safe_convert_to_float(volume, f"{ticker} Volume", 0.0)
+                }
+                
+                # OHLCV 데이터에서 최근 고점 조회 (예외 처리 강화)
+                try:
+                    ohlcv_data = self._get_ohlcv_from_db(ticker, limit=20)
+                    if not ohlcv_data.empty and 'high' in ohlcv_data.columns:
+                        recent_high = float(ohlcv_data['high'].max())
+                        market_data['recent_high'] = recent_high
+                    else:
+                        logging.warning(f"⚠️ {ticker} OHLCV 데이터 없음, 기본값 사용")
+                        market_data['recent_high'] = 0.0
+                except Exception as e:
+                    logging.warning(f"⚠️ {ticker} OHLCV 조회 실패: {e}, 기본값 사용")
+                    market_data['recent_high'] = 0.0
+                
+                # 최종 데이터 유효성 검증
+                if market_data['ma20'] <= 0 and ticker.startswith('KRW-'):
+                    # 현재가로 MA20 추정
+                    try:
+                        current_price = pyupbit.get_current_price(ticker)
+                        if current_price and current_price > 0:
+                            market_data['ma20'] = current_price
+                            logging.info(f"✅ {ticker} MA20을 현재가로 대체: {current_price}")
+                    except Exception as e:
+                        logging.warning(f"⚠️ {ticker} 현재가 조회 실패: {e}")
+                
+                logging.debug(f"✅ {ticker} 피라미딩 시장 데이터 조회 완료")
+                return market_data
+                
+            except (ValueError, TypeError, IndexError) as e:
+                logging.error(f"❌ {ticker} 시장 데이터 파싱 실패: {e}")
+                return None
             
         except Exception as e:
             logging.error(f"❌ {ticker} 시장 데이터 조회 실패: {e}")
             return None
+    
+    def _safe_convert_to_float(self, value, context: str, default: float = 0.0) -> float:
+        """안전한 float 변환 (피라미딩 전용)"""
+        if value is None:
+            return default
+            
+        # datetime 계열 객체 체크
+        if hasattr(value, 'strftime') or str(type(value)).find('datetime') != -1:
+            logging.warning(f"⚠️ {context} datetime 객체 감지, 기본값 사용: {default}")
+            return default
+            
+        # pandas 타입 체크
+        if hasattr(value, '__class__') and 'pandas' in str(type(value)):
+            logging.warning(f"⚠️ {context} pandas 객체 감지, 기본값 사용: {default}")
+            return default
+            
+        try:
+            # numpy 타입을 Python 기본 타입으로 변환
+            if hasattr(value, 'item'):
+                value = value.item()
+                
+            result = float(value)
+            
+            # NaN 또는 inf 체크
+            if not (result == result) or result == float('inf') or result == float('-inf'):
+                return default
+                
+            return result
+        except (ValueError, TypeError, OverflowError) as e:
+            logging.warning(f"⚠️ {context} float 변환 실패: {value} (타입: {type(value)}) -> {default}")
+            return default
     
     def _evaluate_advanced_pyramiding_conditions(self, ticker, current_price, info, market_data):
         """고도화된 피라미딩 조건 평가"""
@@ -1422,10 +1480,11 @@ class PortfolioManager:
         """trade_log 기반 예상 보유 자산 계산"""
         try:
             # trade_log에서 각 ticker별 매수/매도 기록 조회
+            # status가 'completed' 또는 'SUCCESS'인 것들을 모두 조회
             query = """
                 SELECT ticker, action, qty, executed_at
                 FROM trade_log
-                WHERE status = 'completed'
+                WHERE status IN ('completed', 'SUCCESS', 'SUCCESS_PARTIAL', 'SUCCESS_PARTIAL_NO_AVG', 'SUCCESS_NO_AVG_PRICE', 'PYRAMIDING_SUCCESS')
                 ORDER BY ticker, executed_at
             """
             
@@ -1449,11 +1508,11 @@ class PortfolioManager:
                         'last_trade_date': trade[3]
                     }
                 
-                if action in ['buy', 'pyramid_buy']:
+                if action.upper() in ['BUY', 'PYRAMID_BUY']:
                     expected_holdings[ticker]['quantity'] += quantity
                     expected_holdings[ticker]['total_bought'] += quantity
                     expected_holdings[ticker]['buy_count'] += 1
-                elif action == 'sell':
+                elif action.upper() == 'SELL':
                     expected_holdings[ticker]['quantity'] -= quantity
                     expected_holdings[ticker]['total_sold'] += quantity
                     expected_holdings[ticker]['sell_count'] += 1

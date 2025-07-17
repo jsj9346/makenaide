@@ -5,7 +5,7 @@ load_dotenv()
 import os
 import pandas as pd
 import pandas_ta as ta
-import talib
+# import talib  # TA-Lib 대신 pandas-ta 사용
 from datetime import datetime
 import logging
 import concurrent.futures
