@@ -692,11 +692,60 @@ class MakenaideBot:
             logger.info("🔄 포트폴리오 정보 업데이트 중")
             balances = self.upbit.get_balances()
 
+            # 🔧 [수정] balances 응답 형식 검증 및 변환 (portfolio_manager.py와 동일한 로직)
+            logger.debug(f"🔍 update_portfolio balances 응답 타입: {type(balances)}")
+            
+            # None인 경우 처리
+            if balances is None:
+                logger.warning("⚠️ get_balances가 None을 반환했습니다.")
+                return []
+            
+            # 문자열로 반환된 경우 JSON 파싱 시도
+            if isinstance(balances, str):
+                try:
+                    import json
+                    balances = json.loads(balances)
+                    logger.info("✅ 문자열 응답을 JSON으로 파싱 완료")
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ JSON 파싱 실패: {e}")
+                    return []
+            
+            # 리스트가 아닌 경우 처리
+            if not isinstance(balances, list):
+                logger.info(f"📊 update_portfolio: balances 반환값이 리스트가 아님 (타입: {type(balances)}) - 변환 시도")
+                if isinstance(balances, dict):
+                    if 'data' in balances:
+                        balances = balances['data']
+                        logger.info("✅ 'data' 키에서 리스트 추출 완료")
+                    elif 'result' in balances:
+                        balances = balances['result']
+                        logger.info("✅ 'result' 키에서 리스트 추출 완료")
+                    else:
+                        # 단일 잔고 정보인 경우 리스트로 변환
+                        balances = [balances]
+                        logger.info("✅ 단일 잔고 정보를 리스트로 변환 완료")
+                else:
+                    logger.error(f"❌ 예상치 못한 balances 형식: {type(balances)}")
+                    return []
+
             # 블랙리스트 로드
             blacklist = load_blacklist()
 
-            # 블랙리스트에 포함된 종목 필터링
-            balances = [balance for balance in balances if f"KRW-{balance.get('currency')}" not in blacklist]
+            # 🔧 [수정] 블랙리스트에 포함된 종목 필터링 (안전한 딕셔너리 접근)
+            filtered_balances = []
+            for balance in balances:
+                try:
+                    if isinstance(balance, dict) and balance.get('currency'):
+                        currency = balance.get('currency')
+                        if f"KRW-{currency}" not in blacklist:
+                            filtered_balances.append(balance)
+                        else:
+                            logger.debug(f"⏭️ {currency}는 블랙리스트에 포함되어 제외됩니다.")
+                except Exception as e:
+                    logger.warning(f"⚠️ balance 필터링 중 오류: {e} - {balance}")
+                    continue
+            
+            balances = filtered_balances
 
             # DB에 포트폴리오 정보 저장
             self.db_mgr.save_portfolio_history(balances)
@@ -2629,8 +2678,24 @@ class MakenaideBot:
                         excluded_candidates.append(result)
                         continue
                     
-                    # 매수 조건 필터링만 수행 (실제 매수는 4시간봉 필터링 후)
-                    action = result.get("action", "AVOID").upper()
+                    # 🔧 [핵심 수정] action 필드 타입 안전성 보장
+                    action_raw = result.get("action", "AVOID")
+                    
+                    # action 필드 타입 검증 및 변환
+                    if isinstance(action_raw, (int, float)):
+                        logger.warning(f"⚠️ {ticker} action 필드가 숫자 타입입니다: {action_raw} ({type(action_raw)}) → 'HOLD'로 변환")
+                        action = "HOLD"
+                    elif isinstance(action_raw, str):
+                        action = action_raw.upper().strip()
+                    else:
+                        logger.warning(f"⚠️ {ticker} action 필드가 예상치 못한 타입입니다: {action_raw} ({type(action_raw)}) → 'AVOID'로 변환")
+                        action = "AVOID"
+                    
+                    # action 값 유효성 검증
+                    valid_actions = ['BUY', 'STRONG_BUY', 'BUY_WEAK', 'SELL', 'STRONG_SELL', 'SELL_WEAK', 'HOLD', 'AVOID', 'NEUTRAL', 'WAIT']
+                    if action not in valid_actions:
+                        logger.warning(f"⚠️ {ticker} 유효하지 않은 action 값: {action} → 'HOLD'로 변환")
+                        action = "HOLD"
                     
                     # 설정 기반 엄격한 매수 조건 적용
                     try:
@@ -4368,6 +4433,77 @@ class MakenaideBot:
             'atr': 0
         }
     
+    def get_technical_data_batch(self, tickers: list) -> dict:
+        """배치로 여러 티커의 기술적 지표를 한 번에 조회 (성능 최적화)"""
+        import time
+        start_time = time.time()
+        logger.info(f"📊 배치 기술적 지표 조회 시작: {len(tickers)}개 티커")
+        
+        if not tickers:
+            return {}
+            
+        try:
+            with self.get_db_connection_safe() as conn:
+                cursor = conn.cursor()
+                
+                # 단일 배치 쿼리로 모든 티커의 데이터 조회
+                placeholders = ','.join(['%s'] * len(tickers))
+                
+                batch_query = f"""
+                    SELECT 
+                        s.ticker,
+                        s.price, s.atr, s.adx, s.volume_change_7_30, s.supertrend_signal,
+                        o.close, o.rsi_14, o.ma_50, o.ma_200, o.bb_upper, o.bb_lower
+                    FROM static_indicators s
+                    LEFT JOIN LATERAL (
+                        SELECT close, rsi_14, ma_50, ma_200, bb_upper, bb_lower
+                        FROM ohlcv 
+                        WHERE ticker = s.ticker 
+                        ORDER BY date DESC 
+                        LIMIT 1
+                    ) o ON true
+                    WHERE s.ticker IN ({placeholders})
+                """
+                
+                cursor.execute(batch_query, tickers)
+                results = cursor.fetchall()
+                
+                # 결과를 딕셔너리로 변환
+                batch_data = {}
+                for row in results:
+                    ticker = row[0]
+                    s_price, s_atr, s_adx, s_volume_change, s_supertrend = row[1:6]
+                    o_close, o_rsi, o_ma50, o_ma200, o_bb_upper, o_bb_lower = row[6:]
+                    
+                    # 기본값 설정
+                    price = float(s_price or 0)
+                    if price == 0 and o_close:
+                        price = float(o_close)
+                    
+                    batch_data[ticker] = {
+                        'price': price,
+                        'rsi_14': float(o_rsi or 50),
+                        'ma_50': float(o_ma50 or 0),
+                        'ma_200': float(o_ma200 or 0),
+                        'bb_upper': float(o_bb_upper or 0),
+                        'bb_lower': float(o_bb_lower or 0),
+                        'atr': float(s_atr or 0),
+                        'adx': float(s_adx or 25),
+                        'volume_change_7_30': float(s_volume_change or 0),
+                        'supertrend_signal': s_supertrend or 'neutral'
+                    }
+                
+                execution_time = time.time() - start_time
+                query_count_saved = len(tickers) * 2 - 1  # 기존: 티커당 2쿼리, 최적화: 1쿼리
+                logger.info(f"✅ 배치 조회 완료: {len(batch_data)}개 티커 ({execution_time:.2f}초)")
+                logger.info(f"💰 DB 쿼리 최적화: {query_count_saved}개 쿼리 절약 ({query_count_saved/len(tickers)*2*100:.0f}% 감소)")
+                return batch_data
+                
+        except Exception as e:
+            execution_time = time.time() - start_time
+            logger.error(f"❌ 배치 기술적 지표 조회 실패: {str(e)} (소요시간: {execution_time:.2f}초)")
+            return {}
+    
     def _get_default_technical_data(self) -> dict:
         """기본 기술적 지표 데이터 (오류 시 사용)"""
         return {
@@ -4389,27 +4525,25 @@ class MakenaideBot:
             with self.get_db_connection_safe() as conn:
                 cursor = conn.cursor()
                 
-                # 1. static_indicators에서 기본 지표 조회
+                # 최적화된 단일 JOIN 쿼리로 모든 지표 한번에 조회
                 cursor.execute("""
-                    SELECT price, atr, adx, volume_change_7_30, supertrend_signal
-                    FROM static_indicators 
-                    WHERE ticker = %s
-                """, (ticker,))
+                    SELECT 
+                        s.price, s.atr, s.adx, s.volume_change_7_30, s.supertrend_signal,
+                        o.close, o.rsi_14, o.ma_50, o.ma_200, o.bb_upper, o.bb_lower
+                    FROM static_indicators s
+                    LEFT JOIN (
+                        SELECT ticker, close, rsi_14, ma_50, ma_200, bb_upper, bb_lower
+                        FROM ohlcv 
+                        WHERE ticker = %s 
+                        ORDER BY date DESC 
+                        LIMIT 1
+                    ) o ON s.ticker = o.ticker
+                    WHERE s.ticker = %s
+                """, (ticker, ticker))
                 
-                static_result = cursor.fetchone()
+                combined_result = cursor.fetchone()
                 
-                # 2. ohlcv에서 추가 기술적 지표 조회
-                cursor.execute("""
-                    SELECT close, rsi_14, ma_50, ma_200, bb_upper, bb_lower
-                    FROM ohlcv 
-                    WHERE ticker = %s 
-                    ORDER BY date DESC 
-                    LIMIT 1
-                """, (ticker,))
-                
-                ohlcv_result = cursor.fetchone()
-                
-                # 데이터 통합
+                # 기본값 설정
                 price = 0
                 rsi_14 = 50
                 ma_50 = 0
@@ -4421,15 +4555,26 @@ class MakenaideBot:
                 volume_change_7_30 = 0
                 supertrend_signal = 'neutral'
                 
-                # static_indicators 데이터 처리
-                if static_result:
-                    price, atr, adx, volume_change_7_30, supertrend_signal = static_result
-                
-                # ohlcv 데이터 처리
-                if ohlcv_result:
-                    close, rsi_14, ma_50, ma_200, bb_upper, bb_lower = ohlcv_result
-                    if price == 0:  # static_indicators에 price가 없으면 ohlcv의 close 사용
-                        price = close
+                # 최적화된 통합 결과 처리 (2개 쿼리 → 1개 쿼리로 50% 감소)
+                if combined_result:
+                    s_price, s_atr, s_adx, s_volume_change, s_supertrend, o_close, o_rsi, o_ma50, o_ma200, o_bb_upper, o_bb_lower = combined_result
+                    
+                    # static_indicators 데이터
+                    price = float(s_price or 0)
+                    atr = float(s_atr or 0)
+                    adx = float(s_adx or 25)
+                    volume_change_7_30 = float(s_volume_change or 0)
+                    supertrend_signal = s_supertrend or 'neutral'
+                    
+                    # ohlcv 데이터 처리
+                    if o_close:
+                        if price == 0:  # static_indicators에 price가 없으면 ohlcv의 close 사용
+                            price = float(o_close)
+                        rsi_14 = float(o_rsi or 50)
+                        ma_50 = float(o_ma50 or 0)
+                        ma_200 = float(o_ma200 or 0)
+                        bb_upper = float(o_bb_upper or 0)
+                        bb_lower = float(o_bb_lower or 0)
                 
                 # MACD 신호 판단 (ohlcv에 macd 데이터가 없으므로 기본값 사용)
                 macd_signal_type = 'neutral'

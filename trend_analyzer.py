@@ -30,6 +30,36 @@ from db_manager import DBManager
 from strategy_analyzer import detect_vcp_pattern, analyze_weinstein_stage, check_breakout_conditions, optimized_integrated_analysis
 from data_fetcher import generate_gpt_analysis_json
 
+
+def get_safe_encoding(model_name: str = "gpt-4o"):
+    """
+    안전한 tiktoken 인코더 획득 함수
+    gpt-4o가 지원되지 않을 경우 fallback 인코더 사용
+    """
+    try:
+        # 먼저 gpt-4o 시도
+        return tiktoken.encoding_for_model(model_name)
+    except KeyError:
+        try:
+            # gpt-4 fallback
+            logging.warning(f"⚠️ {model_name} 인코더를 찾을 수 없어 gpt-4 인코더로 fallback")
+            return tiktoken.encoding_for_model("gpt-4")
+        except KeyError:
+            try:
+                # gpt-3.5-turbo fallback
+                logging.warning(f"⚠️ gpt-4 인코더를 찾을 수 없어 gpt-3.5-turbo 인코더로 fallback")
+                return tiktoken.encoding_for_model("gpt-3.5-turbo")
+            except KeyError:
+                # cl100k_base 인코더 직접 사용 (가장 안전한 fallback)
+                logging.warning(f"⚠️ 모든 모델 인코더를 찾을 수 없어 cl100k_base 인코더로 fallback")
+                return tiktoken.get_encoding("cl100k_base")
+    except Exception as e:
+        # 예상치 못한 오류 발생 시
+        logging.error(f"❌ tiktoken 인코더 획득 중 예상치 못한 오류: {str(e)}")
+        logging.warning(f"⚠️ cl100k_base 인코더로 fallback")
+        return tiktoken.get_encoding("cl100k_base")
+
+
 # === 견고한 예외 처리 시스템 ===
 
 class AnalysisException(Exception):
@@ -1168,6 +1198,7 @@ def setup_gpt_logging_rotation(log_file_path: str = None,
                               #enable_compression: bool = True) -> logging.Logger:
     """
     GPT 분석용 로깅 순환 및 압축 설정 (제한된 로깅 사용)
+    권한 문제 발생 시 fallback 메커니즘을 사용합니다.
     
     Args:
         log_file_path: 로그 파일 경로 (None이면 makenaide.log 사용)
@@ -1175,16 +1206,50 @@ def setup_gpt_logging_rotation(log_file_path: str = None,
         backup_count: 백업 파일 개수 (기본: 5개)
         enable_compression: 압축 활성화 여부
     """
-    # 로그 파일 경로가 None이면 makenaide.log 사용 (제한된 로깅)
+    import tempfile
+    
+    # 로그 파일 경로 설정 및 fallback 메커니즘
     if log_file_path is None:
         from utils import safe_strftime
-        log_dir = "log"
-        if not os.path.exists(log_dir):
-            os.makedirs(log_dir)
-        log_file_path = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_makenaide.log")
-    
-    # 로그 디렉토리 생성
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        
+        # 1차 시도: 현재 디렉토리의 log 폴더
+        try:
+            log_dir = "log"
+            if not os.path.exists(log_dir):
+                os.makedirs(log_dir, mode=0o755)
+            log_file_path = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_makenaide.log")
+            
+            # 테스트 파일 생성
+            test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            test_handler.close()
+            
+        except (PermissionError, OSError):
+            try:
+                # 2차 시도: 사용자 홈 디렉토리
+                home_dir = os.path.expanduser("~")
+                log_dir = os.path.join(home_dir, "makenaide_logs")
+                if not os.path.exists(log_dir):
+                    os.makedirs(log_dir, mode=0o755)
+                log_file_path = os.path.join(log_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_makenaide.log")
+                
+                # 테스트 파일 생성
+                test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+                test_handler.close()
+                
+            except (PermissionError, OSError):
+                try:
+                    # 3차 시도: 시스템 임시 디렉토리
+                    temp_dir = tempfile.gettempdir()
+                    log_file_path = os.path.join(temp_dir, f"{safe_strftime(datetime.now(), '%Y%m%d')}_makenaide.log")
+                    
+                    # 테스트 파일 생성
+                    test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+                    test_handler.close()
+                    
+                except (PermissionError, OSError):
+                    # 모든 시도 실패 시 콘솔 로깅만 사용
+                    log_file_path = None
+                    print("경고: GPT 로그 파일 생성 실패. 콘솔 로깅만 사용합니다.")
     
     # GPT 전용 로거 생성
     gpt_logger = logging.getLogger('gpt_analysis')
@@ -1194,40 +1259,51 @@ def setup_gpt_logging_rotation(log_file_path: str = None,
     for handler in gpt_logger.handlers[:]:
         gpt_logger.removeHandler(handler)
     
-    # 로테이팅 파일 핸들러 생성
-    rotating_handler = logging.handlers.RotatingFileHandler(
-        log_file_path,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding='utf-8'
-    )
-    
-    # 포맷터 설정
+    # 콘솔 핸들러 (항상 추가)
+    console_handler = logging.StreamHandler()
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
-    rotating_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    gpt_logger.addHandler(console_handler)
     
-    # 핸들러 추가
-    gpt_logger.addHandler(rotating_handler)
+    # 파일 핸들러 (성공한 경우만)
+    if log_file_path:
+        try:
+            # 로그 디렉토리 생성
+            os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+            
+            # 로테이팅 파일 핸들러 생성
+            rotating_handler = logging.handlers.RotatingFileHandler(
+                log_file_path,
+                maxBytes=max_bytes,
+                backupCount=backup_count,
+                encoding='utf-8'
+            )
+            
+            rotating_handler.setFormatter(formatter)
+            gpt_logger.addHandler(rotating_handler)
+            
+            # 압축 기능 활성화 시 커스텀 로테이터 설정
+            if enable_compression:
+                def compress_rotated_log(source, dest):
+                    """로테이트된 로그 파일 압축"""
+                    try:
+                        with open(source, 'rb') as f_in:
+                            with gzip.open(f"{dest}.gz", 'wb') as f_out:
+                                shutil.copyfileobj(f_in, f_out)
+                        os.remove(source)
+                        logging.info(f"📦 로그 파일 압축 완료: {dest}.gz")
+                    except Exception as e:
+                        logging.error(f"❌ 로그 파일 압축 실패: {e}")
+                
+                rotating_handler.rotator = compress_rotated_log
+            
+            print(f"📋 GPT 로깅 시스템 설정 완료 - 파일: {log_file_path}, 최대크기: {max_bytes//1024//1024}MB")
+        except Exception as e:
+            print(f"경고: GPT 파일 핸들러 추가 실패 - {str(e)}")
     
-    # 압축 기능 활성화 시 커스텀 로테이터 설정
-    if enable_compression:
-        def compress_rotated_log(source, dest):
-            """로테이트된 로그 파일 압축"""
-            try:
-                with open(source, 'rb') as f_in:
-                    with gzip.open(f"{dest}.gz", 'wb') as f_out:
-                        shutil.copyfileobj(f_in, f_out)
-                os.remove(source)
-                logging.info(f"📦 로그 파일 압축 완료: {dest}.gz")
-            except Exception as e:
-                logging.error(f"❌ 로그 파일 압축 실패: {e}")
-        
-        rotating_handler.rotator = compress_rotated_log
-    
-    logging.info(f"📋 GPT 로깅 시스템 설정 완료 - 파일: {log_file_path}, 최대크기: {max_bytes//1024//1024}MB")
     return gpt_logger
 
 # === 민감 정보 마스킹 시스템 ===
@@ -1345,16 +1421,51 @@ def setup_secure_logging(log_level: str = None, enable_sensitive_masking: bool =
                     record.args = tuple(masked_args)
             return True
     
-    # 로테이팅 파일 핸들러 (암호화 고려)
-    log_file_path = os.getenv('SECURE_LOG_PATH', 'log/secure_trend_analyzer.log')
-    os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+    # 로테이팅 파일 핸들러 (암호화 고려) - fallback 메커니즘 적용
+    import tempfile
     
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_file_path,
-        maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=3,
-        encoding='utf-8'
-    )
+    log_file_path = os.getenv('SECURE_LOG_PATH', 'log/secure_trend_analyzer.log')
+    
+    # fallback 메커니즘 적용
+    try:
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        # 테스트 파일 생성
+        test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+        test_handler.close()
+    except (PermissionError, OSError):
+        try:
+            # 홈 디렉토리 시도
+            home_dir = os.path.expanduser("~")
+            log_dir = os.path.join(home_dir, "makenaide_logs")
+            os.makedirs(log_dir, exist_ok=True)
+            log_file_path = os.path.join(log_dir, "secure_trend_analyzer.log")
+            # 테스트 파일 생성
+            test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+            test_handler.close()
+        except (PermissionError, OSError):
+            try:
+                # 임시 디렉토리 시도
+                temp_dir = tempfile.gettempdir()
+                log_file_path = os.path.join(temp_dir, "secure_trend_analyzer.log")
+                # 테스트 파일 생성
+                test_handler = logging.FileHandler(log_file_path, encoding='utf-8')
+                test_handler.close()
+            except (PermissionError, OSError):
+                # 파일 로깅 포기
+                log_file_path = None
+    
+    # 파일 핸들러 생성 (성공한 경우만)
+    file_handler = None
+    if log_file_path:
+        try:
+            file_handler = logging.handlers.RotatingFileHandler(
+                log_file_path,
+                maxBytes=10 * 1024 * 1024,  # 10MB
+                backupCount=3,
+                encoding='utf-8'
+            )
+        except Exception:
+            file_handler = None
     
     # 콘솔 핸들러 (개발 환경용)
     console_handler = logging.StreamHandler()
@@ -1365,17 +1476,20 @@ def setup_secure_logging(log_level: str = None, enable_sensitive_masking: bool =
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    file_handler.setFormatter(formatter)
+    if file_handler:
+        file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
     
     # 필터 적용
     if enable_sensitive_masking:
         sensitive_filter = SensitiveInfoFilter(enable_masking=True)
-        file_handler.addFilter(sensitive_filter)
+        if file_handler:
+            file_handler.addFilter(sensitive_filter)
         console_handler.addFilter(sensitive_filter)
     
     # 핸들러 추가
-    secure_logger.addHandler(file_handler)
+    if file_handler:
+        secure_logger.addHandler(file_handler)
     
     # 개발 환경에서만 콘솔 출력
     if os.getenv('ENVIRONMENT', 'production').lower() in ['development', 'dev', 'local']:
@@ -1609,9 +1723,32 @@ class GPTAnalysisErrorHandler:
     def log_error_analytics(error_details: dict, ticker: str):
         """오류 분석을 위한 로깅"""
         try:
-            # 오류 통계를 파일에 저장 (선택적)
+            import tempfile
+            # 오류 통계를 파일에 저장 (선택적) - fallback 메커니즘 적용
             error_log_path = "log/gpt_error_analytics.json"
-            os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
+            
+            # fallback 메커니즘
+            try:
+                os.makedirs(os.path.dirname(error_log_path), exist_ok=True)
+                # 테스트 파일 생성
+                with open(error_log_path, 'a', encoding='utf-8') as test_f:
+                    pass
+            except (PermissionError, OSError):
+                try:
+                    # 홈 디렉토리 시도
+                    home_dir = os.path.expanduser("~")
+                    log_dir = os.path.join(home_dir, "makenaide_logs")
+                    os.makedirs(log_dir, exist_ok=True)
+                    error_log_path = os.path.join(log_dir, "gpt_error_analytics.json")
+                except (PermissionError, OSError):
+                    try:
+                        # 임시 디렉토리 시도
+                        temp_dir = tempfile.gettempdir()
+                        error_log_path = os.path.join(temp_dir, "gpt_error_analytics.json")
+                    except (PermissionError, OSError):
+                        # 파일 로깅 포기
+                        print(f"경고: 오류 분석 로그 파일 생성 실패 - {ticker}")
+                        return
             
             error_entry = {
                 "timestamp": datetime.now().isoformat(),
@@ -1872,7 +2009,7 @@ class GPTAnalysisOptimizerSingleton:
         2. OHLCV 데이터 압축 (필요시)
         3. 정밀도 조정
         """
-        enc = tiktoken.encoding_for_model("gpt-4o")
+        enc = get_safe_encoding("gpt-4o")
         json_str = json.dumps(json_data, ensure_ascii=False)
         current_tokens = len(enc.encode(json_str))
         
@@ -1902,7 +2039,7 @@ class GPTAnalysisOptimizerSingleton:
         """
         try:
             # tiktoken 인코더 초기화
-            enc = tiktoken.encoding_for_model("gpt-4o")
+            enc = get_safe_encoding("gpt-4o")
             
             # 현재 토큰 수 계산
             json_str = json.dumps(json_data, ensure_ascii=False)
@@ -2029,7 +2166,7 @@ class GPTAnalysisOptimizerSingleton:
 class AnalysisConfig:
     """분석 설정 데이터 클래스"""
     mode: str = "hybrid"  # "json", "chart", "hybrid"
-    batch_size: int = 3
+    batch_size: int = 5  # 3에서 5로 증가하여 API 호출 효율성 향상
     enable_caching: bool = True
     cache_ttl_minutes: int = 720
     api_timeout_seconds: int = 30
@@ -2048,7 +2185,7 @@ def unified_gpt_analysis_engine(candidates: Union[List[dict], List[tuple]], anal
         analysis_config: 분석 설정
             {
                 "mode": "json" | "chart" | "hybrid",
-                "batch_size": 3,
+                "batch_size": 5,  # 기본값을 5로 증가
                 "enable_caching": True,
                 "cache_ttl_minutes": 720,
                 "api_timeout_seconds": 30,
@@ -2082,7 +2219,7 @@ def _apply_default_config(analysis_config: Optional[dict]) -> AnalysisConfig:
     
     return AnalysisConfig(
         mode=analysis_config.get("mode", "hybrid"),
-        batch_size=analysis_config.get("batch_size", 3),
+        batch_size=analysis_config.get("batch_size", 5),  # 기본값을 5로 증가
         enable_caching=analysis_config.get("enable_caching", True),
         cache_ttl_minutes=analysis_config.get("cache_ttl_minutes", 720),
         api_timeout_seconds=analysis_config.get("api_timeout_seconds", 30),
@@ -2266,9 +2403,147 @@ def _create_batches(items: List[Any], batch_size: int) -> List[List[Any]]:
         yield items[i:i + batch_size]
 
 def _call_gpt_json_batch(batch: List[dict], config: AnalysisConfig, optimizer: GPTAnalysisOptimizerSingleton) -> List[dict]:
-    """JSON 배치 GPT 분석 호출"""
+    """JSON 배치 GPT 분석 호출 - 진정한 배치 처리로 API 호출 수 최소화"""
     results = []
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    
+    # 배치 데이터 준비
+    batch_data = []
+    valid_tickers = []
+    
+    for candidate in batch:
+        ticker = candidate["ticker"]
+        json_data = generate_gpt_analysis_json(ticker, days=200)
+        if json_data is not None:
+            batch_data.append({
+                "ticker": ticker,
+                "json_data": json_data,
+                "base_score": candidate.get("base_score", 50)
+            })
+            valid_tickers.append(ticker)
+        else:
+            # 데이터 생성 실패한 경우 기본값으로 추가
+            results.append({
+                "ticker": ticker,
+                "score": candidate.get("base_score", 50),
+                "confidence": 0.50,
+                "analysis_method": "json_data_failed"
+            })
+    
+    if not batch_data:
+        return results
+        
+    # 단일 API 호출로 전체 배치 처리
+    try:
+        optimizer.manage_api_rate_limits()
+        start_time = time.time()
+        
+        # 배치용 프롬프트 생성
+        batch_content = "Analyze these PRE-FILTERED buy candidates from the Makenaide trading system:\n\n"
+        for i, item in enumerate(batch_data, 1):
+            batch_content += f"""
+[Analysis {i}] Ticker: {item['ticker']}
+[OHLCV and Technical Indicators Data]
+{item['json_data']}
+
+"""
+        
+        batch_content += f"""
+All {len(batch_data)} tickers have already passed multi-stage filtering and should theoretically be in Stage 1-2 with upward momentum patterns.
+
+RESPOND ONLY with this exact JSON array format (no additional text):
+[
+  {{
+    "ticker": "TICKER1",
+    "score": {{integer_0_to_100}},
+    "confidence": {{decimal_0_to_1}},
+    "action": "BUY | HOLD | AVOID",
+    "market_phase": "Stage1 | Stage2 | Stage3 | Stage4",
+    "pattern": "{{pattern_name}}",
+    "reason": "{{brief_explanation_max_200_chars}}"
+  }},
+  ...
+]"""
+        
+        messages = [
+            {
+                "role": "system", 
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": batch_content
+            }
+        ]
+        
+        # 토큰 수 계산
+        enc = get_safe_encoding("gpt-4o")
+        token_count = len(enc.encode(batch_content))
+        
+        response = get_openai_client().chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            temperature=0.3,
+            max_tokens=2000,  # 배치 처리를 위해 토큰 수 증가
+            timeout=config.api_timeout_seconds * 2  # 배치 처리를 위해 타임아웃 증가
+        )
+
+        processing_time = time.time() - start_time
+        output_tokens = response.usage.completion_tokens if hasattr(response, 'usage') else 0
+        
+        # 성공 모니터링 기록
+        optimizer.monitor.track_api_call(token_count, processing_time, True, output_tokens=output_tokens)
+        
+        content = response.choices[0].message.content
+        logging.info(f"📤 배치 GPT 응답 수신 ({len(batch_data)}개 티커):")
+        logging.info(f"   - 응답 길이: {len(content)} characters")
+        logging.info(f"   - 전체 응답:\n{content}")
+        
+        # JSON 배열 파싱
+        try:
+            import json
+            clean_content = content.strip()
+            if clean_content.startswith("```json"):
+                clean_content = clean_content[7:]
+            if clean_content.endswith("```"):
+                clean_content = clean_content[:-3]
+            clean_content = clean_content.strip()
+            
+            batch_results = json.loads(clean_content)
+            
+            # 결과 처리
+            for result in batch_results:
+                if isinstance(result, dict) and "ticker" in result:
+                    results.append({
+                        "ticker": result.get("ticker", "UNKNOWN"),
+                        "score": int(result.get("score", 50)),
+                        "confidence": float(result.get("confidence", 0.85)),
+                        "action": result.get("action", "AVOID"),
+                        "market_phase": result.get("market_phase", "Unknown"),
+                        "pattern": result.get("pattern", "Unknown"),
+                        "reason": result.get("reason", "GPT analysis completed"),
+                        "analysis_method": "gpt_json_batch"
+                    })
+            
+            logging.info(f"✅ 배치 처리 성공: {len(results)}개 결과 생성")
+            
+        except json.JSONDecodeError as e:
+            logging.error(f"❌ 배치 JSON 파싱 실패: {e}")
+            # 개별 처리로 폴백
+            logging.info("🔄 개별 처리로 폴백...")
+            return _call_gpt_json_individual_fallback(batch, config, optimizer)
+            
+    except Exception as e:
+        logging.error(f"❌ 배치 API 호출 실패: {e}")
+        # 개별 처리로 폴백
+        return _call_gpt_json_individual_fallback(batch, config, optimizer)
+    
+    return results
+
+def _call_gpt_json_individual_fallback(batch: List[dict], config: AnalysisConfig, optimizer: GPTAnalysisOptimizerSingleton) -> List[dict]:
+    """배치 처리 실패 시 개별 처리 폴백"""
+    results = []
+    logging.info(f"🔄 개별 처리 폴백 시작: {len(batch)}개 티커")
     
     for candidate in batch:
         ticker = candidate["ticker"]
@@ -2291,7 +2566,7 @@ def _call_gpt_json_batch(batch: List[dict], config: AnalysisConfig, optimizer: G
                 continue
             
             # 토큰 수 계산
-            enc = tiktoken.encoding_for_model("gpt-4o")
+            enc = get_safe_encoding("gpt-4o")
             token_count = len(enc.encode(json_data))
             
             # GPT 분석 실행 - system_prompt 사용 및 JSON 형식 요구
@@ -2328,7 +2603,7 @@ RESPOND ONLY with this exact JSON format (no additional text):
                 }
             ]
 
-            response = client.chat.completions.create(
+            response = get_openai_client().chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
                 temperature=0.3,
@@ -2444,7 +2719,7 @@ RESPOND ONLY with this exact JSON format (no additional text):
                 "analysis_method": "json_failed",
                 "error_details": error_result.get("error_details", {})
             })
-    
+                
     return results
 
 def _fallback_individual_processing(batch: List[dict], config: AnalysisConfig) -> List[dict]:
@@ -2502,8 +2777,63 @@ def fetch_selected_market_data(ticker_list):
     conn.close()
     return data
 
-# 환경 변수 및 OpenAI 클라이언트 설정 (API 키는 main.py에서 처리)
-client = OpenAI()
+# 환경 변수 및 OpenAI 클라이언트 설정 (조건부 초기화)
+client = None
+
+def get_openai_client():
+    """OpenAI 클라이언트를 안전하게 초기화합니다."""
+    global client
+    if client is None:
+        import os
+        api_key = os.getenv('OPENAI_API_KEY')
+        
+        # API 키 검증
+        if not api_key:
+            raise ValueError(
+                "❌ OpenAI API 키가 환경변수에 설정되지 않았습니다.\n"
+                "🔧 해결방법:\n"
+                "   1. EC2에서 'bash setup_ec2_env.sh' 실행\n"
+                "   2. 'nano .env'로 OPENAI_API_KEY 실제 값으로 변경\n"
+                "   3. makenaide.py 재실행"
+            )
+        
+        # Placeholder 값 검증
+        placeholder_values = [
+            'your_openai_api_key', 'REPLACE_WITH_ACTUAL_OPENAI_API_KEY',
+            'your_api_key_here', 'ACTUAL_OPENAI_API_KEY'
+        ]
+        
+        if any(placeholder in api_key for placeholder in placeholder_values):
+            raise ValueError(
+                f"❌ OpenAI API 키가 placeholder 값입니다: {api_key[:20]}...\n"
+                "🔧 해결방법:\n"
+                "   1. 실제 OpenAI API 키를 발급받으세요 (https://platform.openai.com/api-keys)\n"
+                "   2. EC2에서 'nano .env' 실행\n"
+                "   3. OPENAI_API_KEY=실제_API_키_값으로 변경\n"
+                "   4. 파일 저장 후 makenaide.py 재실행"
+            )
+        
+        # API 키 길이 검증 (OpenAI API 키는 일반적으로 51자)
+        if len(api_key) < 40:
+            raise ValueError(
+                f"❌ OpenAI API 키 형식이 올바르지 않습니다 (길이: {len(api_key)})\n"
+                "🔧 올바른 API 키 형식: sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            )
+        
+        try:
+            client = OpenAI(api_key=api_key)
+            # 간단한 API 연결 테스트 (토큰 사용량 최소화)
+            test_response = client.models.list()
+            logger.info("✅ OpenAI API 연결 성공")
+        except Exception as e:
+            raise ValueError(
+                f"❌ OpenAI API 연결 실패: {str(e)}\n"
+                "🔧 해결방법:\n"
+                "   1. API 키가 유효한지 확인\n"
+                "   2. OpenAI 계정에 충분한 크레딧이 있는지 확인\n"
+                "   3. 네트워크 연결 상태 확인"
+            )
+    return client
 
 def get_current_price_safe(ticker, retries=3, delay=0.3):
     import time
@@ -2620,8 +2950,7 @@ Score: [0-100점]
         # 7. OpenAI API 호출
         start_time = time.time()
         
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
@@ -2849,8 +3178,13 @@ def validate_and_standardize_gpt_response(ticker: str, raw_response: dict, daily
             logging.warning(f"⚠️ {ticker} 이상한 신뢰도값: {confidence} → 점수 기반으로 보정")
             confidence = score / 100.0
         
-        # 3. 액션 값 표준화
+        # 3. 액션 값 표준화 및 타입 안전성 보장
         action = standardize_action_value(action)
+        
+        # 🔧 [추가] 타입 안전성 2차 검증
+        if not isinstance(action, str):
+            logging.warning(f"⚠️ {ticker} action 표준화 후에도 문자열이 아님: {action} ({type(action)}) → 'HOLD'로 강제 변환")
+            action = 'HOLD'
         
         # 4. market_phase 검증 및 보정 - 간단한 형식 검증만 수행
         if market_phase and isinstance(market_phase, str):
@@ -2895,14 +3229,33 @@ def validate_and_standardize_gpt_response(ticker: str, raw_response: dict, daily
         return create_standardized_error_response(ticker, f"표준화 오류: {str(e)}", 0.1)
 
 
-def standardize_action_value(action: str) -> str:
+def standardize_action_value(action) -> str:
     """
-    액션 값을 표준화된 형식으로 변환
+    액션 값을 표준화된 형식으로 변환 - 타입 안전성 강화
     """
-    if not isinstance(action, str):
+    # 🔧 [강화] 다양한 타입 처리
+    if action is None:
         return 'HOLD'
     
-    action_upper = action.upper().strip()
+    # 숫자 타입인 경우 문자열로 변환 시도
+    if isinstance(action, (int, float)):
+        print(f"⚠️ action이 숫자 타입입니다: {action} ({type(action)}) → 'HOLD'로 변환")
+        return 'HOLD'
+    
+    # 문자열이 아닌 기타 타입
+    if not isinstance(action, str):
+        print(f"⚠️ action이 예상치 못한 타입입니다: {action} ({type(action)}) → 'HOLD'로 변환")
+        return 'HOLD'
+    
+    # 빈 문자열 처리
+    if not action.strip():
+        return 'HOLD'
+    
+    try:
+        action_upper = action.upper().strip()
+    except (AttributeError, TypeError):
+        print(f"⚠️ action 문자열 처리 실패: {action} → 'HOLD'로 변환")
+        return 'HOLD'
     
     # 표준 액션 매핑
     action_mapping = {
@@ -2916,8 +3269,13 @@ def standardize_action_value(action: str) -> str:
         'SELL_WEAK': 'SELL_WEAK',
         'HOLD': 'HOLD',
         'WAIT': 'HOLD',
-        'NEUTRAL': 'HOLD'
+        'NEUTRAL': 'HOLD',
+        'AVOID': 'HOLD'  # AVOID도 HOLD로 매핑
     }
+    
+    # 직접 매칭 우선
+    if action_upper in action_mapping:
+        return action_mapping[action_upper]
     
     # 부분 매칭 시도
     for key, value in action_mapping.items():
@@ -2925,6 +3283,7 @@ def standardize_action_value(action: str) -> str:
             return value
     
     # 기본값
+    print(f"⚠️ 알 수 없는 action 값: {action} → 'HOLD'로 변환")
     return 'HOLD'
 
 
@@ -3324,7 +3683,7 @@ def call_gpt_with_chart_base64(ticker: str, chart_base64: str, indicators: dict 
         optimizer = GPTAnalysisOptimizerSingleton()
 
     def log_token_usage(model: str, messages: list, ticker: str):
-        enc = tiktoken.encoding_for_model(model)
+        enc = get_safe_encoding(model)
         total = 0
         for msg in messages:
             total += 3  # 메시지 헤더 토큰
@@ -3386,7 +3745,7 @@ def call_gpt_with_chart_base64(ticker: str, chart_base64: str, indicators: dict 
                 # Rate limiting 적용
                 optimizer.manage_api_rate_limits()
                 
-                response = client.chat.completions.create(
+                response = get_openai_client().chat.completions.create(
                     model="gpt-4o",
                     messages=messages,
                     temperature=0.3,
@@ -3689,8 +4048,7 @@ Stage_Confirmation: [Weinstein Stage에 대한 GPT 의견]
             chart_base64 = base64.b64encode(image_file.read()).decode('utf-8')
         
         start_time = time.time()
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        response = client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
@@ -3922,9 +4280,7 @@ def call_gpt_with_enhanced_data(ticker: str, chart_image_path: str, enhanced_dat
         enhanced_prompt = create_enhanced_analysis_prompt(ticker, enhanced_data)
         
         # GPT API 호출
-        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        
-        response = client.chat.completions.create(
+        response = get_openai_client().chat.completions.create(
             model="gpt-4o",
             messages=[
                 {
