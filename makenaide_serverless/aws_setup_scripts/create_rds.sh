@@ -19,9 +19,9 @@ REGION=$(jq -r '.region' aws_vpc_config.json)
 
 # 환경 변수 설정
 DB_INSTANCE_IDENTIFIER="makenaide-db"
-DB_NAME="makenaide"
-DB_USERNAME="makenaide_user"
-DB_PASSWORD="Makenaide2024!"  # 실제 운영시에는 더 강력한 비밀번호 사용
+DB_NAME="dbname"
+DB_USERNAME="username"
+DB_PASSWORD="password"  # 실제 운영시에는 더 강력한 비밀번호 사용
 
 # 1. 서브넷 그룹 생성
 echo "🏠 RDS 서브넷 그룹 생성 중..."
