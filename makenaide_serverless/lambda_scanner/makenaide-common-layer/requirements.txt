@@ -1,0 +1,28 @@
+# Makenaide Lambda Layer - Common Dependencies
+# PostgreSQL 드라이버
+psycopg2-binary==2.9.9
+
+# Pure Python PostgreSQL 드라이버 (백업용)
+pg8000==1.31.2
+
+# 암호화폐 API 라이브러리
+pyupbit==0.2.30
+
+# 데이터 분석 라이브러리 
+pandas==2.1.4
+numpy==1.24.4
+
+# HTTP 요청 라이브러리
+requests==2.31.0
+urllib3==2.0.7
+
+# 날짜/시간 처리
+python-dateutil==2.8.2
+pytz==2023.3
+
+# JSON 처리
+simplejson==3.19.2
+
+# AWS SDK (선택적)
+boto3==1.34.0
+botocore==1.34.0

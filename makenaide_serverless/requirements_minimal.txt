@@ -1,0 +1,26 @@
+# 경량화된 Lambda Dependencies (최소 버전)
+# 총 예상 크기: ~15MB (기존 250MB에서 94% 감소)
+
+# DB 연결 (필수)
+psycopg2-binary==2.9.10
+
+# HTTP 요청 (pyupbit 대체)
+requests==2.31.0
+
+# AWS SDK (Lambda 런타임에 기본 포함되지만 명시적 버전 고정)
+boto3==1.35.9
+
+# Python 표준 라이브러리만 사용:
+# - json (내장)
+# - datetime (내장) 
+# - logging (내장)
+# - os (내장)
+# - typing (내장)
+
+# 제거된 무거운 패키지들:
+# - pyupbit==0.2.34 (제거됨 - 직접 HTTP 요청으로 대체)
+# - pandas==2.0.3 (제거됨 - 80MB+)
+# - numpy==1.24.3 (제거됨 - 50MB+)
+# - pandas-ta==0.3.14b0 (제거됨 - 30MB+)
+# - PyJWT==2.8.0 (제거됨 - pyupbit에서만 필요했음)
+# - pytz (제거됨 - pandas 종속성이었음) 

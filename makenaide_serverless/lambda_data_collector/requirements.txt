@@ -1,0 +1,28 @@
+# Lambda Data Collector Dependencies
+# Phase 2 아키텍처 개선용 최소 종속성
+
+# 데이터베이스 연결
+psycopg2-binary==2.9.9
+
+# 데이터 처리
+pandas==2.0.3
+numpy==1.24.4
+
+# 암호화폐 API
+pyupbit==0.2.31
+
+# HTTP 요청
+requests==2.31.0
+
+# 날짜/시간 처리 (내장 datetime 사용하므로 추가 불필요)
+
+# 로깅 (내장 logging 사용하므로 추가 불필요)
+
+# JSON 처리 (내장 json 사용하므로 추가 불필요)
+
+# 환경변수 (내장 os 사용하므로 추가 불필요)
+
+# AWS SDK (Lambda 환경에서 기본 제공)
+# boto3는 필요시에만 추가 (현재는 불필요)
+
+# 최적화된 종속성 목록 - 불필요한 패키지 제거로 Lambda 크기 최소화

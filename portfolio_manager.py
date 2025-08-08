@@ -838,23 +838,63 @@ class PortfolioManager:
             logging.error(f"❌ 통합 매도 조건 점검 중 오류: {e}")
 
     def _get_avg_price(self, portfolio_data, ticker):
-        """평균 매수가 조회"""
+        """평균 매수가 조회 (list/DataFrame 양쪽 지원)"""
         try:
-            if 'avg_price' in portfolio_data.columns:
-                return safe_float_convert(portfolio_data.loc[ticker, 'avg_price'], context=f"{ticker} avg_price")
-            elif 'avg_buy_price' in portfolio_data.columns:
-                return safe_float_convert(portfolio_data.loc[ticker, 'avg_buy_price'], context=f"{ticker} avg_buy_price")
-            return None
+            # DataFrame인 경우 (기존 로직)
+            if hasattr(portfolio_data, 'columns'):
+                if 'avg_price' in portfolio_data.columns:
+                    return safe_float_convert(portfolio_data.loc[ticker, 'avg_price'], context=f"{ticker} avg_price")
+                elif 'avg_buy_price' in portfolio_data.columns:
+                    return safe_float_convert(portfolio_data.loc[ticker, 'avg_buy_price'], context=f"{ticker} avg_buy_price")
+                return None
+            
+            # list인 경우 (신규 로직)
+            elif isinstance(portfolio_data, list):
+                for item in portfolio_data:
+                    if isinstance(item, dict):
+                        # 'currency' 또는 'ticker' 키로 매칭
+                        item_ticker = item.get('currency', item.get('ticker', ''))
+                        
+                        # KRW- 접두사 제거하여 비교
+                        if item_ticker == ticker or item_ticker == ticker.replace('KRW-', ''):
+                            avg_price = item.get('avg_buy_price') or item.get('avg_price')
+                            return safe_float_convert(avg_price, context=f"{ticker} avg_price") if avg_price else None
+                return None
+            
+            else:
+                logging.warning(f"⚠️ {ticker} 예상치 못한 portfolio_data 타입: {type(portfolio_data)}")
+                return None
+                
         except Exception as e:
             logging.error(f"❌ {ticker} 평균 매수가 조회 실패: {e}")
             return None
 
     def _get_balance(self, portfolio_data, ticker):
-        """보유 수량 조회"""
+        """보유 수량 조회 (list/DataFrame 양쪽 지원)"""
         try:
-            if 'balance' in portfolio_data.columns:
-                return safe_float_convert(portfolio_data.loc[ticker, 'balance'], context=f"{ticker} balance")
-            return None
+            # DataFrame인 경우 (기존 로직)
+            if hasattr(portfolio_data, 'columns'):
+                if 'balance' in portfolio_data.columns:
+                    return safe_float_convert(portfolio_data.loc[ticker, 'balance'], context=f"{ticker} balance")
+                return None
+            
+            # list인 경우 (신규 로직)
+            elif isinstance(portfolio_data, list):
+                for item in portfolio_data:
+                    if isinstance(item, dict):
+                        # 'currency' 또는 'ticker' 키로 매칭
+                        item_ticker = item.get('currency', item.get('ticker', ''))
+                        
+                        # KRW- 접두사 제거하여 비교
+                        if item_ticker == ticker or item_ticker == ticker.replace('KRW-', ''):
+                            balance = item.get('balance')
+                            return safe_float_convert(balance, context=f"{ticker} balance") if balance else None
+                return None
+            
+            else:
+                logging.warning(f"⚠️ {ticker} 예상치 못한 portfolio_data 타입: {type(portfolio_data)}")
+                return None
+                
         except Exception as e:
             logging.error(f"❌ {ticker} 보유 수량 조회 실패: {e}")
             return None
@@ -1477,12 +1517,15 @@ class PortfolioManager:
             return {}
     
     def _get_expected_holdings(self):
-        """trade_log 기반 예상 보유 자산 계산"""
+        """trade_log 기반 예상 보유 자산 계산 (매도 타이밍 고려)"""
         try:
+            # 🔧 [수정] 최근 매도 기록을 고려하여 수동 개입 오탐지 방지
+            from datetime import datetime, timedelta
+            
             # trade_log에서 각 ticker별 매수/매도 기록 조회
             # status가 'completed' 또는 'SUCCESS'인 것들을 모두 조회
             query = """
-                SELECT ticker, action, qty, executed_at
+                SELECT ticker, action, qty, executed_at, id
                 FROM trade_log
                 WHERE status IN ('completed', 'SUCCESS', 'SUCCESS_PARTIAL', 'SUCCESS_PARTIAL_NO_AVG', 'SUCCESS_NO_AVG_PRICE', 'PYRAMIDING_SUCCESS')
                 ORDER BY ticker, executed_at
@@ -1492,11 +1535,14 @@ class PortfolioManager:
             
             # 각 ticker별로 예상 보유량 계산
             expected_holdings = {}
+            recent_sells = {}  # 최근 매도 기록 추적
             
             for trade in trades:
                 ticker = trade[0]
                 action = trade[1]
                 quantity = float(trade[2])
+                executed_at = trade[3]
+                trade_id = trade[4]
                 
                 if ticker not in expected_holdings:
                     expected_holdings[ticker] = {
@@ -1505,7 +1551,9 @@ class PortfolioManager:
                         'total_sold': 0,
                         'buy_count': 0,
                         'sell_count': 0,
-                        'last_trade_date': trade[3]
+                        'last_trade_date': executed_at,
+                        'last_sell_date': None,
+                        'recent_sell_quantity': 0
                     }
                 
                 if action.upper() in ['BUY', 'PYRAMID_BUY']:
@@ -1516,14 +1564,44 @@ class PortfolioManager:
                     expected_holdings[ticker]['quantity'] -= quantity
                     expected_holdings[ticker]['total_sold'] += quantity
                     expected_holdings[ticker]['sell_count'] += 1
+                    expected_holdings[ticker]['last_sell_date'] = executed_at
                     
-                expected_holdings[ticker]['last_trade_date'] = trade[3]
+                    # 🔧 최근 1시간 내 매도 기록 추적 (수동 개입 오탐지 방지)
+                    current_time = datetime.now()
+                    if isinstance(executed_at, str):
+                        try:
+                            executed_dt = datetime.fromisoformat(executed_at.replace('Z', '+00:00')).replace(tzinfo=None)
+                        except:
+                            executed_dt = current_time  # 파싱 실패 시 현재 시간 사용
+                    else:
+                        executed_dt = executed_at.replace(tzinfo=None) if executed_at.tzinfo else executed_at
+                    
+                    time_diff = current_time - executed_dt
+                    if time_diff <= timedelta(hours=1):  # 1시간 내 매도
+                        recent_sells[ticker] = {
+                            'quantity': quantity,
+                            'executed_at': executed_at,
+                            'trade_id': trade_id
+                        }
+                        logging.info(f"🔄 {ticker}: 최근 1시간 내 매도 감지 ({quantity:.8f}개, {time_diff.total_seconds():.0f}초 전)")
+                    
+                expected_holdings[ticker]['last_trade_date'] = executed_at
             
             # 0보다 작거나 같은 것은 제거 (완전 매도된 것)
-            expected_holdings = {k: v for k, v in expected_holdings.items() if v['quantity'] > 0.00000001}
+            # 🔧 [수정] 최근 매도된 것은 잠시 유예 기간 제공
+            filtered_holdings = {}
+            for k, v in expected_holdings.items():
+                if v['quantity'] > 0.00000001:
+                    filtered_holdings[k] = v
+                elif k in recent_sells and v['quantity'] <= 0.00000001:
+                    # 최근 매도되어 수량이 0이 된 경우 로깅만 하고 expected에서 제외
+                    logging.info(f"📊 {k}: 최근 매도로 완전 정리됨 (수량: {v['quantity']:.8f})")
             
-            logging.info(f"📊 예상 보유 자산: {len(expected_holdings)}개")
-            return expected_holdings
+            logging.info(f"📊 예상 보유 자산: {len(filtered_holdings)}개 (최근 매도 {len(recent_sells)}건 고려)")
+            if recent_sells:
+                logging.info(f"  🔄 최근 1시간 내 매도: {list(recent_sells.keys())}")
+            
+            return filtered_holdings
             
         except Exception as e:
             logging.error(f"❌ 예상 보유 자산 계산 실패: {e}")

@@ -133,28 +133,52 @@ class DBManager:
         self._initialize_pool()
     
     def _initialize_pool(self):
-        """연결 풀 초기화"""
-        try:
-            self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
-                minconn=self.db_pool_config['minconn'],
-                maxconn=self.db_pool_config['maxconn'],
-                host=self.db_config['host'],
-                port=self.db_config['port'],
-                dbname=self.db_config['dbname'],
-                user=self.db_config['user'],
-                password=self.db_config['password'],
-                connect_timeout=self.db_pool_config['connection_timeout']
-            )
-            
-            self.pool_stats['total_connections'] = self.db_pool_config['maxconn']
-            logger.info(f"✅ DB 연결 풀 초기화 완료: {self.db_pool_config['minconn']}~{self.db_pool_config['maxconn']} 연결")
-            
-            # 헬스체크 스레드 시작
-            self._start_health_check()
-            
-        except Exception as e:
-            logger.error(f"❌ DB 연결 풀 초기화 실패: {e}")
-            raise
+        """연결 풀 초기화 - AWS 환경 최적화"""
+        max_retries = self.db_pool_config.get('max_retries', 3)
+        retry_delay = self.db_pool_config.get('retry_delay', 1.0)
+        
+        for attempt in range(max_retries + 1):
+            try:
+                logger.info(f"🔄 DB 연결 풀 초기화 시도 {attempt + 1}/{max_retries + 1}")
+                
+                # AWS 환경에서 더 긴 연결 타임아웃 사용
+                connection_timeout = self.db_pool_config.get('connection_timeout', 30)
+                if os.getenv('MAKENAIDE_ENV') == 'production':
+                    connection_timeout = max(connection_timeout, 60)  # AWS에서는 최소 60초
+                
+                self.connection_pool = psycopg2.pool.ThreadedConnectionPool(
+                    minconn=self.db_pool_config['minconn'],
+                    maxconn=self.db_pool_config['maxconn'],
+                    host=self.db_config['host'],
+                    port=self.db_config['port'],
+                    dbname=self.db_config['dbname'],
+                    user=self.db_config['user'],
+                    password=self.db_config['password'],
+                    connect_timeout=connection_timeout
+                )
+                
+                # 연결 테스트
+                test_conn = self.connection_pool.getconn()
+                test_conn.close()
+                self.connection_pool.putconn(test_conn)
+                
+                self.pool_stats['total_connections'] = self.db_pool_config['maxconn']
+                logger.info(f"✅ DB 연결 풀 초기화 완료: {self.db_pool_config['minconn']}~{self.db_pool_config['maxconn']} 연결 (타임아웃: {connection_timeout}초)")
+                
+                # 헬스체크 스레드 시작
+                self._start_health_check()
+                return
+                
+            except Exception as e:
+                logger.error(f"❌ DB 연결 풀 초기화 시도 {attempt + 1} 실패: {e}")
+                
+                if attempt < max_retries:
+                    logger.info(f"⏳ {retry_delay}초 후 재시도...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # 지수 백오프
+                else:
+                    logger.error(f"❌ DB 연결 풀 초기화 최종 실패 (모든 재시도 소진)")
+                    raise
     
     def _start_health_check(self):
         """헬스체크 스레드 시작"""

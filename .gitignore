@@ -190,6 +190,31 @@ Thumbs.db
 # Cursor
 .cursor/
 
+# Claude Code 설정 파일
+.claude/
+CLAUDE.md
+makenaide_serverless/CLAUDE.md
+
+# 임베디드 Git 저장소 (서브모듈 대신 제외)
+python-sequential-thinking-mcp/
+
+# AWS 크리덴셜이 포함된 임시 스크립트 (보안)
+makenaide_serverless/enable_public_rds_access.py
+makenaide_serverless/deploy_rds_fix.py
+makenaide_serverless/use_aws_official_psycopg2.py
+makenaide_serverless/deploy_to_ec2.py
+makenaide_serverless/add_dynamodb_permissions.py
+makenaide_serverless/lambda_function_orchestrator_v2.py
+makenaide_serverless/orchestrator_v2_architecture.py
+makenaide_serverless/run_makenaide_on_ec2.py
+
+# 대용량 파일 (50MB 초과)
+makenaide_serverless/lambda_scanner/makenaide-common-layer/makenaide-common-layer-v2.zip
+
+# Lambda Layer 디렉토리 (의존성 패키지 포함)
+makenaide_serverless/lambda_scanner/makenaide-core-layer/python/
+makenaide_serverless/lambda_scanner/makenaide-common-layer/python/
+
 # Sublime Text
 *.sublime-project
 *.sublime-workspace
@@ -218,6 +243,15 @@ tramp
 blacklist.json
 whitelist.json
 restricted_*.json
+
+# AWS EIP 관리 파일
+aws_ip_report_*.json
+aws_eip_auto_associate.sh
+eip-management-policy.json
+lambda_test_response.json
+start_response.json
+monitor_eip.sh
+start_ec2_with_eip.sh
 
 # 설정 검증 히스토리
 validation_history.json

@@ -804,9 +804,9 @@ def _calculate_support_resistance_fast(highs: list, lows: list) -> dict:
         support = np.percentile(recent_lows, 10)
         
         return {
-            "resistance": round(resistance, 2),
-            "support": round(support, 2),
-            "range_pct": round((resistance - support) / support * 100, 2) if support > 0 else 0
+            "resistance": resistance,
+            "support": support,
+            "range_pct": (resistance - support) / support * 100 if support > 0 else 0
         }
         
     except Exception:
@@ -969,11 +969,11 @@ def _calculate_risk_levels_fast(current_price: float, atr: float, support_resist
         risk_reward_ratio = reward / risk if risk > 0 else 1.0
         
         return {
-            "stop_loss": round(stop_loss, 2),
+                            "stop_loss": stop_loss,
             "take_profit_levels": [
-                round(take_profit_1, 2),
-                round(take_profit_2, 2),
-                round(take_profit_3, 2)
+                take_profit_1,
+                take_profit_2,
+                take_profit_3
             ],
             "risk_reward_ratio": round(risk_reward_ratio, 2),
             "risk_amount": round(risk, 2),

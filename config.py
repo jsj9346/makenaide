@@ -36,10 +36,10 @@ INDICATOR_MIN_PERIODS: Dict[str, int] = {}
 DB_POOL_CONFIG: Dict[str, Any] = {
     'minconn': 2,           # 최소 연결 수
     'maxconn': 10,          # 최대 연결 수  
-    'connection_timeout': 30,  # 연결 타임아웃 (초)
+    'connection_timeout': 60,  # 연결 타임아웃 (초) - AWS 환경 최적화
     'idle_timeout': 300,    # 유휴 연결 타임아웃 (초)
-    'max_retries': 3,       # 최대 재시도 횟수
-    'retry_delay': 1.0      # 재시도 지연 시간 (초)
+    'max_retries': 5,       # 최대 재시도 횟수 - AWS 환경에서 증가
+    'retry_delay': 2.0      # 재시도 지연 시간 (초) - 지수 백오프
 }
 
 # DB 연결 정보

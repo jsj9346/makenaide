@@ -1,0 +1,28 @@
+# Makenaide Core Lambda Layer
+Created: 2025-08-05
+Version: v2.0-core
+Compatible Runtime: python3.11
+Size: ~15MB (최적화됨)
+
+## 포함된 핵심 패키지:
+- psycopg2-binary==2.9.9 (PostgreSQL 드라이버)
+- pg8000==1.31.2 (Pure Python PostgreSQL 드라이버)
+- pyupbit==0.2.30 (Upbit API 라이브러리, pandas 의존성 제외)
+- requests==2.31.0 (HTTP 라이브러리)
+- python-dateutil==2.8.2 (날짜/시간 처리)
+
+## 제외된 대용량 패키지:
+- pandas (12MB+) - 직접 API 호출로 대체
+- numpy (18MB+) - 불필요
+- timezone 데이터 대부분 - 핵심만 유지
+
+## 사용법:
+1. Lambda 함수에 이 레이어를 연결
+2. psycopg2와 pg8000 모두 사용 가능 (fallback 패턴)
+3. pyupbit는 pandas 없이 기본 기능만 사용
+4. 직접 API 호출 권장 (requests 사용)
+
+## 호환성:
+- AWS Lambda Python 3.11 런타임
+- x86_64 아키텍처
+- 50MB 제한 내 최적화

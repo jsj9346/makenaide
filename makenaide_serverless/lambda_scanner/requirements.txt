@@ -1,0 +1,7 @@
+# Lambda Scanner Dependencies
+# Upbit API 및 기본 요청 처리
+pyupbit==0.2.21
+requests==2.31.0
+
+# PostgreSQL 연결 (Lambda Layer 필요)
+psycopg2-binary==2.9.9

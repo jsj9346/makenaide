@@ -1,6 +1,6 @@
 # requirements.txt (AWS 최적화 버전)
 #AWS 운영시 호환성 문제 발생 해결을 위해 버전 고정
-pyupbit==0.2.31
+pyupbit==0.2.34
 pandas==2.0.3
 pandas-ta==0.3.14b0
 # TA-Lib==0.4.28  # pandas-ta로 대체됨
@@ -17,3 +17,4 @@ loguru==0.7.0
 tiktoken==0.4.0
 psutil==5.9.5
 boto3==1.28.44  # AWS SDK 추가
+botocore==1.31.44  # AWS Core 라이브러리

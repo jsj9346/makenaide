@@ -1,0 +1,8 @@
+# Lambda DB Initializer Dependencies
+# PostgreSQL 연결만 필요한 경량 버전
+
+# 데이터베이스 연결
+psycopg2-binary==2.9.9
+
+# HTTP 요청 (기본 제공)
+requests==2.31.0
