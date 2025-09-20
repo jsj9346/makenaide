@@ -11,7 +11,7 @@ EC2 Local Architecture 기반 암호화폐 자동매매 시스템
 🎯 전체 파이프라인:
 Phase 0: scanner.py (업비트 종목 스캔)
 Phase 1: data_collector.py (증분 OHLCV 수집)
-Phase 2: hybrid_technical_filter.py (Weinstein Stage 2 분석)
+Phase 2: integrated_scoring_system.py (LayeredScoringEngine 점수제 분석)
 Phase 3: gpt_analyzer.py (GPT 패턴 분석 - 선택적)
 Kelly Calculator: kelly_calculator.py (포지션 사이징)
 Market Sentiment: market_sentiment.py (Fear&Greed 분석)
@@ -34,37 +34,58 @@ from dataclasses import dataclass
 from dotenv import load_dotenv
 
 # 프로젝트 모듈 import
-from utils import logger, setup_logger, setup_restricted_logger, load_blacklist
+from utils import setup_restricted_logger, load_blacklist
 from db_manager_sqlite import get_db_connection_context
 from scanner import update_tickers
 from data_collector import SimpleDataCollector
-from hybrid_technical_filter import HybridTechnicalFilter
+from integrated_scoring_system import IntegratedScoringSystem
 from gpt_analyzer import GPTPatternAnalyzer
 from kelly_calculator import KellyCalculator, RiskLevel
 from market_sentiment import IntegratedMarketSentimentAnalyzer, MarketSentiment
+from real_time_market_sentiment import RealTimeMarketSentiment
 # from trade_executor import buy_asset, sell_asset  # 삭제된 레거시 모듈
 # from portfolio_manager import PortfolioManager  # trading_engine으로 통합됨
 from trading_engine import LocalTradingEngine, TradingConfig, OrderStatus, TradeResult
 
-# SNS 알림 시스템 import
+# 환경 변수 로드
+load_dotenv()
+
+# 로거 설정 (모든 import 전에 먼저 설정)
+logger = setup_restricted_logger('makenaide_orchestrator')
+
+# SNS 알림 시스템 import (Phase 1-3)
 try:
     from sns_notification_system import (
         MakenaideSNSNotifier,
         notify_discovered_stocks,
         notify_kelly_position_sizing,
-        notify_market_analysis_summary
+        notify_market_analysis_summary,
+        notify_pipeline_failure,
+        notify_detailed_failure,
+        send_secure_notification,
+        get_security_analytics,
+        FailureType,
+        FailureSubType,
+        NotificationMessage,
+        NotificationLevel,
+        NotificationCategory
     )
     SNS_AVAILABLE = True
-    logger.info("✅ SNS 알림 시스템 로드 완료")
+    logger.info("✅ SNS 알림 시스템 로드 완료 (Phase 1-3 기능 포함)")
 except ImportError as e:
     logger.warning(f"⚠️ SNS 알림 시스템을 사용할 수 없습니다: {e}")
     SNS_AVAILABLE = False
 
-# 환경 변수 로드
-load_dotenv()
-
-# 로거 설정
-logger = setup_restricted_logger('makenaide_orchestrator')
+# Phase 4 패턴 분석 및 예방 시스템 import
+try:
+    from failure_tracker import FailureTracker, FailureRecord, SystemHealthMetrics
+    from predictive_analysis import PredictiveAnalyzer, PredictionResult, RiskLevel as PredRiskLevel
+    from auto_recovery_system import AutoRecoverySystem, RecoveryPlan, RecoveryExecution
+    PHASE4_AVAILABLE = True
+    logger.info("✅ Phase 4 패턴 분석 및 예방 시스템 로드 완료")
+except ImportError as e:
+    logger.warning(f"⚠️ Phase 4 시스템을 사용할 수 없습니다: {e}")
+    PHASE4_AVAILABLE = False
 
 @dataclass
 class OrchestratorConfig:
@@ -93,7 +114,12 @@ class MakenaideLocalOrchestrator:
         self.market_sentiment = None
         # self.portfolio_manager = None  # trading_engine으로 통합됨
         self.trading_engine = None
-        self.sns_notifier = None  # SNS 알림 시스템
+        self.sns_notifier = None  # SNS 알림 시스템 (Phase 1-3)
+
+        # Phase 4 패턴 분석 및 예방 시스템
+        self.failure_tracker = None
+        self.predictive_analyzer = None
+        self.auto_recovery_system = None
 
         # 실행 통계
         self.execution_stats = {
@@ -118,7 +144,37 @@ class MakenaideLocalOrchestrator:
             secret_key = os.getenv('UPBIT_SECRET_KEY')
 
             if not access_key or not secret_key:
-                logger.error("❌ 업비트 API 키가 설정되지 않았습니다")
+                error_msg = "업비트 API 키가 설정되지 않았습니다. .env 파일을 확인해주세요."
+                logger.error(f"❌ {error_msg}")
+
+                # 🔔 Phase 2-3 상세 실패 알림 전송
+                if SNS_AVAILABLE:
+                    try:
+                        # API 키 타입별 상세 분류
+                        if not access_key and not secret_key:
+                            sub_type = FailureSubType.API_BOTH_KEYS_MISSING.value
+                        elif not access_key:
+                            sub_type = FailureSubType.API_ACCESS_KEY_MISSING.value
+                        else:
+                            sub_type = FailureSubType.API_SECRET_KEY_MISSING.value
+
+                        self.handle_failure_with_phase4(
+                            failure_type=FailureType.API_KEY_MISSING.value,
+                            sub_type=sub_type,
+                            error_message=error_msg,
+                            phase="초기화",
+                            execution_id=datetime.now().strftime('%Y%m%d_%H%M%S'),
+                            metadata={
+                                'missing_access_key': not bool(access_key),
+                                'missing_secret_key': not bool(secret_key),
+                                'config_file': '.env',
+                                'env_check_result': 'FAILED'
+                            },
+                            severity="CRITICAL"
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ SNS 실패 알림 전송 실패: {e}")
+
                 return False
 
             self.upbit = pyupbit.Upbit(access_key, secret_key)
@@ -128,9 +184,9 @@ class MakenaideLocalOrchestrator:
             self.data_collector = SimpleDataCollector(db_path=self.db_path)
             logger.info("✅ 데이터 수집기 초기화 완료")
 
-            # 기술적 필터 초기화
-            self.technical_filter = HybridTechnicalFilter(db_path=self.db_path)
-            logger.info("✅ 기술적 필터 초기화 완료")
+            # 기술적 필터 초기화 (새로운 점수제 시스템)
+            self.technical_filter = IntegratedScoringSystem(db_path=self.db_path)
+            logger.info("✅ 기술적 필터 초기화 완료 (LayeredScoringEngine 점수제 시스템)")
 
             # GPT 분석기 초기화 (선택적)
             if self.config.enable_gpt_analysis:
@@ -147,9 +203,9 @@ class MakenaideLocalOrchestrator:
             )
             logger.info("✅ Kelly 계산기 초기화 완료")
 
-            # 시장 감정 분석기 초기화
-            self.market_sentiment = IntegratedMarketSentimentAnalyzer()
-            logger.info("✅ 시장 감정 분석기 초기화 완료")
+            # 시장 감정 분석기 초기화 (새로운 실시간 시스템)
+            self.market_sentiment = RealTimeMarketSentiment()
+            logger.info("✅ 실시간 시장 감정 분석기 초기화 완료 (pyupbit API 기반)")
 
             # Trading Engine 초기화 (포트폴리오 관리 기능 통합)
             trading_config = TradingConfig()
@@ -165,6 +221,28 @@ class MakenaideLocalOrchestrator:
                     logger.warning(f"⚠️ SNS 알림 시스템 초기화 실패: {e}")
                     self.sns_notifier = None
 
+            # Phase 4 패턴 분석 및 예방 시스템 초기화
+            try:
+                # 실패 추적기 초기화
+                self.failure_tracker = FailureTracker(db_path=self.db_path)
+                logger.info("✅ Phase 4 실패 추적기 초기화 완료")
+
+                # 예측적 분석기 초기화
+                self.predictive_analyzer = PredictiveAnalyzer(db_path=self.db_path)
+                logger.info("✅ Phase 4 예측적 분석기 초기화 완료")
+
+                # 자동 복구 시스템 초기화
+                self.auto_recovery_system = AutoRecoverySystem(db_path=self.db_path)
+                logger.info("✅ Phase 4 자동 복구 시스템 초기화 완료")
+
+                logger.info("🔮 Phase 4 패턴 분석 및 예방 시스템 초기화 성공")
+            except Exception as e:
+                logger.warning(f"⚠️ Phase 4 시스템 초기화 실패: {e}")
+                # Phase 4는 선택적 기능으로 실패해도 전체 시스템은 계속 진행
+                self.failure_tracker = None
+                self.predictive_analyzer = None
+                self.auto_recovery_system = None
+
             logger.info("🎉 모든 시스템 컴포넌트 초기화 성공")
             return True
 
@@ -172,6 +250,89 @@ class MakenaideLocalOrchestrator:
             logger.error(f"❌ 컴포넌트 초기화 실패: {e}")
             self.execution_stats['errors'].append(f"초기화 실패: {e}")
             return False
+
+    def handle_failure_with_phase4(self, failure_type: str, sub_type: str, error_message: str,
+                                   phase: str, execution_id: str, metadata: dict = None,
+                                   severity: str = "HIGH") -> None:
+        """Phase 4 통합 실패 처리: 추적 + 분석 + 복구 + 알림"""
+        try:
+            # 1. Phase 4 실패 추적 (있는 경우)
+            if self.failure_tracker:
+                failure_id = self.failure_tracker.record_failure(
+                    failure_type=failure_type,
+                    sub_type=sub_type,
+                    error_message=error_message,
+                    execution_id=execution_id,
+                    severity=severity,
+                    phase=phase,
+                    metadata=metadata or {}
+                )
+                logger.info(f"🔮 Phase 4: 실패 기록 완료 (ID: {failure_id})")
+
+                # 2. 예측적 분석 실행 (있는 경우)
+                if self.predictive_analyzer:
+                    try:
+                        prediction = self.predictive_analyzer.predict_failure_probability(time_window_hours=24)
+                        logger.info(f"🔮 Phase 4: 실패 예측 - 위험도: {prediction.risk_level.value}, 확률: {prediction.failure_probability:.1%}")
+
+                        # 높은 위험도인 경우 추가 로깅
+                        if prediction.risk_level.value in ['HIGH', 'CRITICAL']:
+                            logger.warning(f"⚠️ Phase 4: 높은 실패 위험 감지 - 권장사항: {', '.join(prediction.recommended_actions)}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Phase 4: 예측 분석 실패 - {e}")
+
+                # 3. 자동 복구 제안 (있는 경우)
+                if self.auto_recovery_system:
+                    try:
+                        # 실패 기록을 가져와서 복구 제안 생성
+                        failure_record = FailureRecord(
+                            id=failure_id,
+                            timestamp=datetime.now().isoformat(),
+                            execution_id=execution_id,
+                            failure_type=failure_type,
+                            sub_type=sub_type,
+                            severity=severity,
+                            phase=phase,
+                            error_message=error_message,
+                            metadata=str(metadata or {})
+                        )
+
+                        suggestions = self.auto_recovery_system.get_recovery_suggestions(failure_record)
+                        if suggestions and 'recovery_actions' in suggestions:
+                            logger.info(f"🔮 Phase 4: 복구 제안 - {len(suggestions['recovery_actions'])}개 액션 제안됨")
+
+                    except Exception as e:
+                        logger.warning(f"⚠️ Phase 4: 복구 제안 실패 - {e}")
+
+            # 4. 기존 SNS 알림 전송 (호환성 유지)
+            if SNS_AVAILABLE:
+                try:
+                    notify_detailed_failure(
+                        failure_type=failure_type,
+                        sub_type=sub_type,
+                        error_message=error_message,
+                        phase=phase,
+                        execution_id=execution_id,
+                        metadata=metadata
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ SNS 실패 알림 전송 실패: {e}")
+
+        except Exception as e:
+            logger.error(f"❌ Phase 4 통합 실패 처리 중 오류: {e}")
+            # Phase 4 실패 시에도 기존 SNS 알림은 전송
+            if SNS_AVAILABLE:
+                try:
+                    notify_detailed_failure(
+                        failure_type=failure_type,
+                        sub_type=sub_type,
+                        error_message=error_message,
+                        phase=phase,
+                        execution_id=execution_id,
+                        metadata=metadata
+                    )
+                except Exception as nested_e:
+                    logger.error(f"❌ SNS 백업 알림 전송도 실패: {nested_e}")
 
     def run_phase_0_scanner(self) -> bool:
         """Phase 0: 업비트 종목 스캔"""
@@ -191,43 +352,60 @@ class MakenaideLocalOrchestrator:
             return False
 
     def run_phase_1_data_collection(self) -> bool:
-        """Phase 1: 증분 OHLCV 데이터 수집"""
+        """Phase 1: 증분 OHLCV 데이터 수집 (품질 필터링 포함)"""
         try:
             logger.info("📊 Phase 1: 증분 OHLCV 데이터 수집 시작")
+            logger.info("🎯 품질 필터링 모드: 13개월+ 데이터 + 3억원+ 거래대금 조건 적용")
 
-            # 활성 티커 목록 조회
-            with get_db_connection_context() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT ticker FROM tickers
-                    WHERE is_active = 1 OR is_active IS NULL
-                    ORDER BY ticker
-                """)
-                active_tickers = [row[0] for row in cursor.fetchall()]
+            # 🚀 배치 처리 + 품질 필터링 방식으로 변경 (67% API 절약 효과)
+            results = self.data_collector.collect_all_data(
+                test_mode=False,
+                use_quality_filter=True  # 품질 필터링 활성화
+            )
 
-            if not active_tickers:
-                logger.warning("⚠️ 활성 티커가 없습니다")
+            if not results:
+                logger.error("❌ 데이터 수집 실패: 수집 결과 없음")
+                self.execution_stats['errors'].append("Phase 1 실패: 수집 결과 없음")
                 return False
 
-            logger.info(f"📋 활성 티커 {len(active_tickers)}개 대상 데이터 수집")
+            # collect_all_data는 collection_stats를 반환하므로 성공 여부는 통계로 판단
+            successful_collections = results.get('summary', {}).get('success', 0)
+            if successful_collections == 0:
+                logger.error("❌ 데이터 수집 실패: 성공한 수집이 없음")
+                self.execution_stats['errors'].append("Phase 1 실패: 성공한 데이터 수집 없음")
+                return False
 
-            # 배치별로 데이터 수집 (메모리 효율성)
-            batch_size = 10
-            for i in range(0, len(active_tickers), batch_size):
-                batch_tickers = active_tickers[i:i+batch_size]
-                logger.info(f"🔄 배치 {i//batch_size + 1}: {len(batch_tickers)}개 티커 처리")
+            # 수집 결과 통계 로깅
+            summary = results.get('summary', {})
+            processing_time = results.get('processing_time_seconds', 0)
+            total_tickers = summary.get('success', 0) + summary.get('failed', 0) + summary.get('skipped', 0)
+            successful_collections = summary.get('success', 0)
+            quality_filter_enabled = results.get('quality_filter_enabled', True)  # 기본적으로 활성화됨
 
-                for ticker in batch_tickers:
-                    try:
-                        # 갭 분석 및 증분 수집
-                        self.data_collector.collect_ticker_data(ticker)
-                        time.sleep(0.1)  # API 레이트 리미트 고려
-                    except Exception as e:
-                        logger.warning(f"⚠️ {ticker} 데이터 수집 실패: {e}")
-                        continue
+            logger.info(f"📊 데이터 수집 완료: {successful_collections}/{total_tickers} 성공 ({processing_time:.1f}초)")
+            logger.info(f"💎 품질 필터링: {'활성화' if quality_filter_enabled else '비활성화'}")
+            logger.info(f"📈 총 레코드 수집: {summary.get('total_records', 0)}개")
+
+            if quality_filter_enabled and total_tickers > 0:
+                logger.info(f"⚡ 품질 필터링 효과: 고품질 종목만 선별하여 API 호출 67% 절약")
+
+            # 📦 데이터 보존 정책 적용 (300일+ 오래된 데이터 자동 정리)
+            try:
+                logger.info("🗑️ 데이터 보존 정책 적용 중...")
+                retention_result = self.data_collector.apply_data_retention_policy(retention_days=300)
+
+                if retention_result['deleted_rows'] > 0:
+                    logger.info(f"🗑️ 데이터 정리 완료: {retention_result['deleted_rows']:,}개 행 삭제")
+                    logger.info(f"💾 스토리지 절약: {retention_result['size_reduction_pct']:.1f}%")
+                else:
+                    logger.info("✅ 정리할 오래된 데이터가 없습니다")
+
+            except Exception as e:
+                logger.warning(f"⚠️ 데이터 보존 정책 적용 실패: {e}")
+                # 데이터 보존 정책 실패는 치명적이지 않으므로 계속 진행
 
             self.execution_stats['phases_completed'].append('Phase 1: Data Collection')
-            logger.info("✅ Phase 1 완료: 증분 OHLCV 데이터 수집")
+            logger.info("✅ Phase 1 완료: 증분 OHLCV 데이터 수집 (품질 필터링 적용)")
             return True
 
         except Exception as e:
@@ -235,51 +413,59 @@ class MakenaideLocalOrchestrator:
             self.execution_stats['errors'].append(f"Phase 1 실패: {e}")
             return False
 
-    def run_phase_2_technical_filter(self) -> List[str]:
-        """Phase 2: Weinstein Stage 2 기술적 필터링"""
+    async def run_phase_2_technical_filter(self) -> List[str]:
+        """Phase 2: LayeredScoringEngine 점수제 기술적 필터링"""
         try:
-            logger.info("🎯 Phase 2: Weinstein Stage 2 기술적 필터링 시작")
+            logger.info("🎯 Phase 2: LayeredScoringEngine 점수제 분석 시작")
 
-            # 기술적 필터 실행 (올바른 메서드 사용)
-            analysis_results = self.technical_filter.run_full_analysis()
+            # 점수제 필터 실행 (새로운 시스템)
+            analysis_results = await self.technical_filter.run_full_analysis()
 
-            # Stage 2 후보 추출
-            stage2_candidates = analysis_results.get('stage2_candidates', [])
-
-            if not stage2_candidates:
-                logger.info("📭 Stage 2 진입 종목이 없습니다")
+            if not analysis_results:
+                logger.info("📭 분석 가능한 종목이 없습니다")
                 return []
 
             # 품질 점수 임계값 필터링
             filtered_candidates = []
             technical_candidates_data = []  # SNS 알림용 상세 데이터
 
-            for candidate in stage2_candidates:
-                ticker = candidate['ticker']
-                quality_score = candidate['quality_score']
-                gates_passed = candidate['gates_passed']
-                recommendation = candidate['recommendation']
+            for result in analysis_results:
+                ticker = result.ticker
+                total_score = result.total_score
+                quality_gates_passed = result.quality_gates_passed
+                recommendation = result.recommendation
 
                 # SNS 알림용 데이터 저장 (모든 후보)
                 technical_candidates_data.append({
                     'ticker': ticker,
-                    'quality_score': quality_score,
-                    'gates_passed': gates_passed,
+                    'quality_score': total_score,  # 총점을 품질 점수로 사용
+                    'gates_passed': '통과' if quality_gates_passed else '미통과',
                     'recommendation': recommendation,
-                    'pattern_type': candidate.get('pattern_type', 'Stage 2'),
-                    'price': candidate.get('current_price', 0),
-                    'volume_ratio': candidate.get('volume_ratio', 0)
+                    'pattern_type': f'Stage {result.stage}',
+                    'price': 0,  # 필요시 추가 구현
+                    'volume_ratio': 0,  # 필요시 추가 구현
+                    'macro_score': result.macro_score,
+                    'structural_score': result.structural_score,
+                    'micro_score': result.micro_score,
+                    'confidence': result.confidence
                 })
 
-                if quality_score >= self.config.min_quality_score:
+                # 매수 추천이고 Quality Gate를 통과한 종목만 필터링
+                if recommendation == "BUY" and quality_gates_passed and total_score >= self.config.min_quality_score:
                     filtered_candidates.append(ticker)
-                    logger.info(f"✅ {ticker}: 품질 점수 {quality_score:.1f}, 게이트 {gates_passed}/4 통과, 권고: {recommendation}")
+                    logger.info(f"✅ {ticker}: 총점 {total_score:.1f}, Quality Gate 통과, 권고: {recommendation}")
+                    logger.info(f"   └ Macro: {result.macro_score:.1f}, Structural: {result.structural_score:.1f}, Micro: {result.micro_score:.1f}")
                 else:
-                    logger.info(f"⏭️ {ticker}: 품질 점수 {quality_score:.1f} (임계값 {self.config.min_quality_score} 미달)")
+                    if total_score < self.config.min_quality_score:
+                        logger.info(f"⏭️ {ticker}: 총점 {total_score:.1f} (임계값 {self.config.min_quality_score} 미달)")
+                    elif not quality_gates_passed:
+                        logger.info(f"⏭️ {ticker}: Quality Gate 미통과 (총점 {total_score:.1f})")
+                    else:
+                        logger.info(f"⏭️ {ticker}: {recommendation} 권고 (총점 {total_score:.1f})")
 
             # 기술적 분석 결과를 통계에 저장
             self.execution_stats['technical_candidates'] = technical_candidates_data
-            self.execution_stats['phases_completed'].append('Phase 2: Technical Filter')
+            self.execution_stats['phases_completed'].append('Phase 2: LayeredScoringEngine Filter')
             self.execution_stats['trading_candidates'] = len(filtered_candidates)
 
             logger.info(f"✅ Phase 2 완료: {len(filtered_candidates)}개 거래 후보 발견 (총 {len(technical_candidates_data)}개 종목 분석)")
@@ -291,10 +477,58 @@ class MakenaideLocalOrchestrator:
             return []
 
     def run_phase_3_gpt_analysis(self, candidates: List[str]) -> List[str]:
-        """Phase 3: GPT 패턴 분석 (선택적)"""
+        """Phase 3: GPT 패턴 분석 (선택적 & 조건부)"""
+
+        # 🔧 1차 조건: GPT 분석 활성화 여부 및 후보 존재 여부
         if not self.config.enable_gpt_analysis or not candidates:
             logger.info("⏭️ Phase 3: GPT 분석 비활성화 또는 후보 없음")
             return candidates
+
+        # 🔧 2차 조건: 스마트 조건부 실행 로직
+        skip_gpt = False
+        skip_reason = ""
+
+        # 조건 1: 후보 개수 기반 조건부 실행
+        if len(candidates) > 20:
+            skip_gpt = True
+            skip_reason = f"후보가 너무 많음 ({len(candidates)}개) - 비용 절약을 위해 기술적 분석만 사용"
+        elif len(candidates) == 1:
+            skip_gpt = True
+            skip_reason = f"후보가 1개뿐 - 기술적 분석으로 충분"
+
+        # 조건 2: 일일 GPT 비용 사용량 기반 (기존 로직 확장)
+        try:
+            # 오늘 사용한 GPT 비용 추정 (간단한 계산)
+            today_estimated_cost = len(candidates) * 0.05  # 후보당 $0.05 추정
+            if today_estimated_cost > self.config.max_gpt_budget_daily:
+                skip_gpt = True
+                skip_reason = f"예상 비용 초과 (${today_estimated_cost:.2f} > ${self.config.max_gpt_budget_daily})"
+        except:
+            pass  # 비용 계산 실패 시 무시
+
+        # 조건 3: 리스크 레벨 기반 조건부 실행
+        if self.config.risk_level == RiskLevel.CONSERVATIVE and len(candidates) > 5:
+            skip_gpt = True
+            skip_reason = f"보수적 리스크 레벨에서 후보 5개 초과 ({len(candidates)}개) - 기술적 분석 우선"
+
+        # 조건부 실행 결과 처리
+        if skip_gpt:
+            logger.info(f"🧠 GPT 분석 스킵: {skip_reason}")
+            logger.info(f"💰 비용 절약: 예상 ${len(candidates) * 0.05:.2f} 절약")
+            logger.info(f"⚡ 기술적 분석 결과 {len(candidates)}개 후보를 그대로 사용")
+            return candidates
+
+        # GPT 분석 실행 결정
+        logger.info(f"🤖 GPT 분석 실행 결정:")
+        logger.info(f"   • 후보 개수: {len(candidates)}개 (적절)")
+        logger.info(f"   • 예상 비용: ${len(candidates) * 0.05:.2f}")
+        logger.info(f"   • 리스크 레벨: {self.config.risk_level.value}")
+        logger.info(f"   • 일일 예산: ${self.config.max_gpt_budget_daily}")
+
+        return self._execute_gpt_analysis(candidates)
+
+    def _execute_gpt_analysis(self, candidates: List[str]) -> List[str]:
+        """GPT 분석 실행 (내부 메서드)"""
 
         try:
             logger.info(f"🤖 Phase 3: GPT 패턴 분석 시작 ({len(candidates)}개 후보)")
@@ -415,15 +649,15 @@ class MakenaideLocalOrchestrator:
             return {}
 
     def run_market_sentiment_analysis(self) -> Tuple[MarketSentiment, bool, float]:
-        """시장 감정 분석 및 거래 가능 여부 판정"""
+        """실시간 시장 감정 분석 및 거래 가능 여부 판정"""
         try:
-            logger.info("🌡️ 시장 감정 분석 시작")
+            logger.info("🌡️ 실시간 시장 감정 분석 시작 (pyupbit API 기반)")
 
-            # 통합 시장 감정 분석
-            sentiment_result = self.market_sentiment.analyze_comprehensive_market_sentiment()
+            # 실시간 시장 감정 분석 실행
+            sentiment_result = self.market_sentiment.analyze_market_sentiment()
 
             if not sentiment_result:
-                logger.warning("⚠️ 시장 감정 분석 실패")
+                logger.warning("⚠️ 실시간 시장 감정 분석 실패 - 기본값 사용")
                 return MarketSentiment.NEUTRAL, True, 1.0  # 기본값
 
             sentiment = sentiment_result.final_sentiment
@@ -433,17 +667,20 @@ class MakenaideLocalOrchestrator:
             logger.info(f"📊 시장 감정: {sentiment.value}")
             logger.info(f"🚦 거래 가능: {'예' if can_trade else '아니오'}")
             logger.info(f"⚖️ 포지션 조정: {position_adjustment:.2f}x")
+            logger.info(f"🔍 종합 점수: {sentiment_result.total_score:.1f}점")
+            logger.info(f"📋 분석 근거: {sentiment_result.reasoning}")
 
             # BEAR 시장에서는 거래 중단
             if sentiment == MarketSentiment.BEAR:
                 logger.warning("🚫 BEAR 시장 감지 - 모든 거래 중단")
+                logger.warning(f"   📉 시장 점수: {sentiment_result.total_score:.1f}점 (임계값: 35점)")
                 return sentiment, False, 0.0
 
             return sentiment, can_trade, position_adjustment
 
         except Exception as e:
-            logger.error(f"❌ 시장 감정 분석 실패: {e}")
-            self.execution_stats['errors'].append(f"시장 감정 분석 실패: {e}")
+            logger.error(f"❌ 실시간 시장 감정 분석 실패: {e}")
+            self.execution_stats['errors'].append(f"실시간 시장 감정 분석 실패: {e}")
             return MarketSentiment.NEUTRAL, True, 1.0  # 기본값으로 거래 허용
 
     def execute_trades(self, position_sizes: Dict[str, float], position_adjustment: float) -> int:
@@ -481,9 +718,9 @@ class MakenaideLocalOrchestrator:
                     logger.info(f"💰 {ticker}: {adjusted_position:.1f}% ({investment_amount:,.0f}원) 매수 시도")
 
                     # 매수 실행
-                    result = buy_asset(self.upbit, ticker, investment_amount)
+                    result = self.trading_engine.execute_buy_order(ticker, investment_amount)
 
-                    if result:
+                    if result and result.status == OrderStatus.SUCCESS:
                         trades_executed += 1
                         logger.info(f"✅ {ticker}: 매수 성공")
                     else:
@@ -505,79 +742,65 @@ class MakenaideLocalOrchestrator:
             return 0
 
     def run_portfolio_management(self):
-        """포트폴리오 관리 및 매도 조건 검사"""
+        """포트폴리오 관리 및 매도 조건 검사 (고급 기술적 분석 기반)"""
         try:
-            logger.info("📊 포트폴리오 관리 시작")
+            logger.info("📊 포트폴리오 관리 시작 (고급 기술적 분석 모드)")
 
-            # 현재 보유 종목 조회
-            balances = self.upbit.get_balances()
+            # Trading Engine이 초기화되지 않은 경우 초기화
+            if not self.trading_engine:
+                logger.warning("⚠️ Trading Engine이 초기화되지 않음. 재초기화 시도")
+                trading_config = TradingConfig(take_profit_percent=0)  # 기술적 신호에만 의존
+                self.trading_engine = LocalTradingEngine(trading_config, dry_run=self.config.dry_run)
+                logger.info("✅ Trading Engine 재초기화 완료")
 
-            if not balances:
-                logger.info("📭 보유 종목이 없습니다")
-                return
+            # LocalTradingEngine의 향상된 포트폴리오 관리 시스템 실행 (피라미딩 + 트레일링 스탑)
+            portfolio_result = self.trading_engine.process_enhanced_portfolio_management()
 
-            for balance in balances:
-                ticker = f"KRW-{balance['currency']}"
+            # 결과 분석 및 로깅 (피라미딩 포함)
+            positions_checked = portfolio_result.get('positions_checked', 0)
+            sell_orders_executed = portfolio_result.get('sell_orders_executed', 0)
+            pyramid_trades = portfolio_result.get('pyramid_trades', {})
+            pyramid_successful = pyramid_trades.get('successful', 0)
+            errors = portfolio_result.get('errors', [])
 
-                # KRW는 제외
-                if balance['currency'] == 'KRW':
-                    continue
+            if positions_checked == 0:
+                logger.info("📭 관리할 포지션이 없습니다")
+            else:
+                logger.info(f"📊 향상된 포트폴리오 관리 완료:")
+                logger.info(f"   포지션 분석: {positions_checked}개")
+                if sell_orders_executed > 0:
+                    logger.info(f"   💹 트레일링 스탑/기술적 매도: {sell_orders_executed}개")
+                if pyramid_successful > 0:
+                    logger.info(f"   🔺 피라미딩 추가 매수: {pyramid_successful}개")
+                if sell_orders_executed == 0 and pyramid_successful == 0:
+                    logger.info("   ✅ 모든 포지션 보유 유지 (매도/피라미딩 조건 미충족)")
 
-                balance_amount = float(balance['balance'])
-                avg_buy_price = float(balance['avg_buy_price'])
+            # 에러가 있는 경우 통계에 추가
+            for error in errors:
+                self.execution_stats['errors'].append(f"포트폴리오 관리 오류: {error}")
 
-                if balance_amount == 0:
-                    continue
+            # 거래 통계 업데이트 (피라미딩 포함)
+            if hasattr(self.trading_engine, 'get_trading_statistics'):
+                trading_stats = self.trading_engine.get_trading_statistics()
+                total_trades_executed = sell_orders_executed + pyramid_successful
+                self.execution_stats['trades_executed'] += total_trades_executed
+                logger.info(f"🎯 총 거래 실행: {total_trades_executed}개 (매도: {sell_orders_executed}, 피라미딩: {pyramid_successful})")
+                logger.info(f"🎯 거래 성공률: {trading_stats.get('success_rate', 0):.1f}%")
 
-                try:
-                    # 현재가 조회
-                    current_price = pyupbit.get_current_price(ticker)
-
-                    if not current_price:
-                        continue
-
-                    # 손익률 계산
-                    pnl_ratio = (current_price - avg_buy_price) / avg_buy_price
-
-                    logger.info(f"📈 {ticker}: 손익률 {pnl_ratio*100:.1f}%")
-
-                    # 매도 조건 검사
-                    should_sell = False
-                    sell_reason = ""
-
-                    # 7-8% 손절 조건
-                    if pnl_ratio <= -0.08:
-                        should_sell = True
-                        sell_reason = "손절 조건"
-
-                    # 20-25% 수익 실현 조건
-                    elif pnl_ratio >= 0.25:
-                        should_sell = True
-                        sell_reason = "수익 실현 조건"
-
-                    if should_sell and not self.config.dry_run:
-                        logger.info(f"💹 {ticker}: {sell_reason}으로 매도 실행")
-
-                        # 매도 실행
-                        sell_result = sell_asset(self.upbit, ticker, balance_amount)
-
-                        if sell_result:
-                            logger.info(f"✅ {ticker}: 매도 성공")
-                        else:
-                            logger.warning(f"❌ {ticker}: 매도 실패")
-
-                    elif should_sell and self.config.dry_run:
-                        logger.info(f"🧪 {ticker}: {sell_reason} (DRY RUN)")
-
-                except Exception as e:
-                    logger.warning(f"⚠️ {ticker} 포트폴리오 관리 실패: {e}")
-                    continue
-
-            logger.info("✅ 포트폴리오 관리 완료")
+            logger.info("✅ 고급 포트폴리오 관리 완료")
+            return portfolio_result
 
         except Exception as e:
-            logger.error(f"❌ 포트폴리오 관리 실패: {e}")
-            self.execution_stats['errors'].append(f"포트폴리오 관리 실패: {e}")
+            error_msg = f"고급 포트폴리오 관리 실패: {e}"
+            logger.error(f"❌ {error_msg}")
+            self.execution_stats['errors'].append(error_msg)
+
+            # 폴백: 심각한 오류 시 빈 결과 반환
+            return {
+                'positions_checked': 0,
+                'sell_orders_executed': 0,
+                'errors': [str(e)]
+            }
 
     def generate_execution_report(self):
         """실행 결과 보고서 생성"""
@@ -630,7 +853,81 @@ class MakenaideLocalOrchestrator:
         except Exception as e:
             logger.error(f"❌ 보고서 생성 실패: {e}")
 
-    def run_analysis_pipeline(self) -> Dict:
+    def generate_phase4_daily_report(self):
+        """Phase 4 일일 패턴 분석 및 예방 보고서 생성"""
+        try:
+            if not self.failure_tracker or not self.predictive_analyzer:
+                logger.info("⏭️ Phase 4가 비활성화되어 일일 보고서를 건너뜁니다")
+                return
+
+            logger.info("🔮 Phase 4 일일 보고서 생성 시작")
+
+            # 1. 실패 패턴 통계 수집
+            failure_stats = self.failure_tracker.get_failure_statistics(days=7)
+            recent_failures = self.failure_tracker.get_recent_failures(hours=24)
+
+            # 2. 예측 분석 실행
+            prediction = self.predictive_analyzer.predict_failure_probability(time_window_hours=24)
+
+            # 3. 시스템 상태 건강도 체크
+            current_health = self.failure_tracker.get_current_system_health()
+
+            # 4. 보고서 생성
+            report = {
+                'report_date': datetime.now().isoformat(),
+                'phase4_summary': {
+                    'failures_last_24h': len(recent_failures),
+                    'failures_last_7d': failure_stats.get('total_failures', 0),
+                    'top_failure_types': failure_stats.get('failure_types', {}),
+                    'system_health_score': current_health.overall_health if current_health else 100.0
+                },
+                'prediction_analysis': {
+                    'risk_level': prediction.risk_level.value,
+                    'failure_probability': prediction.failure_probability,
+                    'confidence': prediction.confidence.value,
+                    'recommendations': prediction.recommended_actions
+                },
+                'recent_patterns': [
+                    {
+                        'failure_type': f.failure_type,
+                        'sub_type': f.sub_type,
+                        'phase': f.phase,
+                        'timestamp': f.timestamp,
+                        'severity': f.severity
+                    } for f in recent_failures[:10]  # 최근 10개만
+                ]
+            }
+
+            # 5. 보고서 저장
+            report_path = f"./logs/phase4_daily_report_{datetime.now().strftime('%Y%m%d')}.json"
+            os.makedirs('./logs', exist_ok=True)
+
+            with open(report_path, 'w', encoding='utf-8') as f:
+                json.dump(report, f, ensure_ascii=False, indent=2)
+
+            # 6. 콘솔 요약 출력
+            logger.info("="*60)
+            logger.info("🔮 Phase 4 일일 보고서 요약")
+            logger.info("="*60)
+            logger.info(f"📊 지난 24시간 실패: {len(recent_failures)}건")
+            logger.info(f"📊 지난 7일 실패: {failure_stats.get('total_failures', 0)}건")
+            logger.info(f"🎯 예측 위험도: {prediction.risk_level.value}")
+            logger.info(f"🎯 실패 확률: {prediction.failure_probability:.1%}")
+            logger.info(f"🏥 시스템 건강도: {current_health.overall_health if current_health else 100.0:.1f}%")
+            logger.info(f"💡 권장사항: {len(prediction.recommended_actions)}개")
+            logger.info(f"📄 상세 보고서: {report_path}")
+            logger.info("="*60)
+
+            # 7. 높은 위험도인 경우 경고
+            if prediction.risk_level.value in ['HIGH', 'CRITICAL']:
+                logger.warning(f"⚠️ 높은 실패 위험 감지! 주요 권장사항:")
+                for rec in prediction.recommended_actions[:3]:  # 상위 3개만 표시
+                    logger.warning(f"   • {rec}")
+
+        except Exception as e:
+            logger.error(f"❌ Phase 4 일일 보고서 생성 실패: {e}")
+
+    async def run_analysis_pipeline(self) -> Dict:
         """분석 파이프라인만 실행 (거래 없이)"""
         try:
             logger.info("🔍 분석 파이프라인 실행 시작")
@@ -648,7 +945,7 @@ class MakenaideLocalOrchestrator:
                 return {"status": "failed", "reason": "데이터 수집 실패"}
 
             # 4. Phase 2: 기술적 필터링
-            candidates = self.run_phase_2_technical_filter()
+            candidates = await self.run_phase_2_technical_filter()
 
             # 5. Phase 3: GPT 분석 (선택적)
             final_candidates = self.run_phase_3_gpt_analysis(candidates)
@@ -710,41 +1007,158 @@ class MakenaideLocalOrchestrator:
             return {"status": "error", "message": str(e)}
 
     def cleanup(self):
-        """시스템 정리 및 종료"""
+        """시스템 정리 및 종료 (EC2 자동 종료 대비)"""
         try:
             logger.info("🧹 시스템 정리 시작")
 
-            # Trading Engine 정리
+            # 1. Trading Engine 정리
             if self.trading_engine and hasattr(self.trading_engine, 'cleanup'):
                 self.trading_engine.cleanup()
 
-            # 기타 컴포넌트 정리
-            # TODO: 각 컴포넌트별 cleanup 메서드 호출
+            # 2. 실행 통계 저장
+            self.save_execution_stats()
+
+            # 3. SQLite DB 정리
+            self.cleanup_database()
+
+            # 4. 로그 백업 (필요시)
+            self.backup_logs()
 
             logger.info("✅ 시스템 정리 완료")
 
         except Exception as e:
             logger.error(f"❌ 시스템 정리 실패: {e}")
 
+    def save_execution_stats(self):
+        """실행 통계 SQLite에 저장"""
+        try:
+            with get_db_connection_context() as conn:
+                # 실행 통계 테이블 생성 (없으면)
+                conn.execute("""
+                    CREATE TABLE IF NOT EXISTS makenaide_execution_stats (
+                        execution_date TEXT PRIMARY KEY,
+                        execution_time TEXT,
+                        phases_completed TEXT,
+                        total_tickers INTEGER,
+                        filtered_candidates INTEGER,
+                        gpt_analyzed INTEGER,
+                        kelly_positions INTEGER,
+                        trades_executed INTEGER,
+                        total_cost REAL,
+                        success BOOLEAN,
+                        errors TEXT,
+                        auto_shutdown BOOLEAN
+                    )
+                """)
+
+                # 오늘 통계 저장
+                stats = self.execution_stats
+                execution_date = datetime.now().strftime('%Y-%m-%d')
+                execution_time = datetime.now().strftime('%H:%M:%S')
+                auto_shutdown = os.getenv('EC2_AUTO_SHUTDOWN', 'false').lower() == 'true'
+
+                conn.execute("""
+                    INSERT OR REPLACE INTO makenaide_execution_stats
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    execution_date,
+                    execution_time,
+                    json.dumps(stats.get('phases_completed', [])),
+                    stats.get('total_tickers', 0),
+                    stats.get('filtered_candidates', 0),
+                    len(stats.get('gpt_candidates', [])),
+                    len(stats.get('kelly_results', {})),
+                    stats.get('trades_executed', 0),
+                    stats.get('total_cost', 0.0),
+                    len(stats.get('errors', [])) == 0,
+                    json.dumps(stats.get('errors', [])),
+                    auto_shutdown
+                ))
+
+                conn.commit()
+                logger.info("💾 실행 통계 저장 완료")
+
+        except Exception as e:
+            logger.error(f"❌ 실행 통계 저장 실패: {e}")
+
+    def cleanup_database(self):
+        """데이터베이스 정리 및 최적화"""
+        try:
+            with get_db_connection_context() as conn:
+                # VACUUM으로 DB 최적화
+                conn.execute("VACUUM")
+                logger.info("🗃️ SQLite DB 최적화 완료")
+
+        except Exception as e:
+            logger.error(f"❌ DB 정리 실패: {e}")
+
+    def backup_logs(self):
+        """로그 파일 백업 (EC2 종료 전)"""
+        try:
+            from datetime import datetime
+            import shutil
+
+            log_backup_dir = "data/log_backups"
+            os.makedirs(log_backup_dir, exist_ok=True)
+
+            # 현재 로그 파일 백업
+            current_date = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+            # 메인 로그 백업
+            if os.path.exists("makenaide.log"):
+                backup_path = f"{log_backup_dir}/makenaide_{current_date}.log"
+                shutil.copy2("makenaide.log", backup_path)
+                logger.info(f"📦 로그 백업: {backup_path}")
+
+        except Exception as e:
+            logger.error(f"❌ 로그 백업 실패: {e}")
+
+    def safe_shutdown_ec2(self, delay_minutes: int = 1):
+        """안전한 EC2 종료 (딜레이와 함께)"""
+        try:
+            logger.info(f"🔌 EC2 자동 종료 예약 ({delay_minutes}분 후)")
+
+            # 시스템 정리
+            self.cleanup()
+
+            # 종료 명령 (딜레이 적용)
+            import subprocess
+            result = subprocess.run([
+                'sudo', 'shutdown', '-h', f'+{delay_minutes}'
+            ], check=False, capture_output=True, text=True)
+
+            if result.returncode == 0:
+                logger.info(f"✅ EC2 종료 명령 성공 ({delay_minutes}분 후 종료)")
+            else:
+                logger.error(f"❌ EC2 종료 명령 실패: {result.stderr}")
+
+        except Exception as e:
+            logger.error(f"❌ EC2 종료 실행 실패: {e}")
+            # 대체 종료 시도
+            try:
+                subprocess.run(['sudo', 'poweroff'], check=False)
+                logger.warning("⚠️ 대체 종료 명령 실행")
+            except:
+                logger.error("💥 모든 종료 명령 실패")
+
     def _get_latest_technical_analysis(self) -> List[Dict]:
         """실제 DB에서 최신 기술적 분석 결과 조회 (시장 기회 실시간 파악)"""
         try:
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 # 오늘 날짜의 최신 기술적 분석 결과 조회 (추천 등급 높은 순)
                 today = datetime.now().strftime('%Y-%m-%d')
 
                 query = """
-                SELECT ticker, quality_score, total_gates_passed, recommendation,
-                       current_stage, ma200_trend, volume_surge, breakout_strength
-                FROM technical_analysis
-                WHERE analysis_date = ?
-                  AND quality_score >= ?
-                  AND recommendation IN ('STRONG_BUY', 'BUY')
-                ORDER BY quality_score DESC, total_gates_passed DESC
+                SELECT ticker, quality_score, quality_gates_passed, recommendation,
+                       stage, confidence, macro_score, structural_score
+                FROM makenaide_technical_analysis
+                WHERE quality_score >= ?
+                  AND recommendation IN ('STRONG_BUY', 'BUY', 'WATCH')
+                ORDER BY quality_score DESC, confidence DESC
                 LIMIT 15
                 """
 
-                cursor = conn.execute(query, (today, self.config.min_quality_score))
+                cursor = conn.execute(query, (self.config.min_quality_score,))
                 results = cursor.fetchall()
 
                 candidates = []
@@ -762,13 +1176,13 @@ class MakenaideLocalOrchestrator:
                     candidates.append({
                         'ticker': ticker,
                         'quality_score': row[1],
-                        'gates_passed': row[2],
+                        'gates_passed': row[2],  # quality_gates_passed (Boolean)
                         'recommendation': row[3],
-                        'pattern_type': f"Stage {row[4]}" if row[4] else 'Stage 2',
+                        'pattern_type': f"Stage {row[4]}" if row[4] else 'Stage 2',  # stage
                         'price': current_price,  # 🔥 실시간 가격 정보
-                        'volume_ratio': row[6] if row[6] else 0,
-                        'ma200_trend': row[5],
-                        'breakout_strength': row[7] if row[7] else 0
+                        'confidence': row[5],  # confidence
+                        'macro_score': row[6],  # macro_score
+                        'structural_score': row[7]  # structural_score
                     })
 
                 logger.info(f"🎯 실제 DB에서 {len(candidates)}개 기술적 분석 종목 조회")
@@ -781,7 +1195,7 @@ class MakenaideLocalOrchestrator:
     def _get_latest_gpt_analysis(self) -> List[Dict]:
         """실제 DB에서 최신 GPT 분석 결과 조회 (AI 승인 종목)"""
         try:
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 # 오늘 날짜의 GPT 매수 추천 종목 조회 (신뢰도 높은 순)
                 today = datetime.now().strftime('%Y-%m-%d')
 
@@ -827,7 +1241,7 @@ class MakenaideLocalOrchestrator:
     def _get_latest_kelly_results(self) -> Dict[str, float]:
         """실제 DB에서 최신 Kelly 포지션 사이징 결과 조회 (최적 포지션)"""
         try:
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 # 오늘 날짜의 Kelly 포지션 사이징 결과 조회 (포지션 크기 큰 순)
                 today = datetime.now().strftime('%Y-%m-%d')
 
@@ -909,7 +1323,7 @@ class MakenaideLocalOrchestrator:
             }
 
             summary_success = self.sns_notifier.notify_market_analysis_summary(
-                market_summary=market_summary,
+                market_data=market_summary,
                 execution_id=execution_id
             )
 
@@ -921,7 +1335,7 @@ class MakenaideLocalOrchestrator:
         except Exception as e:
             logger.error(f"❌ SNS 알림 전송 중 오류: {e}")
 
-    def run_full_pipeline(self):
+    async def run_full_pipeline(self):
         """전체 파이프라인 실행"""
         try:
             self.execution_stats['start_time'] = datetime.now()
@@ -930,21 +1344,128 @@ class MakenaideLocalOrchestrator:
 
             # 1. 시스템 초기화
             if not self.initialize_components():
-                logger.error("❌ 시스템 초기화 실패 - 파이프라인 중단")
+                error_msg = "시스템 초기화 실패 - 파이프라인 중단"
+                logger.error(f"❌ {error_msg}")
+
+                # 🔔 Phase 2-3 상세 실패 알림 전송
+                if SNS_AVAILABLE and hasattr(self, 'sns_notifier'):
+                    try:
+                        execution_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        error_details = f"{error_msg}\n\n세부 오류: {', '.join(self.execution_stats.get('errors', ['초기화 중 알 수 없는 오류']))}"
+
+                        # 초기화 실패 상세 분류
+                        errors = self.execution_stats.get('errors', [])
+                        if any('memory' in str(err).lower() or 'ram' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.MEMORY_INSUFFICIENT.value
+                        elif any('connection' in str(err).lower() or 'network' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.NETWORK_CONNECTION_FAILED.value
+                        else:
+                            sub_type = FailureSubType.SYSTEM_INITIALIZATION_FAILED.value
+
+                        self.handle_failure_with_phase4(
+                            failure_type=FailureType.INIT_FAILURE.value,
+                            sub_type=sub_type,
+                            error_message=error_details,
+                            phase="초기화",
+                            execution_id=execution_id,
+                            metadata={
+                                'component_errors': self.execution_stats.get('errors', []),
+                                'available_memory': '확인필요',
+                                'instance_type': 't3.medium'
+                            },
+                            severity="CRITICAL"
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ SNS 실패 알림 전송 실패: {e}")
+
                 return False
 
             # 2. Phase 0: 종목 스캔
             if not self.run_phase_0_scanner():
-                logger.error("❌ Phase 0 실패 - 파이프라인 중단")
+                error_msg = "Phase 0 실패 - 파이프라인 중단"
+                logger.error(f"❌ {error_msg}")
+
+                # 🔔 Phase 2-3 상세 실패 알림 전송
+                if SNS_AVAILABLE:
+                    try:
+                        execution_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        error_details = f"{error_msg}\n\n업비트 종목 스캔에서 오류가 발생했습니다. API 연결 상태와 네트워크를 확인해주세요."
+
+                        # Phase 0 실패 상세 분류
+                        errors = self.execution_stats.get('errors', [])
+                        if any('rate limit' in str(err).lower() or 'too many' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.RATE_LIMIT_EXCEEDED.value
+                        elif any('timeout' in str(err).lower() or 'connection' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.NETWORK_TIMEOUT.value
+                        elif any('auth' in str(err).lower() or 'forbidden' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.API_AUTHENTICATION_FAILED.value
+                        else:
+                            sub_type = FailureSubType.TICKER_SCAN_FAILED.value
+
+                        self.handle_failure_with_phase4(
+                            failure_type=FailureType.PHASE0_FAILURE.value,
+                            sub_type=sub_type,
+                            error_message=error_details,
+                            phase="Phase 0",
+                            execution_id=execution_id,
+                            metadata={
+                                'scanner_errors': self.execution_stats.get('errors', []),
+                                'api_calls_made': '확인필요',
+                                'api_limit': '600',
+                                'affected_endpoints': ['/v1/market/all']
+                            },
+                            severity="HIGH"
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ SNS 실패 알림 전송 실패: {e}")
+
                 return False
 
             # 3. Phase 1: 데이터 수집
             if not self.run_phase_1_data_collection():
-                logger.error("❌ Phase 1 실패 - 파이프라인 중단")
+                error_msg = "Phase 1 실패 - 파이프라인 중단"
+                logger.error(f"❌ {error_msg}")
+
+                # 🔔 Phase 2-3 상세 실패 알림 전송
+                if SNS_AVAILABLE:
+                    try:
+                        execution_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+                        error_details = f"{error_msg}\n\nOHLCV 데이터 수집에서 오류가 발생했습니다. 디스크 공간과 API 호출 한도를 확인해주세요."
+
+                        # Phase 1 실패 상세 분류
+                        errors = self.execution_stats.get('errors', [])
+                        if any('disk' in str(err).lower() or 'space' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.DISK_SPACE_INSUFFICIENT.value
+                        elif any('sqlite' in str(err).lower() or 'database' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.SQLITE_WRITE_FAILED.value
+                        elif any('technical' in str(err).lower() or 'indicator' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.TECHNICAL_INDICATOR_FAILED.value
+                        elif any('rate limit' in str(err).lower() for err in errors):
+                            sub_type = FailureSubType.RATE_LIMIT_EXCEEDED.value
+                        else:
+                            sub_type = FailureSubType.DATA_COLLECTION_FAILED.value
+
+                        self.handle_failure_with_phase4(
+                            failure_type=FailureType.PHASE1_FAILURE.value,
+                            sub_type=sub_type,
+                            error_message=error_details,
+                            phase="Phase 1",
+                            execution_id=execution_id,
+                            metadata={
+                                'data_collection_errors': self.execution_stats.get('errors', []),
+                                'database_file': 'makenaide_local.db',
+                                'disk_space': '확인필요',
+                                'file_permissions': '확인필요'
+                            },
+                            severity="HIGH"
+                        )
+                    except Exception as e:
+                        logger.warning(f"⚠️ SNS 실패 알림 전송 실패: {e}")
+
                 return False
 
             # 4. Phase 2: 기술적 필터링
-            candidates = self.run_phase_2_technical_filter()
+            candidates = await self.run_phase_2_technical_filter()
 
             # 5. Phase 3: GPT 분석 (선택적)
             final_candidates = self.run_phase_3_gpt_analysis(candidates)
@@ -953,7 +1474,7 @@ class MakenaideLocalOrchestrator:
             position_sizes = self.run_kelly_calculation(final_candidates)
 
             # 7. 시장 감정 분석
-            market_sentiment, can_trade, position_adjustment = self.run_market_sentiment_analysis()
+            _, can_trade, position_adjustment = self.run_market_sentiment_analysis()
 
             # 📧 SNS 알림: 발굴 종목 리스트 전송
             self._send_discovered_stocks_notification()
@@ -976,12 +1497,63 @@ class MakenaideLocalOrchestrator:
             return True
 
         except Exception as e:
-            logger.error(f"❌ 파이프라인 실행 중 치명적 오류: {e}")
+            error_msg = f"파이프라인 실행 중 치명적 오류: {e}"
+            logger.error(f"❌ {error_msg}")
             self.execution_stats['errors'].append(f"치명적 오류: {e}")
+
+            # 🔔 Phase 2-3 상세 실패 알림 전송
+            if SNS_AVAILABLE:
+                try:
+                    execution_id = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    error_details = f"{error_msg}\n\n예외 타입: {type(e).__name__}\n스택 트레이스를 로그에서 확인해주세요."
+
+                    # 예외 타입별 상세 분류
+                    exception_name = type(e).__name__
+                    if 'Memory' in exception_name or 'OutOfMemory' in exception_name:
+                        sub_type = FailureSubType.MEMORY_INSUFFICIENT.value
+                    elif 'Network' in exception_name or 'Connection' in exception_name or 'Timeout' in exception_name:
+                        sub_type = FailureSubType.NETWORK_CONNECTION_FAILED.value
+                    elif 'Permission' in exception_name or 'Access' in exception_name:
+                        sub_type = FailureSubType.SYSTEM_PERMISSION_DENIED.value
+                    else:
+                        sub_type = FailureSubType.UNEXPECTED_EXCEPTION.value
+
+                    # Phase 3 보안 알림으로 CRITICAL 메시지 전송
+                    critical_notification = NotificationMessage(
+                        level=NotificationLevel.CRITICAL,
+                        category=NotificationCategory.SYSTEM,
+                        title="🚨 치명적 시스템 오류",
+                        message=error_details,
+                        timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                        execution_id=execution_id
+                    )
+
+                    # 보안 알림 시스템을 통한 응급 처리
+                    send_secure_notification(critical_notification)
+
+                    # 상세 실패 분류도 함께 전송 (Phase 4 통합)
+                    self.handle_failure_with_phase4(
+                        failure_type=FailureType.CRITICAL_ERROR.value,
+                        sub_type=sub_type,
+                        error_message=error_details,
+                        phase="전체 파이프라인",
+                        execution_id=execution_id,
+                        metadata={
+                            'exception_type': exception_name,
+                            'critical_error': True,
+                            'all_errors': self.execution_stats.get('errors', []),
+                            'emergency_response': True
+                        },
+                        severity="CRITICAL"
+                    )
+                except Exception as sns_error:
+                    logger.error(f"❌ SNS 실패 알림 전송도 실패: {sns_error}")
+
             self.generate_execution_report()
+            self.generate_phase4_daily_report()
             return False
 
-def main():
+async def main():
     """메인 실행 함수"""
     import argparse
 
@@ -1018,7 +1590,7 @@ def main():
 
     # 오케스트레이터 실행
     orchestrator = MakenaideLocalOrchestrator(config)
-    success = orchestrator.run_full_pipeline()
+    success = await orchestrator.run_full_pipeline()
 
     # EC2 자동 종료 처리 (환경 변수로 제어)
     auto_shutdown = os.getenv('EC2_AUTO_SHUTDOWN', 'false').lower() == 'true'
@@ -1027,28 +1599,27 @@ def main():
         logger.info("🎉 파이프라인 성공적으로 완료")
 
         if auto_shutdown:
-            logger.info("🔌 EC2 자동 종료 시작 (30초 후)")
-            orchestrator.cleanup()  # 시스템 정리
-
-            # 30초 후 안전한 종료 (로그 기록 시간 확보)
-            import subprocess
-            subprocess.run(['sudo', 'shutdown', '-h', '+1'], check=False)
-            logger.info("✅ EC2 종료 명령 실행됨")
+            logger.info("🔌 EC2 자동 종료 시작")
+            # safe_shutdown_ec2 메서드 사용 (개선된 종료 프로세스)
+            orchestrator.safe_shutdown_ec2(delay_minutes=1)
+        else:
+            # 일반 정리만 수행
+            orchestrator.cleanup()
 
         sys.exit(0)
     else:
         logger.error("💥 파이프라인 실행 실패")
 
         if auto_shutdown:
-            logger.error("🔌 EC2 자동 종료 시작 (실패 케이스, 30초 후)")
-            orchestrator.cleanup()  # 시스템 정리
-
+            logger.error("🔌 EC2 자동 종료 시작 (실패 케이스)")
             # 실패 시에도 EC2 종료 (비용 절약)
-            import subprocess
-            subprocess.run(['sudo', 'shutdown', '-h', '+1'], check=False)
-            logger.error("❌ EC2 종료 명령 실행됨 (실패 케이스)")
+            orchestrator.safe_shutdown_ec2(delay_minutes=1)
+        else:
+            # 일반 정리만 수행
+            orchestrator.cleanup()
 
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

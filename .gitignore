@@ -382,6 +382,15 @@ phase*_test_results_*.json
 makenaide_local_backup_*.db
 *_backup_*.db
 
+# 개발 임시 파일
+debug_*.py
+test_*.py
+*_test.py
+response.json
+*.tar.gz
+comprehensive_*_test_results.json
+phase*_test_results_*.json
+
 # =============================================================================
 # ⚠️ 주의사항
 # =============================================================================

@@ -243,10 +243,10 @@ def setup_restricted_logger(logger_name: str = None):
     """
     제한된 로깅 설정을 초기화하고 로거를 반환합니다.
     특정 로그 파일 생성 제한을 적용합니다.
-    
+
     Args:
         logger_name (str): 로거 이름 (None이면 기본 로거)
-    
+
     Returns:
         logging.Logger: 설정된 로거 객체
     """
@@ -265,8 +265,12 @@ def setup_restricted_logger(logger_name: str = None):
         logger = logging.getLogger(logger_name)
     else:
         logger = logging.getLogger()
-    
+
     logger.setLevel(logging.INFO)
+
+    # 🔧 중복 로깅 방지: propagation 비활성화
+    if logger_name:
+        logger.propagate = False
 
     # 기존 핸들러 삭제
     if logger.hasHandlers():

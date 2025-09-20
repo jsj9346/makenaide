@@ -86,7 +86,10 @@ def update_tickers():
                 if ticker in existing_ticker_times:
                     last_update = existing_ticker_times[ticker]
                     # SQLite는 문자열로 저장되므로 datetime 객체와 비교하기 위해 파싱 필요
-                    if isinstance(last_update, str):
+                    if last_update is None:
+                        # NULL 값인 경우 업데이트 강제 실행
+                        last_update = datetime.min
+                    elif isinstance(last_update, str):
                         try:
                             last_update = datetime.fromisoformat(last_update.replace('Z', '+00:00').replace(' ', 'T'))
                         except ValueError:

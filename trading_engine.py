@@ -28,6 +28,9 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 from enum import Enum
+
+# 블랙리스트 기능 임포트
+from utils import load_blacklist
 from dotenv import load_dotenv
 
 # 프로젝트 모듈 import
@@ -55,6 +58,7 @@ class OrderStatus(Enum):
     SUCCESS_PARTIAL_NO_AVG = "SUCCESS_PARTIAL_NO_AVG"  # 부분 체결 + trades 정보 없음
     FAILURE = "FAILURE"
     SKIPPED = "SKIPPED"
+    API_ERROR = "API_ERROR"  # API 오류 (IP 인증 실패 등)
 
 @dataclass
 class TradeResult:
@@ -89,10 +93,155 @@ class TradingConfig:
     min_order_amount_krw: float = 10000  # 최소 주문 금액
     max_positions: int = 8  # 최대 동시 보유 종목
     stop_loss_percent: float = -8.0  # 손절 비율 (%)
-    take_profit_percent: float = 25.0  # 익절 비율 (%)
+    take_profit_percent: float = 0  # 익절 비율 (%)
     taker_fee_rate: float = 0.00139  # Taker 수수료 (0.139%)
     maker_fee_rate: float = 0.0005  # Maker 수수료 (0.05%)
     api_rate_limit_delay: float = 0.5  # API 호출 간격 (초)
+
+class PyramidingManager:
+    """Stage 2 전고점 돌파 시 피라미딩 매수 관리자"""
+
+    def __init__(self, max_pyramids: int = 3, pyramid_multiplier: float = 0.5):
+        """
+        Args:
+            max_pyramids: 최대 피라미드 횟수
+            pyramid_multiplier: 추가 매수 시 포지션 사이즈 배수 (0.5 = 50% 크기)
+        """
+        self.max_pyramids = max_pyramids
+        self.pyramid_multiplier = pyramid_multiplier
+
+        # 티커별 피라미딩 상태 추적
+        self.initial_buy_price = {}      # 최초 매수가
+        self.pyramid_levels = {}         # 현재 피라미드 레벨
+        self.last_breakout_price = {}    # 마지막 돌파 가격
+        self.highest_after_buy = {}      # 마지막 매수 후 최고가
+
+    def register_initial_buy(self, ticker: str, buy_price: float):
+        """초기 매수 등록"""
+        self.initial_buy_price[ticker] = buy_price
+        self.pyramid_levels[ticker] = 1
+        self.last_breakout_price[ticker] = buy_price
+        self.highest_after_buy[ticker] = buy_price
+
+        logger.info(f"🏗️ {ticker} 피라미딩 초기화: 진입가={buy_price:.0f}원, 레벨=1")
+
+    def check_pyramid_opportunity(self, ticker: str, current_price: float,
+                                db_path: str = "./makenaide_local.db") -> Tuple[bool, float]:
+        """
+        피라미딩 기회 확인
+
+        Args:
+            ticker: 종목 코드
+            current_price: 현재가
+            db_path: SQLite DB 경로
+
+        Returns:
+            Tuple[bool, float]: (추가매수 여부, 추가매수 포지션 비율)
+        """
+        try:
+            # 기본 조건 확인
+            if ticker not in self.initial_buy_price:
+                return False, 0.0
+
+            if self.pyramid_levels[ticker] >= self.max_pyramids:
+                return False, 0.0
+
+            # 최고가 업데이트
+            if current_price > self.highest_after_buy[ticker]:
+                self.highest_after_buy[ticker] = current_price
+
+            # Stage 2 상태 확인
+            stage2_confirmed = self._check_stage2_status(ticker, db_path)
+            if not stage2_confirmed:
+                return False, 0.0
+
+            # 전고점 돌파 확인 (5% 이상 상승)
+            min_breakout_threshold = self.last_breakout_price[ticker] * 1.05
+
+            if current_price >= min_breakout_threshold:
+                # 추가 매수 조건 만족
+                additional_position = self._calculate_pyramid_size(ticker)
+
+                logger.info(f"🚀 {ticker} 피라미딩 기회 감지:")
+                logger.info(f"   현재가: {current_price:.0f}원")
+                logger.info(f"   돌파 기준: {min_breakout_threshold:.0f}원")
+                logger.info(f"   현재 레벨: {self.pyramid_levels[ticker]}")
+                logger.info(f"   추가 포지션: {additional_position:.1f}%")
+
+                return True, additional_position
+
+            return False, 0.0
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} 피라미딩 기회 확인 실패: {e}")
+            return False, 0.0
+
+    def _check_stage2_status(self, ticker: str, db_path: str) -> bool:
+        """Stage 2 상태 확인"""
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT current_stage, ma200_trend, volume_surge, breakout_strength
+                    FROM technical_analysis
+                    WHERE ticker = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                """, (ticker,))
+                result = cursor.fetchone()
+
+                if not result:
+                    return False
+
+                stage, ma200_trend, volume_surge, breakout_strength = result
+
+                # Stage 2 조건
+                is_stage2 = (stage == 2 and
+                           ma200_trend and ma200_trend > 0 and
+                           volume_surge and volume_surge >= 1.3)
+
+                return is_stage2
+
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} Stage 2 상태 확인 실패: {e}")
+            return False
+
+    def _calculate_pyramid_size(self, ticker: str) -> float:
+        """피라미드 추가 매수 크기 계산"""
+        current_level = self.pyramid_levels.get(ticker, 1)
+
+        # 첫 번째 추가매수: 2.0% (초기 포지션의 50%)
+        # 두 번째 추가매수: 1.0% (초기 포지션의 25%)
+        # 세 번째 추가매수: 0.5% (초기 포지션의 12.5%)
+        base_size = 2.0
+        return base_size * (self.pyramid_multiplier ** (current_level - 1))
+
+    def execute_pyramid_buy(self, ticker: str, current_price: float) -> bool:
+        """피라미딩 매수 실행 후 상태 업데이트"""
+        try:
+            self.pyramid_levels[ticker] += 1
+            self.last_breakout_price[ticker] = current_price
+            self.highest_after_buy[ticker] = current_price
+
+            logger.info(f"✅ {ticker} 피라미딩 매수 완료: 레벨={self.pyramid_levels[ticker]}")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} 피라미딩 상태 업데이트 실패: {e}")
+            return False
+
+    def get_pyramid_info(self, ticker: str) -> Dict[str, Any]:
+        """피라미딩 정보 조회"""
+        if ticker not in self.initial_buy_price:
+            return {}
+
+        return {
+            'initial_buy_price': self.initial_buy_price[ticker],
+            'current_level': self.pyramid_levels[ticker],
+            'max_levels': self.max_pyramids,
+            'last_breakout_price': self.last_breakout_price[ticker],
+            'highest_after_buy': self.highest_after_buy[ticker]
+        }
 
 class TrailingStopManager:
     """ATR 기반 트레일링 스탑 관리자 (trade_executor.py에서 이식)"""
@@ -132,7 +281,7 @@ class TrailingStopManager:
                     cursor.execute("""
                         SELECT atr FROM technical_analysis
                         WHERE ticker = ?
-                        ORDER BY updated_at DESC
+                        ORDER BY created_at DESC
                         LIMIT 1
                     """, (ticker,))
                     result = cursor.fetchone()
@@ -201,6 +350,12 @@ class LocalTradingEngine:
             per_ticker_config={}  # 티커별 설정 (필요시 확장)
         )
 
+        # 피라미딩 관리자 초기화
+        self.pyramiding_manager = PyramidingManager(
+            max_pyramids=3,  # 최대 3단계까지 피라미딩
+            pyramid_multiplier=0.5  # 추가 매수 시 50% 크기
+        )
+
         # 거래 통계
         self.trading_stats = {
             'session_start': datetime.now(),
@@ -237,7 +392,7 @@ class LocalTradingEngine:
                 # trades 테이블에 거래 기록 저장
                 cursor.execute("""
                     INSERT INTO trades (
-                        ticker, order_type, order_status, order_id,
+                        ticker, order_type, status, order_id,
                         quantity, price, amount_krw, fee,
                         error_message, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -261,7 +416,7 @@ class LocalTradingEngine:
             logger.error(f"❌ 거래 기록 저장 실패: {e}")
 
     def get_current_positions(self) -> List[PositionInfo]:
-        """현재 보유 포지션 조회"""
+        """현재 보유 포지션 조회 (블랙리스트 필터링 적용)"""
         positions = []
 
         try:
@@ -269,12 +424,33 @@ class LocalTradingEngine:
                 logger.info("🧪 DRY RUN: 포지션 조회 건너뜀")
                 return positions
 
+            # 블랙리스트 로드
+            blacklist = load_blacklist()
+            if not blacklist:
+                logger.warning("⚠️ 블랙리스트 로드 실패, 필터링 없이 진행")
+                blacklist = {}
+
             # 업비트에서 잔고 조회
             balances = self.upbit.get_balances()
 
             if not balances:
                 logger.info("📭 보유 포지션이 없습니다")
                 return positions
+
+            # API 오류 응답 처리
+            if isinstance(balances, dict) and 'error' in balances:
+                error_info = balances['error']
+                logger.warning(f"⚠️ 업비트 API 오류: {error_info.get('name', 'unknown')} - {error_info.get('message', 'no message')}")
+                return positions
+
+            # balances가 리스트가 아닌 경우 처리
+            if not isinstance(balances, list):
+                logger.warning(f"⚠️ 예상치 못한 balances 타입: {type(balances)}")
+                return positions
+
+            # 블랙리스트 통계를 위한 카운터
+            total_balances = 0
+            blacklisted_positions = 0
 
             for balance in balances:
                 currency = balance['currency']
@@ -290,6 +466,13 @@ class LocalTradingEngine:
                     continue
 
                 ticker = f"KRW-{currency}"
+                total_balances += 1
+
+                # 블랙리스트 확인
+                if ticker in blacklist:
+                    blacklisted_positions += 1
+                    logger.info(f"⛔️ {ticker}: 블랙리스트에 등록되어 포트폴리오 관리 제외")
+                    continue
 
                 try:
                     # 현재가 조회
@@ -327,7 +510,9 @@ class LocalTradingEngine:
                     logger.warning(f"⚠️ {ticker} 포지션 정보 조회 실패: {e}")
                     continue
 
-            logger.info(f"📊 현재 보유 포지션: {len(positions)}개")
+            logger.info(f"📊 포트폴리오 관리 대상: {len(positions)}개 포지션")
+            if blacklisted_positions > 0:
+                logger.info(f"⛔️ 블랙리스트 필터링: {blacklisted_positions}개 포지션 제외 (총 {total_balances}개 중)")
             return positions
 
         except Exception as e:
@@ -341,7 +526,7 @@ class LocalTradingEngine:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT created_at FROM trades
-                    WHERE ticker = ? AND order_type = 'BUY' AND order_status = 'SUCCESS'
+                    WHERE ticker = ? AND order_type = 'BUY' AND status = 'SUCCESS'
                     ORDER BY created_at DESC
                     LIMIT 1
                 """, (ticker,))
@@ -363,6 +548,17 @@ class LocalTradingEngine:
 
             balances = self.upbit.get_balances()
             if not balances:
+                return 0.0
+
+            # API 오류 응답 처리
+            if isinstance(balances, dict) and 'error' in balances:
+                error_info = balances['error']
+                logger.warning(f"⚠️ 업비트 API 오류: {error_info.get('name', 'unknown')} - {error_info.get('message', 'no message')}")
+                return 0.0
+
+            # balances가 리스트가 아닌 경우 처리
+            if not isinstance(balances, list):
+                logger.warning(f"⚠️ 예상치 못한 balances 타입: {type(balances)}")
                 return 0.0
 
             total_krw = 0.0
@@ -507,6 +703,9 @@ class LocalTradingEngine:
                         self.trading_stats['total_volume_krw'] += total_value
                         self.trading_stats['total_fees_krw'] += fee
 
+                        # 피라미딩 초기화 (첫 매수 시)
+                        self.pyramiding_manager.register_initial_buy(ticker, avg_price)
+
                         logger.info(f"💰 {ticker} 매수 체결 완료: {executed_quantity:.8f}개, 평균가 {avg_price:,.0f}원")
                     else:
                         trade_result.error_message = f"체결 내역 있으나 총 체결 수량 0. OrderID: {order_id}"
@@ -650,6 +849,16 @@ class LocalTradingEngine:
 
             # 보유 수량 확인
             balance = self.upbit.get_balance(currency)
+
+            # API 오류 응답 처리
+            if isinstance(balance, dict) and 'error' in balance:
+                error_info = balance['error']
+                trade_result.error_message = f"API 오류: {error_info.get('name', 'unknown')}"
+                trade_result.status = OrderStatus.API_ERROR
+                logger.warning(f"⚠️ {ticker}: 업비트 API 오류 - {error_info.get('message', 'no message')}")
+                self.save_trade_record(trade_result)
+                return trade_result
+
             if not balance or balance <= 0:
                 trade_result.error_message = "보유 수량 없음"
                 trade_result.status = OrderStatus.SKIPPED
@@ -895,7 +1104,7 @@ class LocalTradingEngine:
                     SELECT supertrend, macd_histogram, support_level, adx
                     FROM technical_analysis
                     WHERE ticker = ?
-                    ORDER BY updated_at DESC
+                    ORDER BY created_at DESC
                     LIMIT 1
                 """, (ticker,))
                 result = cursor.fetchone()
@@ -964,7 +1173,7 @@ class LocalTradingEngine:
                     cursor.execute("""
                         SELECT analysis_result FROM gpt_analysis
                         WHERE ticker = ?
-                        ORDER BY updated_at DESC
+                        ORDER BY created_at DESC
                         LIMIT 1
                     """, (position.ticker,))
                     result = cursor.fetchone()
@@ -1159,6 +1368,173 @@ class LocalTradingEngine:
             logger.error(f"❌ 거래 세션 실행 실패: {e}")
 
         return session_result
+
+    def check_pyramid_opportunities(self) -> Dict[str, Dict]:
+        """모든 보유 포지션에서 피라미딩 기회 확인"""
+        pyramid_opportunities = {}
+
+        try:
+            positions = self.get_current_positions()
+
+            for position in positions:
+                try:
+                    # 피라미딩 기회 확인
+                    should_pyramid, additional_position = self.pyramiding_manager.check_pyramid_opportunity(
+                        position.ticker, position.current_price, self.db_path
+                    )
+
+                    if should_pyramid and additional_position > 0:
+                        pyramid_opportunities[position.ticker] = {
+                            'current_price': position.current_price,
+                            'additional_position_pct': additional_position,
+                            'pyramid_info': self.pyramiding_manager.get_pyramid_info(position.ticker)
+                        }
+
+                        logger.info(f"🔺 {position.ticker} 피라미딩 기회 발견: 추가 {additional_position:.1f}% 포지션")
+
+                except Exception as e:
+                    logger.error(f"❌ {position.ticker} 피라미딩 기회 확인 실패: {e}")
+
+            if pyramid_opportunities:
+                logger.info(f"📈 총 {len(pyramid_opportunities)}개 종목에서 피라미딩 기회 발견")
+            else:
+                logger.info("📊 현재 피라미딩 기회 없음")
+
+            return pyramid_opportunities
+
+        except Exception as e:
+            logger.error(f"❌ 피라미딩 기회 확인 실패: {e}")
+            return {}
+
+    def execute_pyramid_trades(self, pyramid_opportunities: Dict[str, Dict]) -> Dict[str, Any]:
+        """피라미딩 거래 실행"""
+        pyramid_results = {
+            'attempted': 0,
+            'successful': 0,
+            'failed': 0,
+            'details': []
+        }
+
+        try:
+            for ticker, opportunity in pyramid_opportunities.items():
+                try:
+                    pyramid_results['attempted'] += 1
+
+                    # 총 자산 조회
+                    total_balance = self.get_total_balance_krw()
+                    if total_balance <= 0:
+                        continue
+
+                    # 추가 투자 금액 계산
+                    additional_position_pct = opportunity['additional_position_pct']
+                    additional_amount = total_balance * (additional_position_pct / 100)
+
+                    if additional_amount < self.config.min_order_amount_krw:
+                        logger.info(f"⏭️ {ticker}: 피라미딩 금액 부족 ({additional_amount:,.0f}원)")
+                        continue
+
+                    logger.info(f"🔺 {ticker} 피라미딩 매수 실행: {additional_position_pct:.1f}% ({additional_amount:,.0f}원)")
+
+                    # 피라미딩 매수 실행
+                    trade_result = self.execute_buy_order(ticker, additional_amount)
+
+                    if trade_result.status in [
+                        OrderStatus.SUCCESS,
+                        OrderStatus.SUCCESS_NO_AVG_PRICE,
+                        OrderStatus.SUCCESS_PARTIAL,
+                        OrderStatus.SUCCESS_PARTIAL_NO_AVG
+                    ]:
+                        # 피라미딩 상태 업데이트
+                        self.pyramiding_manager.execute_pyramid_buy(ticker, opportunity['current_price'])
+
+                        pyramid_results['successful'] += 1
+                        pyramid_results['details'].append({
+                            'ticker': ticker,
+                            'status': 'success',
+                            'amount': additional_amount,
+                            'price': trade_result.price
+                        })
+
+                        logger.info(f"✅ {ticker} 피라미딩 매수 성공")
+                    else:
+                        pyramid_results['failed'] += 1
+                        pyramid_results['details'].append({
+                            'ticker': ticker,
+                            'status': 'failed',
+                            'error': trade_result.error_message
+                        })
+
+                        logger.warning(f"❌ {ticker} 피라미딩 매수 실패: {trade_result.error_message}")
+
+                    # API 레이트 리미트
+                    time.sleep(self.config.api_rate_limit_delay)
+
+                except Exception as e:
+                    pyramid_results['failed'] += 1
+                    pyramid_results['details'].append({
+                        'ticker': ticker,
+                        'status': 'error',
+                        'error': str(e)
+                    })
+                    logger.error(f"❌ {ticker} 피라미딩 실행 오류: {e}")
+
+            # 피라미딩 결과 요약
+            if pyramid_results['attempted'] > 0:
+                logger.info("="*50)
+                logger.info("🔺 피라미딩 거래 결과 요약")
+                logger.info("="*50)
+                logger.info(f"시도: {pyramid_results['attempted']}건")
+                logger.info(f"성공: {pyramid_results['successful']}건")
+                logger.info(f"실패: {pyramid_results['failed']}건")
+                logger.info("="*50)
+
+        except Exception as e:
+            logger.error(f"❌ 피라미딩 거래 실행 실패: {e}")
+
+        return pyramid_results
+
+    def process_enhanced_portfolio_management(self) -> Dict[str, Any]:
+        """향상된 포트폴리오 관리 (피라미딩 + 트레일링 스탑)"""
+        management_result = {
+            'positions_checked': 0,
+            'sell_orders_executed': 0,
+            'pyramid_trades': {},
+            'errors': []
+        }
+
+        try:
+            logger.info("🎯 향상된 포트폴리오 관리 시작 (피라미딩 + 트레일링 스탑)")
+
+            # 1. 기본 포트폴리오 관리 (매도 조건 확인)
+            basic_result = self.process_portfolio_management()
+            management_result.update(basic_result)
+
+            # 2. 피라미딩 기회 확인 및 실행
+            pyramid_opportunities = self.check_pyramid_opportunities()
+
+            if pyramid_opportunities:
+                logger.info(f"🔺 {len(pyramid_opportunities)}개 종목에서 피라미딩 실행")
+                pyramid_results = self.execute_pyramid_trades(pyramid_opportunities)
+                management_result['pyramid_trades'] = pyramid_results
+            else:
+                logger.info("📊 피라미딩 기회 없음")
+                management_result['pyramid_trades'] = {'attempted': 0, 'successful': 0, 'failed': 0}
+
+            # 3. 결과 요약
+            total_trades = (management_result['sell_orders_executed'] +
+                           management_result['pyramid_trades'].get('successful', 0))
+
+            logger.info("🎯 향상된 포트폴리오 관리 완료")
+            logger.info(f"   매도: {management_result['sell_orders_executed']}건")
+            logger.info(f"   피라미딩: {management_result['pyramid_trades'].get('successful', 0)}건")
+            logger.info(f"   총 거래: {total_trades}건")
+
+        except Exception as e:
+            error_msg = f"향상된 포트폴리오 관리 실패: {e}"
+            management_result['errors'].append(error_msg)
+            logger.error(f"❌ {error_msg}")
+
+        return management_result
 
 def main():
     """테스트용 메인 함수"""

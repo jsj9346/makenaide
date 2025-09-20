@@ -300,12 +300,12 @@ class MarketThermometer:
                 market_thermometer_config = config.get('market_thermometer', {})
                 thresholds = market_thermometer_config.get('thresholds', {})
                 
-                # 기본값 설정
+                # 기본값 설정 (2025-09-18 임계값 완화 적용)
                 default_thresholds = {
-                    'min_pct_up': 40.0,           #상승종목 비율
-                    'max_top10_volume': 75.0,     #거래대금 집중도
-                    'min_ma200_above': 20.0,      #MA200 상회 비율
-                    'min_sentiment_score': 40.0   #종합 점수
+                    'min_pct_up': 30.0,           #상승종목 비율 (40.0 → 30.0)
+                    'max_top10_volume': 85.0,     #거래대금 집중도 (75.0 → 85.0)
+                    'min_ma200_above': 10.0,      #MA200 상회 비율 (20.0 → 10.0)
+                    'min_sentiment_score': 25.0   #종합 점수 (40.0 → 25.0)
                 }
                 
                 # 설정 파일의 값으로 기본값 업데이트
@@ -318,19 +318,19 @@ class MarketThermometer:
             else:
                 logger.warning(f"⚠️ 설정 파일을 찾을 수 없음: {config_path}")
                 return {
-                    'min_pct_up': 45.0,
-                    'max_top10_volume': 70.0,
-                    'min_ma200_above': 25.0,
-                    'min_sentiment_score': 60.0
+                    'min_pct_up': 30.0,           # 완화된 값 적용
+                    'max_top10_volume': 85.0,     # 완화된 값 적용
+                    'min_ma200_above': 10.0,      # 완화된 값 적용
+                    'min_sentiment_score': 25.0   # 완화된 값 적용
                 }
                 
         except Exception as e:
             logger.error(f"❌ 설정 파일 로드 실패: {e}")
             return {
-                'min_pct_up': 45.0,
-                'max_top10_volume': 70.0,
-                'min_ma200_above': 25.0,
-                'min_sentiment_score': 60.0
+                'min_pct_up': 30.0,           # 완화된 값 적용
+                'max_top10_volume': 85.0,     # 완화된 값 적용
+                'min_ma200_above': 10.0,      # 완화된 값 적용
+                'min_sentiment_score': 25.0   # 완화된 값 적용
             }
     
     def calculate_market_sentiment_snapshot(self) -> Dict:
@@ -409,8 +409,8 @@ class MarketThermometer:
                         ticker,
                         close,
                         date
-                    FROM ohlcv 
-                    WHERE date = (SELECT MAX(date) FROM ohlcv)
+                    FROM ohlcv_data 
+                    WHERE date = (SELECT MAX(date) FROM ohlcv_data)
                     AND close IS NOT NULL
                 ),
                 previous_data AS (
@@ -418,8 +418,8 @@ class MarketThermometer:
                         ticker,
                         close as prev_close,
                         date
-                    FROM ohlcv 
-                    WHERE date = (SELECT MAX(date) FROM ohlcv WHERE date < (SELECT MAX(date) FROM ohlcv))
+                    FROM ohlcv_data 
+                    WHERE date = (SELECT MAX(date) FROM ohlcv_data WHERE date < (SELECT MAX(date) FROM ohlcv_data))
                     AND close IS NOT NULL
                 )
                 SELECT 
@@ -431,7 +431,7 @@ class MarketThermometer:
                 INNER JOIN previous_data p ON l.ticker = p.ticker
             """
             
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query)
                 result = cursor.fetchone()
@@ -477,14 +477,14 @@ class MarketThermometer:
                 SELECT 
                     ticker,
                     volume * close as volume_krw
-                FROM ohlcv 
-                WHERE date = (SELECT MAX(date) FROM ohlcv)
+                FROM ohlcv_data 
+                WHERE date = (SELECT MAX(date) FROM ohlcv_data)
                 AND volume IS NOT NULL AND close IS NOT NULL
                 ORDER BY volume * close DESC
                 LIMIT 10
             """
             
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query)
                 top10_data = cursor.fetchall()
@@ -495,11 +495,11 @@ class MarketThermometer:
                 # 전체 거래대금 계산
                 total_query = """
                     SELECT SUM(volume * close) as total_volume_krw
-                    FROM ohlcv 
-                    WHERE date = (SELECT MAX(date) FROM ohlcv)
+                    FROM ohlcv_data 
+                    WHERE date = (SELECT MAX(date) FROM ohlcv_data)
                     AND volume IS NOT NULL AND close IS NOT NULL
                 """
-                with get_db_connection_context(self.db_path) as conn:
+                with get_db_connection_context() as conn:
                     cursor = conn.cursor()
                     cursor.execute(total_query)
                     total_result = cursor.fetchone()
@@ -534,12 +534,12 @@ class MarketThermometer:
                 SELECT 
                     COUNT(*) as total_tickers,
                     COUNT(CASE WHEN close > ma_200 THEN 1 END) as above_ma200
-                FROM ohlcv 
-                WHERE date = (SELECT MAX(date) FROM ohlcv)
+                FROM ohlcv_data 
+                WHERE date = (SELECT MAX(date) FROM ohlcv_data)
                 AND ma_200 IS NOT NULL AND close IS NOT NULL
             """
             
-            with get_db_connection_context(self.db_path) as conn:
+            with get_db_connection_context() as conn:
                 cursor = conn.cursor()
                 cursor.execute(query)
                 result = cursor.fetchone()
@@ -871,18 +871,19 @@ class IntegratedMarketSentimentAnalyzer:
         except Exception as e:
             logger.error(f"❌ 시장 감정 결과 저장 실패: {e}")
 
-# 전역 인스턴스
-market_thermometer = MarketThermometer()
-integrated_sentiment_analyzer = IntegratedMarketSentimentAnalyzer()
+# 전역 인스턴스 제거 (중복 로깅 방지)
+# market_thermometer = MarketThermometer()  # 제거됨 - 중복 인스턴스화 방지
+# integrated_sentiment_analyzer = IntegratedMarketSentimentAnalyzer()  # 제거됨 - 중복 인스턴스화 방지
 
-def get_market_sentiment_snapshot() -> Dict:
-    """시장 분위기 스냅샷 반환 (편의 함수)"""
-    return market_thermometer.calculate_market_sentiment_snapshot()
+# 편의 함수들 주석 처리 (전역 인스턴스 제거로 인해 사용 불가)
+# def get_market_sentiment_snapshot() -> Dict:
+#     """시장 분위기 스냅샷 반환 (편의 함수)"""
+#     return market_thermometer.calculate_market_sentiment_snapshot()
 
-def update_market_thermometer_thresholds(new_thresholds: Dict):
-    """시장 체온계 임계값 업데이트 (편의 함수)"""
-    market_thermometer.update_thresholds(new_thresholds)
+# def update_market_thermometer_thresholds(new_thresholds: Dict):
+#     """시장 체온계 임계값 업데이트 (편의 함수)"""
+#     market_thermometer.update_thresholds(new_thresholds)
 
-def get_market_thermometer_thresholds() -> Dict:
-    """시장 체온계 임계값 조회 (편의 함수)"""
-    return market_thermometer.get_thresholds() 
+# def get_market_thermometer_thresholds() -> Dict:
+#     """시장 체온계 임계값 조회 (편의 함수)"""
+#     return market_thermometer.get_thresholds() 

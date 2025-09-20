@@ -25,6 +25,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 import logging
+import pytz
 
 # pandas_ta 사용 (설치 확인됨)
 try:
@@ -46,8 +47,9 @@ class SimpleDataCollector:
 
     def __init__(self, db_path: str = "./makenaide_local.db"):
         self.db_path = db_path
+        self.kst = pytz.timezone('Asia/Seoul')  # 업비트 KST 시간대
         self.init_database()
-        logger.info("🚀 SimpleDataCollector 초기화 완료")
+        logger.info("🚀 SimpleDataCollector 초기화 완료 (KST 시간대 적용)")
 
     def init_database(self):
         """데이터베이스 및 테이블 초기화"""
@@ -91,6 +93,142 @@ class SimpleDataCollector:
 
         except Exception as e:
             logger.error(f"❌ 데이터베이스 초기화 실패: {e}")
+            raise
+
+    def apply_data_retention_policy(self, retention_days: int = 300) -> Dict[str, Any]:
+        """데이터 보존 정책 적용 - 300일 이상 오래된 데이터 자동 정리
+
+        Args:
+            retention_days: 데이터 보존 기간 (기본: 300일)
+
+        Returns:
+            정리 결과 통계
+
+        Note:
+            - MA200 계산을 위해 200일 + 여유분 100일 = 300일 보존
+            - 300일 이상 데이터만 삭제하여 기술적 지표 계산 보장
+            - VACUUM으로 데이터베이스 최적화 수행
+        """
+        try:
+            logger.info(f"🗑️ 데이터 보존 정책 시작 (보존 기간: {retention_days}일)")
+
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # 1. 삭제 대상 데이터 확인
+            cutoff_date = (datetime.now() - timedelta(days=retention_days)).strftime('%Y-%m-%d')
+
+            # 삭제될 데이터 통계 조회
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as total_rows,
+                    COUNT(DISTINCT ticker) as affected_tickers,
+                    MIN(date) as oldest_date,
+                    MAX(date) as newest_date_to_delete
+                FROM ohlcv_data
+                WHERE date < ?
+            """, (cutoff_date,))
+
+            stats = cursor.fetchone()
+            total_rows_to_delete = stats[0] if stats[0] else 0
+            affected_tickers = stats[1] if stats[1] else 0
+            oldest_date = stats[2] if stats[2] else "없음"
+            newest_date_to_delete = stats[3] if stats[3] else "없음"
+
+            if total_rows_to_delete == 0:
+                logger.info(f"✅ {cutoff_date} 이전 데이터가 없습니다. 정리할 데이터 없음")
+                conn.close()
+                return {
+                    'deleted_rows': 0,
+                    'affected_tickers': 0,
+                    'cutoff_date': cutoff_date,
+                    'retention_days': retention_days,
+                    'vacuum_performed': False
+                }
+
+            logger.info(f"📊 삭제 대상 데이터:")
+            logger.info(f"   • 삭제될 행 수: {total_rows_to_delete:,}개")
+            logger.info(f"   • 영향받는 종목: {affected_tickers}개")
+            logger.info(f"   • 가장 오래된 데이터: {oldest_date}")
+            logger.info(f"   • 삭제될 최신 데이터: {newest_date_to_delete}")
+            logger.info(f"   • 컷오프 날짜: {cutoff_date}")
+
+            # 2. 데이터베이스 크기 측정 (삭제 전)
+            cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+            db_size_before = cursor.fetchone()[0]
+
+            # 3. 오래된 데이터 삭제 실행
+            logger.info(f"🗑️ {cutoff_date} 이전 데이터 삭제 중...")
+
+            cursor.execute("""
+                DELETE FROM ohlcv_data
+                WHERE date < ?
+            """, (cutoff_date,))
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+
+            logger.info(f"✅ {deleted_count:,}개 행 삭제 완료")
+
+            # 4. VACUUM으로 데이터베이스 최적화
+            logger.info("🔧 데이터베이스 VACUUM 최적화 중...")
+            cursor.execute("VACUUM")
+
+            # 5. 데이터베이스 크기 측정 (최적화 후)
+            cursor.execute("SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()")
+            db_size_after = cursor.fetchone()[0]
+
+            size_reduction = db_size_before - db_size_after
+            size_reduction_pct = (size_reduction / db_size_before * 100) if db_size_before > 0 else 0
+
+            # 6. 남은 데이터 통계 조회
+            cursor.execute("""
+                SELECT
+                    COUNT(*) as remaining_rows,
+                    COUNT(DISTINCT ticker) as remaining_tickers,
+                    MIN(date) as earliest_date,
+                    MAX(date) as latest_date
+                FROM ohlcv_data
+            """)
+
+            remaining_stats = cursor.fetchone()
+            remaining_rows = remaining_stats[0] if remaining_stats[0] else 0
+            remaining_tickers = remaining_stats[1] if remaining_stats[1] else 0
+            earliest_date = remaining_stats[2] if remaining_stats[2] else "없음"
+            latest_date = remaining_stats[3] if remaining_stats[3] else "없음"
+
+            conn.close()
+
+            # 7. 결과 로깅
+            logger.info("✅ 데이터 보존 정책 적용 완료")
+            logger.info(f"📊 정리 결과:")
+            logger.info(f"   • 삭제된 행: {deleted_count:,}개")
+            logger.info(f"   • 영향받은 종목: {affected_tickers}개")
+            logger.info(f"   • 데이터베이스 크기 절약: {size_reduction:,} bytes ({size_reduction_pct:.1f}%)")
+            logger.info(f"📊 남은 데이터:")
+            logger.info(f"   • 남은 행: {remaining_rows:,}개")
+            logger.info(f"   • 남은 종목: {remaining_tickers}개")
+            logger.info(f"   • 가장 오래된 데이터: {earliest_date}")
+            logger.info(f"   • 가장 최신 데이터: {latest_date}")
+
+            return {
+                'deleted_rows': deleted_count,
+                'affected_tickers': affected_tickers,
+                'cutoff_date': cutoff_date,
+                'retention_days': retention_days,
+                'db_size_before': db_size_before,
+                'db_size_after': db_size_after,
+                'size_reduction': size_reduction,
+                'size_reduction_pct': size_reduction_pct,
+                'remaining_rows': remaining_rows,
+                'remaining_tickers': remaining_tickers,
+                'earliest_date': earliest_date,
+                'latest_date': latest_date,
+                'vacuum_performed': True
+            }
+
+        except Exception as e:
+            logger.error(f"❌ 데이터 보존 정책 적용 실패: {e}")
             raise
 
     def get_active_tickers(self) -> List[str]:
@@ -155,77 +293,100 @@ class SimpleDataCollector:
             return self.get_active_tickers()[:20]  # 안전하게 20개 제한
 
     def _get_monthly_qualified_tickers(self, min_months: int) -> List[str]:
-        """충분한 월별 데이터를 보유한 종목 조회"""
+        """pyupbit API로 실제 거래소에서 충분한 월별 데이터를 보유한 종목 조회"""
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            logger.info(f"🔍 pyupbit API로 {min_months}개월 이상 월봉 데이터 확인 중...")
 
-            # 각 종목별로 고유한 년-월 조합 개수를 계산
-            cursor.execute("""
-                SELECT ticker, COUNT(DISTINCT strftime('%Y-%m', date)) as unique_months
-                FROM ohlcv_data
-                WHERE ticker IN (SELECT ticker FROM tickers WHERE is_active = 1)
-                GROUP BY ticker
-                HAVING unique_months >= ?
-                ORDER BY unique_months DESC
-            """, (min_months,))
-
+            # 활성 티커 목록 조회
+            active_tickers = self.get_active_tickers()
             qualified_tickers = []
-            for ticker, months in cursor.fetchall():
-                qualified_tickers.append(ticker)
-                logger.debug(f"📊 {ticker}: {months}개월 데이터")
 
-            conn.close()
+            # 각 종목별로 월봉 데이터 개수 확인
+            for ticker in active_tickers:
+                try:
+                    # 월봉 데이터 조회 (최대 24개월치 요청)
+                    monthly_df = pyupbit.get_ohlcv(
+                        ticker=ticker,
+                        interval="month",
+                        count=24  # 충분한 기간 요청
+                    )
 
-            logger.info(f"📅 월별 데이터 {min_months}개월 이상: {len(qualified_tickers)}개 종목")
+                    if monthly_df is not None and not monthly_df.empty:
+                        available_months = len(monthly_df)
+                        logger.debug(f"📊 {ticker}: {available_months}개월 월봉 데이터")
+
+                        if available_months >= min_months:
+                            qualified_tickers.append(ticker)
+                            logger.debug(f"✅ {ticker}: {available_months}개월 (조건 통과)")
+                        else:
+                            logger.debug(f"❌ {ticker}: {available_months}개월 (조건 미달)")
+                    else:
+                        logger.debug(f"⚠️ {ticker}: 월봉 데이터 없음")
+
+                    # API 레이트 제한 방지
+                    time.sleep(0.1)
+
+                except Exception as e:
+                    logger.warning(f"⚠️ {ticker} 월봉 데이터 조회 실패: {e}")
+                    continue
+
+            logger.info(f"📅 월별 데이터 {min_months}개월 이상: {len(qualified_tickers)}개 종목 (pyupbit API 확인)")
             return qualified_tickers
 
         except Exception as e:
             logger.error(f"❌ 월별 데이터 조건 확인 실패: {e}")
-            return []
+            logger.warning("⚠️ pyupbit API 조회 실패, 기본 활성 티커 반환")
+            return self.get_active_tickers()[:20]  # 실패 시 상위 20개만 반환
 
     def _get_volume_qualified_tickers(self, candidate_tickers: List[str], min_volume_krw: int) -> List[str]:
-        """24시간 거래대금 조건을 만족하는 종목 필터링 - tickers 테이블 사용"""
+        """pyupbit API로 실제 거래소에서 24시간 거래대금 조건을 만족하는 종목 필터링"""
         qualified_tickers = []
 
         try:
-            logger.info(f"💰 거래대금 조건 확인 중: {len(candidate_tickers)}개 종목 (tickers 테이블 조회)")
+            logger.info(f"💰 거래대금 조건 확인 중: {len(candidate_tickers)}개 종목 (pyupbit API 조회)")
 
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
+            # 각 종목별로 일봉 데이터에서 24시간 거래대금 확인
+            for ticker in candidate_tickers:
+                try:
+                    # 최근 1일 데이터로 24시간 거래량 확인
+                    daily_df = pyupbit.get_ohlcv(
+                        ticker=ticker,
+                        interval="day",
+                        count=1  # 가장 최근 1일치만
+                    )
 
-            # tickers 테이블에서 24시간 거래대금 정보 조회
-            placeholders = ','.join(['?' for _ in candidate_tickers])
-            cursor.execute(f"""
-                SELECT ticker, acc_trade_price_24h
-                FROM tickers
-                WHERE ticker IN ({placeholders})
-                AND is_active = 1
-                AND acc_trade_price_24h >= ?
-                ORDER BY acc_trade_price_24h DESC
-            """, candidate_tickers + [min_volume_krw])
+                    if daily_df is not None and not daily_df.empty:
+                        # 가장 최근 데이터
+                        latest_data = daily_df.iloc[-1]
+                        close_price = latest_data['close']
+                        volume_24h = latest_data['volume']
 
-            results = cursor.fetchall()
-            conn.close()
+                        # 24시간 거래대금 계산 (가격 × 거래량)
+                        trade_value_24h = close_price * volume_24h
 
-            for ticker, volume_24h in results:
-                qualified_tickers.append(ticker)
-                logger.debug(f"✅ {ticker}: {volume_24h:,.0f}원 (통과)")
+                        if trade_value_24h >= min_volume_krw:
+                            qualified_tickers.append(ticker)
+                            logger.debug(f"✅ {ticker}: {trade_value_24h:,.0f}원 (통과)")
+                        else:
+                            logger.debug(f"❌ {ticker}: {trade_value_24h:,.0f}원 (조건 미달)")
+                    else:
+                        logger.debug(f"⚠️ {ticker}: 거래대금 데이터 없음")
 
-            # 조건을 만족하지 않는 종목들도 로그에 표시
-            non_qualified = set(candidate_tickers) - set(qualified_tickers)
-            for ticker in non_qualified:
-                logger.debug(f"❌ {ticker}: 거래대금 조건 미달 또는 정보 없음")
+                    # API 레이트 제한 방지
+                    time.sleep(0.1)
 
-            logger.info(f"💎 거래대금 조건 통과: {len(qualified_tickers)}개 종목")
+                except Exception as e:
+                    logger.warning(f"⚠️ {ticker} 거래대금 조회 실패: {e}")
+                    continue
+
+            logger.info(f"💎 거래대금 조건 통과: {len(qualified_tickers)}개 종목 (pyupbit API 확인)")
             logger.info(f"📋 선별된 종목: {', '.join(qualified_tickers[:10])}{'...' if len(qualified_tickers) > 10 else ''}")
 
             return qualified_tickers
 
         except Exception as e:
             logger.error(f"❌ 거래대금 필터링 실패: {e}")
-            # 실패 시 pyupbit API 사용하지 않고 기본 리스트 반환
-            logger.warning("⚠️ tickers 테이블 조회 실패, 후보 종목 그대로 반환")
+            logger.warning("⚠️ pyupbit API 조회 실패, 후보 종목 그대로 반환")
             return candidate_tickers[:20]  # 실패 시 상위 20개만 반환
 
     def get_latest_date(self, ticker: str) -> Optional[datetime]:
@@ -251,39 +412,60 @@ class SimpleDataCollector:
             return None
 
     def analyze_gap(self, ticker: str) -> Dict[str, Any]:
-        """갭 분석 및 수집 전략 결정"""
+        """개선된 갭 분석 및 수집 전략 결정 (KST 기준, 업비트 특성 고려)"""
         try:
+            # 1. 최신 데이터 조회
             latest_date = self.get_latest_date(ticker)
-            current_date = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+
+            # 2. KST 기준 현재 날짜 계산
+            now_kst = datetime.now(self.kst)
+            current_date_kst = now_kst.replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=None)
+
+            logger.debug(f"🕐 {ticker} 시간 분석:")
+            logger.debug(f"   • 현재 KST: {now_kst}")
+            logger.debug(f"   • 기준 날짜: {current_date_kst.date()}")
 
             if latest_date is None:
-                # 데이터가 없으면 전체 수집
                 return {
                     'strategy': 'full_collection',
                     'gap_days': 200,
                     'reason': 'No existing data'
                 }
 
-            # 갭 계산
-            gap_days = (current_date.date() - latest_date.date()).days
+            # 3. KST 기준 갭 계산
+            gap_days = (current_date_kst.date() - latest_date.date()).days
 
-            if gap_days == 0:
+            # 4. 업비트 특성 고려한 전략 결정
+            # 새벽 1시 이전에는 전날 취급 (데이터 반영 시간 고려)
+            if now_kst.hour < 1:
+                effective_gap = gap_days - 1
+                time_note = " (새벽 시간 고려)"
+                logger.debug(f"   • 새벽 시간 조정: {gap_days}일 → {effective_gap}일")
+            else:
+                effective_gap = gap_days
+                time_note = ""
+
+            logger.debug(f"   • 최신 데이터: {latest_date.date()}")
+            logger.debug(f"   • 실제 갭: {gap_days}일")
+            logger.debug(f"   • 적용 갭: {effective_gap}일")
+
+            if effective_gap <= 0:
                 return {
                     'strategy': 'skip',
-                    'gap_days': 0,
-                    'reason': 'Data is up to date'
+                    'gap_days': gap_days,
+                    'reason': f'Data is up to date{time_note}'
                 }
-            elif gap_days == 1:
+            elif effective_gap == 1:
                 return {
                     'strategy': 'yesterday_update',
-                    'gap_days': 1,
-                    'reason': 'Yesterday data needs update'
+                    'gap_days': gap_days,
+                    'reason': f'Yesterday data needs update{time_note}'
                 }
             else:
                 return {
                     'strategy': 'incremental',
                     'gap_days': gap_days,
-                    'reason': f'{gap_days} days gap detected'
+                    'reason': f'{effective_gap} days gap detected{time_note}'
                 }
 
         except Exception as e:
@@ -302,17 +484,16 @@ class SimpleDataCollector:
                 logger.warning(f"⚠️ {ticker} 비활성 종목 또는 tickers 테이블에 없음")
                 return None
 
-            # 2단계: 명시적 날짜 설정으로 1970-01-01 응답 방지
-            to_date = datetime.now().strftime("%Y-%m-%d")
-
-            logger.debug(f"🔍 {ticker} API 호출: count={count}, to={to_date}")
+            # 2단계: to 파라미터 없이 호출하여 최신 데이터까지 수집
+            # (to 파라미터 사용시 현재 날짜 데이터가 누락되는 업비트 API 특성)
+            logger.debug(f"🔍 {ticker} API 호출: count={count} (to 파라미터 없이 최신 데이터 수집)")
 
             # 3단계: 업비트 API 호출
             df = pyupbit.get_ohlcv(
                 ticker=ticker,
                 interval="day",
-                count=count,
-                to=to_date
+                count=count
+                # to 파라미터 제거 - 현재 날짜 데이터 포함을 위해
             )
 
             if df is None or df.empty:
@@ -369,34 +550,60 @@ class SimpleDataCollector:
         try:
             df_with_indicators = df.copy()
 
-            # 기본 이동평균
+            # 기본 이동평균 (항상 계산)
             df_with_indicators['ma5'] = df['close'].rolling(window=5).mean()
             df_with_indicators['ma20'] = df['close'].rolling(window=20).mean()
             df_with_indicators['ma60'] = df['close'].rolling(window=60).mean()
             df_with_indicators['ma120'] = df['close'].rolling(window=120).mean()
             df_with_indicators['ma200'] = df['close'].rolling(window=200).mean()
 
-            # RSI 계산
-            if HAS_PANDAS_TA:
-                df_with_indicators['rsi'] = ta.rsi(df['close'], length=14)
-            else:
-                # 간단한 RSI 계산
-                delta = df['close'].diff()
-                gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                rs = gain / loss
-                df_with_indicators['rsi'] = 100 - (100 / (1 + rs))
+            # RSI 계산 (항상 계산)
+            try:
+                if HAS_PANDAS_TA:
+                    df_with_indicators['rsi'] = ta.rsi(df['close'], length=14)
+                else:
+                    # 간단한 RSI 계산
+                    delta = df['close'].diff()
+                    gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                    loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                    rs = gain / loss
+                    df_with_indicators['rsi'] = 100 - (100 / (1 + rs))
+            except Exception as rsi_error:
+                logger.warning(f"⚠️ {ticker} RSI 계산 실패: {rsi_error}")
+                df_with_indicators['rsi'] = None
 
-            # 거래량 비율 (20일 평균 대비)
-            volume_ma = df['volume'].rolling(window=20).mean()
-            df_with_indicators['volume_ratio'] = df['volume'] / volume_ma
+            # 거래량 비율 (volume 컬럼이 있는 경우에만)
+            try:
+                if 'volume' in df.columns:
+                    volume_ma = df['volume'].rolling(window=20).mean()
+                    df_with_indicators['volume_ratio'] = df['volume'] / volume_ma
+                else:
+                    logger.debug(f"⚠️ {ticker} volume 컬럼 없음, volume_ratio 계산 건너뛰기")
+                    df_with_indicators['volume_ratio'] = None
+            except Exception as volume_error:
+                logger.warning(f"⚠️ {ticker} volume_ratio 계산 실패: {volume_error}")
+                df_with_indicators['volume_ratio'] = None
 
             logger.debug(f"✅ {ticker} 기술적 지표 계산 완료")
             return df_with_indicators
 
         except Exception as e:
             logger.error(f"❌ {ticker} 기술적 지표 계산 실패: {e}")
-            return df
+            # 기본 지표만이라도 계산 시도
+            try:
+                df_basic = df.copy()
+                df_basic['ma5'] = df['close'].rolling(window=5).mean()
+                df_basic['ma20'] = df['close'].rolling(window=20).mean()
+                df_basic['ma60'] = df['close'].rolling(window=60).mean()
+                df_basic['ma120'] = df['close'].rolling(window=120).mean()
+                df_basic['ma200'] = df['close'].rolling(window=200).mean()
+                df_basic['rsi'] = None
+                df_basic['volume_ratio'] = None
+                logger.info(f"📊 {ticker} 기본 MA 지표만 계산 완료")
+                return df_basic
+            except Exception as basic_error:
+                logger.error(f"❌ {ticker} 기본 지표 계산도 실패: {basic_error}")
+                return df
 
     def save_ohlcv_data(self, ticker: str, df: pd.DataFrame) -> bool:
         """OHLCV 데이터를 데이터베이스에 저장"""

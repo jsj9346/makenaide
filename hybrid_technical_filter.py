@@ -131,20 +131,14 @@ class HybridTechnicalFilter:
         ma200 = latest['ma200']
         volume = latest['volume']
 
-        # 현재가 대비 MA200 위치
-        price_vs_ma200 = ((current_price - ma200) / ma200) * 100 if ma200 > 0 else 0
-
-        # MA200 트렌드 판정 (단순화: 최근 MA200과 20일전 MA200 비교)
-        if len(df) >= 20:
-            ma200_20days_ago = df['ma200'].iloc[-20]
-            if ma200 > ma200_20days_ago * 1.02:  # 2% 이상 상승
-                ma200_trend = 'up'
-            elif ma200 < ma200_20days_ago * 0.98:  # 2% 이상 하락
-                ma200_trend = 'down'
-            else:
-                ma200_trend = 'sideways'
+        # 현재가 대비 MA200 위치 (NULL 체크 추가)
+        if pd.notna(ma200) and ma200 > 0:
+            price_vs_ma200 = ((current_price - ma200) / ma200) * 100
         else:
-            ma200_trend = 'sideways'
+            price_vs_ma200 = 0.0
+
+        # MA200 트렌드 판정 (개선된 로직)
+        ma200_trend = self._determine_ma200_trend(df, ma200)
 
         # 거래량 분석
         volume_avg_20 = df['volume'].tail(20).mean()
@@ -172,12 +166,71 @@ class HybridTechnicalFilter:
             days_in_stage=days_in_stage
         )
 
+    def _determine_ma200_trend(self, df: pd.DataFrame, current_ma200: float) -> str:
+        """MA200 트렌드 판정 (개선된 로직)"""
+        try:
+            # 1차 시도: 20일 전 MA200과 비교
+            if len(df) >= 20:
+                ma200_20days_ago = df['ma200'].iloc[-20]
+                if pd.notna(current_ma200) and pd.notna(ma200_20days_ago) and ma200_20days_ago > 0:
+                    if current_ma200 > ma200_20days_ago * 1.02:  # 2% 이상 상승
+                        return 'up'
+                    elif current_ma200 < ma200_20days_ago * 0.98:  # 2% 이상 하락
+                        return 'down'
+                    else:
+                        return 'sideways'
+
+            # 2차 시도: MA120과 비교 (더 짧은 기간)
+            if 'ma120' in df.columns and pd.notna(current_ma200):
+                latest_ma120 = df['ma120'].iloc[-1]
+                if pd.notna(latest_ma120) and latest_ma120 > 0:
+                    if current_ma200 > latest_ma120 * 1.05:  # MA200 > MA120 * 1.05
+                        return 'up'
+                    elif current_ma200 < latest_ma120 * 0.95:  # MA200 < MA120 * 0.95
+                        return 'down'
+                    else:
+                        return 'sideways'
+
+            # 3차 시도: 최근 20일 가격 추세로 대체
+            if len(df) >= 20:
+                recent_prices = df['close'].tail(20)
+                if len(recent_prices) >= 20:
+                    price_20days_ago = recent_prices.iloc[0]
+                    current_price = recent_prices.iloc[-1]
+
+                    if current_price > price_20days_ago * 1.10:  # 10% 이상 상승
+                        return 'up'
+                    elif current_price < price_20days_ago * 0.90:  # 10% 이상 하락
+                        return 'down'
+                    else:
+                        return 'sideways'
+
+            # 4차 시도: MA60 기준 판정
+            if 'ma60' in df.columns:
+                latest_ma60 = df['ma60'].iloc[-1]
+                current_price = df['close'].iloc[-1]
+
+                if pd.notna(latest_ma60) and latest_ma60 > 0:
+                    if current_price > latest_ma60 * 1.05:  # 현재가가 MA60보다 5% 이상 높음
+                        return 'up'
+                    elif current_price < latest_ma60 * 0.95:  # 현재가가 MA60보다 5% 이상 낮음
+                        return 'down'
+                    else:
+                        return 'sideways'
+
+            # 최종: 기본값
+            return 'sideways'
+
+        except Exception as e:
+            logger.warning(f"⚠️ MA200 트렌드 판정 실패: {e}")
+            return 'sideways'
+
     def _determine_stage(self, df: pd.DataFrame, current_price: float, ma200: float,
                         ma200_trend: str, volume_surge: float) -> Tuple[int, float]:
         """Stage 판정 로직"""
 
-        # Stage 2 조건: MA200 위 + 상승 추세 + 거래량 증가
-        if (current_price > ma200 and ma200_trend == 'up'):
+        # Stage 2 조건: MA200 위 + 상승 추세 + 거래량 증가 (NULL 체크 추가)
+        if (pd.notna(ma200) and current_price > ma200 and ma200_trend == 'up'):
 
             # 추가 Stage 2 강화 조건
             confidence = 0.6  # 기본 신뢰도
@@ -186,12 +239,13 @@ class HybridTechnicalFilter:
             if volume_surge > self.volume_surge_threshold:
                 confidence += 0.2
 
-            # 돌파 정도에 따른 신뢰도 조정
-            breakout_pct = ((current_price - ma200) / ma200) * 100
-            if breakout_pct > 5:  # 5% 이상 돌파
-                confidence += 0.1
-            elif breakout_pct > 2:  # 2% 이상 돌파
-                confidence += 0.05
+            # 돌파 정도에 따른 신뢰도 조정 (NULL 체크 추가)
+            if pd.notna(ma200) and ma200 > 0:
+                breakout_pct = ((current_price - ma200) / ma200) * 100
+                if breakout_pct > 5:  # 5% 이상 돌파
+                    confidence += 0.1
+                elif breakout_pct > 2:  # 2% 이상 돌파
+                    confidence += 0.05
 
             # RSI 확인 (과매수 아닌 경우)
             if 'rsi' in df.columns:
@@ -201,13 +255,13 @@ class HybridTechnicalFilter:
 
             return 2, min(confidence, 1.0)
 
-        # Stage 4 조건: MA200 아래 + 하락 추세
-        elif (current_price < ma200 and ma200_trend == 'down'):
+        # Stage 4 조건: MA200 아래 + 하락 추세 (NULL 체크 추가)
+        elif (pd.notna(ma200) and current_price < ma200 and ma200_trend == 'down'):
             confidence = 0.7
             return 4, confidence
 
-        # Stage 3 조건: MA200 근처에서 횡보 (고점 근처)
-        elif ma200_trend == 'sideways' and current_price > ma200 * 0.95:
+        # Stage 3 조건: MA200 근처에서 횡보 (고점 근처) (NULL 체크 추가)
+        elif ma200_trend == 'sideways' and pd.notna(ma200) and current_price > ma200 * 0.95:
             confidence = 0.5
             return 3, confidence
 
@@ -217,8 +271,8 @@ class HybridTechnicalFilter:
             return 1, confidence
 
     def _calculate_breakout_strength(self, df: pd.DataFrame, current_price: float, ma200: float) -> float:
-        """돌파 강도 계산"""
-        if ma200 <= 0:
+        """돌파 강도 계산 (NULL 체크 추가)"""
+        if not pd.notna(ma200) or ma200 <= 0:
             return 0.0
 
         # 최근 5일간 MA200 대비 평균 위치
@@ -226,10 +280,11 @@ class HybridTechnicalFilter:
         breakout_strengths = []
 
         for price in recent_prices:
-            strength = ((price - ma200) / ma200) * 100
-            breakout_strengths.append(max(0, strength))  # 양수만
+            if pd.notna(price):
+                strength = ((price - ma200) / ma200) * 100
+                breakout_strengths.append(max(0, strength))  # 양수만
 
-        return np.mean(breakout_strengths)
+        return np.mean(breakout_strengths) if breakout_strengths else 0.0
 
     def _estimate_days_in_stage(self, df: pd.DataFrame, current_stage: int) -> int:
         """현재 스테이지 지속 일수 추정 (단순화)"""
@@ -246,11 +301,11 @@ class HybridTechnicalFilter:
 
         ticker = stage_result.ticker
 
-        # Gate 1: Stage 2 진입 조건
+        # Gate 1: Stage 2 진입 조건 (NULL 체크 추가)
         gate1_stage2 = (
             stage_result.current_stage == 2 and
             stage_result.stage_confidence >= 0.6 and
-            stage_result.price_vs_ma200 > 0  # MA200 위에 있어야 함
+            pd.notna(stage_result.price_vs_ma200) and stage_result.price_vs_ma200 > 0  # MA200 위에 있어야 함
         )
 
         # Gate 2: 거래량 급증 조건
@@ -319,14 +374,15 @@ class HybridTechnicalFilter:
         # 1. Stage 신뢰도 (0-5점)
         score += stage_result.stage_confidence * 5
 
-        # 2. MA200 돌파 강도 (0-5점)
-        if stage_result.price_vs_ma200 > 0:
+        # 2. MA200 돌파 강도 (0-5점) (NULL 체크 추가)
+        if pd.notna(stage_result.price_vs_ma200) and stage_result.price_vs_ma200 > 0:
             breakout_score = min(5, stage_result.price_vs_ma200 * 0.5)
             score += breakout_score
 
-        # 3. 거래량 급증도 (0-5점)
-        volume_score = min(5, (stage_result.volume_surge - 1) * 2)
-        score += max(0, volume_score)
+        # 3. 거래량 급증도 (0-5점) (NULL 체크 추가)
+        if pd.notna(stage_result.volume_surge) and stage_result.volume_surge > 0:
+            volume_score = min(5, (stage_result.volume_surge - 1) * 2)
+            score += max(0, volume_score)
 
         # 4. MA200 추세 강도 (0-5점)
         if stage_result.ma200_trend == 'up':
@@ -349,7 +405,7 @@ class HybridTechnicalFilter:
         bonus = 0.0
         latest = df.iloc[-1]
 
-        # RSI 적정 범위 (40-60)
+        # RSI 적정 범위 (40-60) (NULL 체크 이미 있음)
         if 'rsi' in df.columns and pd.notna(latest['rsi']):
             rsi = latest['rsi']
             if 40 <= rsi <= 60:
@@ -357,7 +413,7 @@ class HybridTechnicalFilter:
             elif 35 <= rsi <= 70:
                 bonus += 1.0
 
-        # MA 정배열 보너스
+        # MA 정배열 보너스 (NULL 체크 이미 있음)
         if all(col in df.columns for col in ['ma5', 'ma20', 'ma60']):
             ma5, ma20, ma60 = latest['ma5'], latest['ma20'], latest['ma60']
             if all(pd.notna([ma5, ma20, ma60])):
@@ -366,7 +422,7 @@ class HybridTechnicalFilter:
                 elif ma5 > ma20:
                     bonus += 1.0
 
-        # 거래량 비율 보너스
+        # 거래량 비율 보너스 (NULL 체크 이미 있음)
         if 'volume_ratio' in df.columns and pd.notna(latest['volume_ratio']):
             vol_ratio = latest['volume_ratio']
             if vol_ratio > 2.0:

@@ -45,6 +45,76 @@ class NotificationCategory(Enum):
     PORTFOLIO = "PORTFOLIO"     # 포트폴리오 관리
     MARKET = "MARKET"          # 시장 상황
 
+class FailureType(Enum):
+    """파이프라인 실패 유형"""
+    API_KEY_MISSING = "API_KEY_MISSING"           # API 키 미설정
+    INIT_FAILURE = "INIT_FAILURE"                 # 시스템 초기화 실패
+    PHASE0_FAILURE = "PHASE0_FAILURE"             # Phase 0: 종목 스캔 실패
+    PHASE1_FAILURE = "PHASE1_FAILURE"             # Phase 1: 데이터 수집 실패
+    CRITICAL_ERROR = "CRITICAL_ERROR"             # 치명적 예외 발생
+
+class FailureSubType(Enum):
+    """상세 실패 유형 분류 (Phase 2)"""
+    # API 키 관련 상세 분류
+    API_ACCESS_KEY_MISSING = "API_ACCESS_KEY_MISSING"
+    API_SECRET_KEY_MISSING = "API_SECRET_KEY_MISSING"
+    API_BOTH_KEYS_MISSING = "API_BOTH_KEYS_MISSING"  # 추가: 양쪽 키 모두 누락
+    API_INVALID_CREDENTIALS = "API_INVALID_CREDENTIALS"
+    API_PERMISSION_DENIED = "API_PERMISSION_DENIED"
+    API_AUTHENTICATION_FAILED = "API_AUTHENTICATION_FAILED"  # 추가: 인증 실패
+
+    # 시스템 초기화 상세 분류
+    DATABASE_CONNECTION_FAILED = "DATABASE_CONNECTION_FAILED"
+    SQLITE_INIT_FAILED = "SQLITE_INIT_FAILED"
+    MEMORY_INSUFFICIENT = "MEMORY_INSUFFICIENT"
+    DISK_SPACE_INSUFFICIENT = "DISK_SPACE_INSUFFICIENT"
+    COMPONENT_INIT_FAILED = "COMPONENT_INIT_FAILED"
+    SYSTEM_INITIALIZATION_FAILED = "SYSTEM_INITIALIZATION_FAILED"  # 추가: 시스템 초기화 실패
+    NETWORK_CONNECTION_FAILED = "NETWORK_CONNECTION_FAILED"  # 추가: 네트워크 연결 실패
+
+    # Phase 0 상세 분류
+    UPBIT_API_UNAVAILABLE = "UPBIT_API_UNAVAILABLE"
+    NETWORK_TIMEOUT = "NETWORK_TIMEOUT"
+    RATE_LIMIT_EXCEEDED = "RATE_LIMIT_EXCEEDED"
+    TICKER_PARSING_FAILED = "TICKER_PARSING_FAILED"
+    TICKER_SCAN_FAILED = "TICKER_SCAN_FAILED"  # 추가: 종목 스캔 실패
+
+    # Phase 1 상세 분류
+    OHLCV_FETCH_FAILED = "OHLCV_FETCH_FAILED"
+    DATA_VALIDATION_FAILED = "DATA_VALIDATION_FAILED"
+    SQLITE_WRITE_FAILED = "SQLITE_WRITE_FAILED"
+    TECHNICAL_INDICATOR_FAILED = "TECHNICAL_INDICATOR_FAILED"
+    DATA_COLLECTION_FAILED = "DATA_COLLECTION_FAILED"  # 추가: 데이터 수집 실패
+
+    # 치명적 오류 상세 분류
+    UNHANDLED_EXCEPTION = "UNHANDLED_EXCEPTION"
+    MEMORY_ERROR = "MEMORY_ERROR"
+    SYSTEM_EXIT = "SYSTEM_EXIT"
+    KEYBOARD_INTERRUPT = "KEYBOARD_INTERRUPT"
+    UNEXPECTED_EXCEPTION = "UNEXPECTED_EXCEPTION"  # 추가: 예상치 못한 예외
+    SYSTEM_PERMISSION_DENIED = "SYSTEM_PERMISSION_DENIED"  # 추가: 시스템 권한 거부
+
+class FailureSeverity(Enum):
+    """실패 심각도"""
+    CRITICAL = "CRITICAL"      # 즉시 조치 필요, 파이프라인 완전 중단
+    HIGH = "HIGH"              # 24시간 내 조치 필요
+    MEDIUM = "MEDIUM"          # 일주일 내 조치 필요
+    LOW = "LOW"                # 모니터링 필요
+
+class SpamPreventionLevel(Enum):
+    """Phase 3: 스팸 방지 레벨"""
+    DISABLED = "DISABLED"      # 스팸 방지 비활성화
+    LOW = "LOW"                # 기본 중복 제거만
+    MEDIUM = "MEDIUM"          # 시간창 기반 제한
+    HIGH = "HIGH"              # 엄격한 제한 + 패턴 분석
+    AGGRESSIVE = "AGGRESSIVE"  # 최대 제한 + 지능형 필터링
+
+class SecurityMode(Enum):
+    """Phase 3: 보안 모드"""
+    DEVELOPMENT = "DEVELOPMENT"    # 개발 환경 (모든 메시지 허용)
+    STAGING = "STAGING"           # 스테이징 환경 (제한적 필터링)
+    PRODUCTION = "PRODUCTION"     # 운영 환경 (엄격한 보안)
+
 @dataclass
 class NotificationMessage:
     """알림 메시지 구조"""
@@ -57,6 +127,26 @@ class NotificationMessage:
     ticker: Optional[str] = None
     amount: Optional[float] = None
     metadata: Optional[Dict] = None
+
+@dataclass
+class SpamPreventionConfig:
+    """Phase 3: 스팸 방지 설정"""
+    level: SpamPreventionLevel
+    time_window_minutes: int = 5
+    max_messages_per_window: int = 3
+    duplicate_detection: bool = True
+    pattern_analysis: bool = False
+    cooldown_multiplier: float = 2.0
+
+@dataclass
+class SecurityConfig:
+    """Phase 3: 보안 설정"""
+    mode: SecurityMode
+    sensitive_data_masking: bool = True
+    message_encryption: bool = False
+    audit_logging: bool = True
+    ip_filtering: bool = False
+    allowed_sources: List[str] = None
 
 class MakenaideSNSNotifier:
     """Makenaide SNS 통합 알림 시스템"""
@@ -86,6 +176,33 @@ class MakenaideSNSNotifier:
         # 메시지 카운터 (일일 제한)
         self.daily_message_count = 0
         self.last_reset_date = datetime.now().date()
+
+        # Phase 3: 스팸 방지 설정
+        self.spam_prevention = SpamPreventionConfig(
+            level=SpamPreventionLevel(os.getenv('SNS_SPAM_PREVENTION_LEVEL', 'MEDIUM')),
+            time_window_minutes=int(os.getenv('SNS_TIME_WINDOW_MINUTES', '5')),
+            max_messages_per_window=int(os.getenv('SNS_MAX_MESSAGES_PER_WINDOW', '3')),
+            duplicate_detection=os.getenv('SNS_DUPLICATE_DETECTION', 'true').lower() == 'true',
+            pattern_analysis=os.getenv('SNS_PATTERN_ANALYSIS', 'false').lower() == 'true',
+            cooldown_multiplier=float(os.getenv('SNS_COOLDOWN_MULTIPLIER', '2.0'))
+        )
+
+        # Phase 3: 보안 설정
+        self.security = SecurityConfig(
+            mode=SecurityMode(os.getenv('SNS_SECURITY_MODE', 'PRODUCTION')),
+            sensitive_data_masking=os.getenv('SNS_SENSITIVE_DATA_MASKING', 'true').lower() == 'true',
+            message_encryption=os.getenv('SNS_MESSAGE_ENCRYPTION', 'false').lower() == 'true',
+            audit_logging=os.getenv('SNS_AUDIT_LOGGING', 'true').lower() == 'true',
+            ip_filtering=os.getenv('SNS_IP_FILTERING', 'false').lower() == 'true',
+            allowed_sources=os.getenv('SNS_ALLOWED_SOURCES', '').split(',') if os.getenv('SNS_ALLOWED_SOURCES') else []
+        )
+
+        # Phase 3: 스팸 방지 및 보안 상태 추적
+        self.message_history = []  # 최근 메시지 기록
+        self.blocked_messages = []  # 차단된 메시지 기록
+        self.security_events = []  # 보안 이벤트 기록
+        self.duplicate_hashes = set()  # 중복 메시지 해시
+        self.cooldown_until = {}  # 카테고리별 쿨다운 시간
 
     def _should_send_notification(self, level: NotificationLevel) -> bool:
         """알림 발송 여부 판단"""
@@ -699,6 +816,530 @@ class MakenaideSNSNotifier:
         )
         return self.send_notification(notification)
 
+    def notify_pipeline_failure(self, failure_type: str, error_message: str,
+                               phase: str = None, execution_id: str = None,
+                               metadata: Dict = None) -> bool:
+        """파이프라인 실패 시 통합 알림 전송"""
+
+        # 실패 유형별 제목 매핑
+        failure_titles = {
+            FailureType.API_KEY_MISSING.value: "🔑 API 키 설정 오류",
+            FailureType.INIT_FAILURE.value: "⚙️ 시스템 초기화 실패",
+            FailureType.PHASE0_FAILURE.value: "📡 종목 스캔 실패",
+            FailureType.PHASE1_FAILURE.value: "📊 데이터 수집 실패",
+            FailureType.CRITICAL_ERROR.value: "💥 치명적 시스템 오류"
+        }
+
+        title = failure_titles.get(failure_type, "❌ 파이프라인 실패")
+
+        # EC2 자동 종료 예고 메시지 포함
+        auto_shutdown = os.getenv('EC2_AUTO_SHUTDOWN', 'false').lower() == 'true'
+        shutdown_notice = "\n\n🔌 EC2 자동 종료: 30초 후 인스턴스가 종료됩니다." if auto_shutdown else ""
+
+        # 상세 메타데이터 구성
+        failure_metadata = {
+            'failure_type': failure_type,
+            'phase': phase,
+            'auto_shutdown': auto_shutdown,
+            'severity': 'CRITICAL',
+            'requires_immediate_attention': True
+        }
+
+        if metadata:
+            failure_metadata.update(metadata)
+
+        notification = NotificationMessage(
+            level=NotificationLevel.CRITICAL,
+            category=NotificationCategory.PIPELINE,
+            title=title,
+            message=f"{error_message}{shutdown_notice}",
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            execution_id=execution_id or datetime.now().strftime('%Y%m%d_%H%M%S'),
+            metadata=failure_metadata
+        )
+
+        return self.send_notification(notification)
+
+    def _get_failure_template(self, failure_type: str, sub_type: str = None) -> Dict:
+        """Phase 2: 실패 유형별 상세 템플릿 반환"""
+
+        # 기본 템플릿 구조
+        base_templates = {
+            FailureType.API_KEY_MISSING.value: {
+                'icon': '🔑',
+                'title': 'API 키 설정 오류',
+                'severity': FailureSeverity.CRITICAL.value,
+                'immediate_action': True,
+                'recovery_time': '5분',
+                'categories': ['설정', '인증']
+            },
+            FailureType.INIT_FAILURE.value: {
+                'icon': '⚙️',
+                'title': '시스템 초기화 실패',
+                'severity': FailureSeverity.CRITICAL.value,
+                'immediate_action': True,
+                'recovery_time': '10분',
+                'categories': ['시스템', '인프라']
+            },
+            FailureType.PHASE0_FAILURE.value: {
+                'icon': '📡',
+                'title': '종목 스캔 실패',
+                'severity': FailureSeverity.HIGH.value,
+                'immediate_action': True,
+                'recovery_time': '15분',
+                'categories': ['네트워크', 'API']
+            },
+            FailureType.PHASE1_FAILURE.value: {
+                'icon': '📊',
+                'title': '데이터 수집 실패',
+                'severity': FailureSeverity.HIGH.value,
+                'immediate_action': True,
+                'recovery_time': '20분',
+                'categories': ['데이터', '저장소']
+            },
+            FailureType.CRITICAL_ERROR.value: {
+                'icon': '💥',
+                'title': '치명적 시스템 오류',
+                'severity': FailureSeverity.CRITICAL.value,
+                'immediate_action': True,
+                'recovery_time': '30분',
+                'categories': ['시스템', '예외']
+            }
+        }
+
+        # 상세 서브타입별 템플릿
+        detailed_templates = {
+            # API 키 관련
+            FailureSubType.API_ACCESS_KEY_MISSING.value: {
+                'title': 'Access Key 누락',
+                'description': 'UPBIT_ACCESS_KEY 환경변수가 설정되지 않았습니다.',
+                'solution': '.env 파일에서 UPBIT_ACCESS_KEY를 확인하고 설정해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/user-request-guide'
+            },
+            FailureSubType.API_SECRET_KEY_MISSING.value: {
+                'title': 'Secret Key 누락',
+                'description': 'UPBIT_SECRET_KEY 환경변수가 설정되지 않았습니다.',
+                'solution': '.env 파일에서 UPBIT_SECRET_KEY를 확인하고 설정해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/user-request-guide'
+            },
+            FailureSubType.API_INVALID_CREDENTIALS.value: {
+                'title': 'API 인증 실패',
+                'description': 'API 키가 유효하지 않거나 만료되었습니다.',
+                'solution': '업비트에서 새로운 API 키를 발급받아 교체해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/create-authorization-request'
+            },
+
+            # 시스템 초기화 관련
+            FailureSubType.DATABASE_CONNECTION_FAILED.value: {
+                'title': '데이터베이스 연결 실패',
+                'description': 'SQLite 데이터베이스에 연결할 수 없습니다.',
+                'solution': '데이터베이스 파일 권한과 디스크 공간을 확인해주세요.',
+                'documentation': 'SQLite 파일 접근 권한 확인 필요'
+            },
+            FailureSubType.MEMORY_INSUFFICIENT.value: {
+                'title': '메모리 부족',
+                'description': '시스템 메모리가 부족하여 초기화에 실패했습니다.',
+                'solution': 'EC2 인스턴스를 재시작하거나 메모리 사용량을 확인해주세요.',
+                'documentation': 'EC2 t3.medium 메모리 4GB 한계'
+            },
+
+            # Phase 0 관련
+            FailureSubType.UPBIT_API_UNAVAILABLE.value: {
+                'title': '업비트 API 서비스 중단',
+                'description': '업비트 API 서버에 접속할 수 없습니다.',
+                'solution': '업비트 서비스 상태를 확인하고 잠시 후 재시도해주세요.',
+                'documentation': 'https://upbit.com/service_center/notice'
+            },
+            FailureSubType.RATE_LIMIT_EXCEEDED.value: {
+                'title': 'API 호출 한도 초과',
+                'description': '업비트 API 호출 한도를 초과했습니다.',
+                'solution': '1분 후 재시도하거나 호출 빈도를 조정해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/market-info-trade-price-detail'
+            },
+
+            # Phase 1 관련
+            FailureSubType.SQLITE_WRITE_FAILED.value: {
+                'title': 'SQLite 쓰기 실패',
+                'description': 'SQLite 데이터베이스에 데이터를 저장할 수 없습니다.',
+                'solution': '디스크 공간과 파일 권한을 확인해주세요.',
+                'documentation': 'SQLite VACUUM으로 데이터베이스 최적화 필요'
+            },
+            FailureSubType.TECHNICAL_INDICATOR_FAILED.value: {
+                'title': '기술적 지표 계산 실패',
+                'description': '기술적 지표 계산 중 오류가 발생했습니다.',
+                'solution': 'OHLCV 데이터의 완정성을 확인하고 재계산해주세요.',
+                'documentation': 'MA, RSI, ADX 계산 알고리즘 확인 필요'
+            },
+
+            # 새로 추가된 실패 유형들
+            FailureSubType.API_BOTH_KEYS_MISSING.value: {
+                'title': '모든 API 키 누락',
+                'description': 'Access Key와 Secret Key가 모두 설정되지 않았습니다.',
+                'solution': '.env 파일에 UPBIT_ACCESS_KEY와 UPBIT_SECRET_KEY를 모두 설정해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/user-request-guide'
+            },
+            FailureSubType.API_AUTHENTICATION_FAILED.value: {
+                'title': 'API 인증 실패',
+                'description': 'API 키 인증에 실패했습니다.',
+                'solution': 'API 키 유효성을 확인하고 업비트에서 새로 발급받아 주세요.',
+                'documentation': 'https://docs.upbit.com/docs/create-authorization-request'
+            },
+            FailureSubType.SYSTEM_INITIALIZATION_FAILED.value: {
+                'title': '시스템 초기화 실패',
+                'description': '시스템 구성 요소 초기화에 실패했습니다.',
+                'solution': 'EC2 인스턴스를 재시작하고 로그를 확인해주세요.',
+                'documentation': 'EC2 시스템 리소스 및 구성 확인 필요'
+            },
+            FailureSubType.NETWORK_CONNECTION_FAILED.value: {
+                'title': '네트워크 연결 실패',
+                'description': '외부 API 서버에 연결할 수 없습니다.',
+                'solution': '네트워크 연결 상태와 보안 그룹 설정을 확인해주세요.',
+                'documentation': 'EC2 보안 그룹 및 네트워크 ACL 확인'
+            },
+            FailureSubType.TICKER_SCAN_FAILED.value: {
+                'title': '종목 스캔 실패',
+                'description': '업비트 종목 리스트 조회에 실패했습니다.',
+                'solution': 'API 연결 상태를 확인하고 재시도해주세요.',
+                'documentation': 'https://docs.upbit.com/docs/market-info-trade-price-detail'
+            },
+            FailureSubType.DATA_COLLECTION_FAILED.value: {
+                'title': '데이터 수집 실패',
+                'description': 'OHLCV 데이터 수집 과정에서 오류가 발생했습니다.',
+                'solution': 'API 호출 한도와 디스크 공간을 확인해주세요.',
+                'documentation': '데이터 수집 파이프라인 점검 필요'
+            },
+            FailureSubType.UNEXPECTED_EXCEPTION.value: {
+                'title': '예상치 못한 예외',
+                'description': '처리되지 않은 예외가 발생했습니다.',
+                'solution': '로그를 확인하고 시스템을 재시작해주세요.',
+                'documentation': '스택 트레이스 분석 및 버그 리포트 필요'
+            },
+            FailureSubType.SYSTEM_PERMISSION_DENIED.value: {
+                'title': '시스템 권한 거부',
+                'description': '시스템 리소스에 접근할 권한이 없습니다.',
+                'solution': '파일 권한과 EC2 사용자 권한을 확인해주세요.',
+                'documentation': 'EC2 인스턴스 파일 시스템 권한 점검'
+            }
+        }
+
+        # 기본 템플릿 가져오기
+        template = base_templates.get(failure_type, {
+            'icon': '❌',
+            'title': '알 수 없는 오류',
+            'severity': FailureSeverity.MEDIUM.value,
+            'immediate_action': False,
+            'recovery_time': '확인 필요',
+            'categories': ['기타']
+        })
+
+        # 상세 정보 추가
+        if sub_type and sub_type in detailed_templates:
+            template.update(detailed_templates[sub_type])
+
+        return template
+
+    def notify_detailed_failure(self, failure_type: str, sub_type: str = None, error_message: str = "",
+                              phase: str = None, execution_id: str = None, metadata: Dict = None) -> bool:
+        """Phase 2: 상세 실패 분류 기반 알림 전송"""
+
+        # 템플릿 가져오기
+        template = self._get_failure_template(failure_type, sub_type)
+
+        # 상세 제목 구성
+        detailed_title = f"{template['icon']} {template['title']}"
+        if sub_type and 'title' in template:
+            detailed_title += f" - {template.get('title', '')}"
+
+        # EC2 자동 종료 예고 메시지 포함
+        auto_shutdown = os.getenv('EC2_AUTO_SHUTDOWN', 'false').lower() == 'true'
+        shutdown_notice = "\n\n🔌 EC2 자동 종료: 30초 후 인스턴스가 종료됩니다." if auto_shutdown else ""
+
+        # 상세 메시지 구성
+        detailed_message = error_message if error_message else template.get('description', '')
+
+        # 해결 방안 추가
+        if 'solution' in template:
+            detailed_message += f"\n\n💡 해결 방안:\n{template['solution']}"
+
+        # 문서 링크 추가
+        if 'documentation' in template:
+            detailed_message += f"\n\n📚 참고: {template['documentation']}"
+
+        detailed_message += shutdown_notice
+
+        # 상세 메타데이터 구성
+        failure_metadata = {
+            'failure_type': failure_type,
+            'sub_type': sub_type,
+            'phase': phase,
+            'severity': template['severity'],
+            'immediate_action': template['immediate_action'],
+            'recovery_time': template['recovery_time'],
+            'categories': template['categories'],
+            'auto_shutdown': auto_shutdown,
+            'template_version': '2.0'
+        }
+
+        if metadata:
+            failure_metadata.update(metadata)
+
+        notification = NotificationMessage(
+            level=NotificationLevel.CRITICAL if template['severity'] in ['CRITICAL', 'HIGH'] else NotificationLevel.WARNING,
+            category=NotificationCategory.PIPELINE,
+            title=detailed_title,
+            message=detailed_message,
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            execution_id=execution_id or datetime.now().strftime('%Y%m%d_%H%M%S'),
+            metadata=failure_metadata
+        )
+
+        # 추가 로깅
+        logger.error(f"상세 실패 알림: {failure_type} - {sub_type} | {template['severity']}")
+
+        return self.send_notification(notification)
+
+    def get_failure_analytics(self) -> Dict:
+        """Phase 2: 실패 패턴 분석 데이터 반환"""
+        return {
+            'total_failure_types': len(FailureType),
+            'total_sub_types': len(FailureSubType),
+            'severity_levels': [s.value for s in FailureSeverity],
+            'template_coverage': {
+                'api_related': 4,
+                'system_related': 3,
+                'phase0_related': 4,
+                'phase1_related': 4,
+                'critical_related': 4
+            },
+            'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
+
+    def _generate_message_hash(self, notification: NotificationMessage) -> str:
+        """Phase 3: 메시지 중복 감지용 해시 생성"""
+        import hashlib
+
+        # 메시지 핵심 내용으로 해시 생성
+        hash_content = f"{notification.level.value}|{notification.category.value}|{notification.title}|{notification.message[:100]}"
+        return hashlib.md5(hash_content.encode('utf-8')).hexdigest()
+
+    def _mask_sensitive_data(self, message: str) -> str:
+        """Phase 3: 민감한 데이터 마스킹"""
+        import re
+
+        if not self.security.sensitive_data_masking:
+            return message
+
+        # API 키 패턴 마스킹
+        message = re.sub(r'[A-Za-z0-9]{32,}', lambda m: m.group()[:4] + '*' * (len(m.group()) - 8) + m.group()[-4:], message)
+
+        # 이메일 주소 마스킹
+        message = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
+                        lambda m: m.group().split('@')[0][:2] + '***@' + m.group().split('@')[1], message)
+
+        # IP 주소 마스킹
+        message = re.sub(r'\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b',
+                        lambda m: '.'.join(m.group().split('.')[:2]) + '.***.***.', message)
+
+        return message
+
+    def _is_spam_blocked(self, notification: NotificationMessage) -> tuple:
+        """Phase 3: 스팸 방지 검사"""
+        current_time = datetime.now()
+
+        if self.spam_prevention.level == SpamPreventionLevel.DISABLED:
+            return False, "스팸 방지 비활성화"
+
+        # 1. 중복 메시지 검사
+        if self.spam_prevention.duplicate_detection:
+            message_hash = self._generate_message_hash(notification)
+            if message_hash in self.duplicate_hashes:
+                return True, f"중복 메시지 차단 (hash: {message_hash[:8]})"
+            self.duplicate_hashes.add(message_hash)
+
+        # 2. 시간창 기반 제한 검사
+        time_window = self.spam_prevention.time_window_minutes
+        from datetime import timedelta
+        cutoff_time = current_time - timedelta(minutes=time_window)
+
+        # 최근 메시지 기록 정리
+        self.message_history = [
+            msg for msg in self.message_history
+            if datetime.fromisoformat(msg['timestamp']) > cutoff_time
+        ]
+
+        # 시간창 내 메시지 수 확인
+        category_key = notification.category.value
+        recent_category_messages = [
+            msg for msg in self.message_history
+            if msg['category'] == category_key
+        ]
+
+        if len(recent_category_messages) >= self.spam_prevention.max_messages_per_window:
+            # 쿨다운 적용
+            cooldown_minutes = time_window * self.spam_prevention.cooldown_multiplier
+            self.cooldown_until[category_key] = current_time + timedelta(minutes=cooldown_minutes)
+            return True, f"시간창 제한 초과 ({len(recent_category_messages)}/{self.spam_prevention.max_messages_per_window})"
+
+        # 3. 쿨다운 상태 검사
+        if category_key in self.cooldown_until:
+            if current_time < self.cooldown_until[category_key]:
+                remaining = (self.cooldown_until[category_key] - current_time).total_seconds() / 60
+                return True, f"쿨다운 중 (남은 시간: {remaining:.1f}분)"
+            else:
+                del self.cooldown_until[category_key]
+
+        # 4. 패턴 분석 (HIGH/AGGRESSIVE 레벨에서만)
+        if self.spam_prevention.level in [SpamPreventionLevel.HIGH, SpamPreventionLevel.AGGRESSIVE]:
+            if self.spam_prevention.pattern_analysis:
+                # 동일한 실행 ID로 너무 많은 메시지가 오는지 검사
+                if notification.execution_id:
+                    execution_messages = [
+                        msg for msg in self.message_history
+                        if msg.get('execution_id') == notification.execution_id
+                    ]
+                    if len(execution_messages) >= 5:  # 같은 실행 ID로 5개 이상
+                        return True, f"실행 ID 스팸 패턴 감지 ({notification.execution_id})"
+
+        # 메시지 기록 추가
+        self.message_history.append({
+            'timestamp': current_time.isoformat(),
+            'category': category_key,
+            'level': notification.level.value,
+            'execution_id': notification.execution_id,
+            'hash': self._generate_message_hash(notification)
+        })
+
+        return False, "스팸 검사 통과"
+
+    def _security_check(self, notification: NotificationMessage) -> tuple:
+        """Phase 3: 보안 검사"""
+        current_time = datetime.now()
+
+        # 개발 모드에서는 모든 보안 검사 통과
+        if self.security.mode == SecurityMode.DEVELOPMENT:
+            return True, "개발 모드 - 보안 검사 생략"
+
+        # 1. 민감한 데이터 검사
+        if self.security.sensitive_data_masking:
+            notification.message = self._mask_sensitive_data(notification.message)
+
+        # 2. 메시지 크기 검사 (운영 환경에서 엄격)
+        max_message_size = 1000 if self.security.mode == SecurityMode.PRODUCTION else 2000
+        if len(notification.message) > max_message_size:
+            return False, f"메시지 크기 초과 ({len(notification.message)}/{max_message_size})"
+
+        # 3. 보안 이벤트 로깅
+        if self.security.audit_logging:
+            security_event = {
+                'timestamp': current_time.isoformat(),
+                'event_type': 'notification_security_check',
+                'level': notification.level.value,
+                'category': notification.category.value,
+                'execution_id': notification.execution_id,
+                'message_size': len(notification.message),
+                'masked': self.security.sensitive_data_masking
+            }
+            self.security_events.append(security_event)
+
+            # 보안 이벤트 기록 제한 (최대 100개)
+            if len(self.security_events) > 100:
+                self.security_events = self.security_events[-50:]  # 최근 50개만 유지
+
+        return True, "보안 검사 통과"
+
+    def send_notification_with_security(self, notification: NotificationMessage) -> bool:
+        """Phase 3: 보안 및 스팸 방지가 적용된 알림 전송"""
+
+        # 1. 기본 알림 발송 조건 검사
+        if not self._should_send_notification(notification.level):
+            logger.info(f"알림 발송 조건 미충족: {notification.level}")
+            return False
+
+        # 2. 스팸 방지 검사
+        is_spam, spam_reason = self._is_spam_blocked(notification)
+        if is_spam:
+            logger.warning(f"스팸 차단: {spam_reason}")
+            self.blocked_messages.append({
+                'timestamp': datetime.now().isoformat(),
+                'reason': f"SPAM: {spam_reason}",
+                'title': notification.title,
+                'level': notification.level.value,
+                'category': notification.category.value
+            })
+
+            # CRITICAL 메시지는 스팸 차단되어도 최소 정보는 전송
+            if notification.level == NotificationLevel.CRITICAL and self.security.mode == SecurityMode.PRODUCTION:
+                emergency_notification = NotificationMessage(
+                    level=NotificationLevel.CRITICAL,
+                    category=NotificationCategory.SYSTEM,
+                    title="🚨 중요 알림 차단됨",
+                    message=f"중요한 알림이 스팸 방지로 차단되었습니다: {spam_reason}",
+                    timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    execution_id=notification.execution_id
+                )
+                return self.send_notification(emergency_notification)
+
+            return False
+
+        # 3. 보안 검사
+        security_passed, security_reason = self._security_check(notification)
+        if not security_passed:
+            logger.error(f"보안 검사 실패: {security_reason}")
+            self.blocked_messages.append({
+                'timestamp': datetime.now().isoformat(),
+                'reason': f"SECURITY: {security_reason}",
+                'title': notification.title,
+                'level': notification.level.value,
+                'category': notification.category.value
+            })
+            return False
+
+        # 4. 최종 전송
+        logger.info(f"Phase 3 보안 검사 통과: {notification.title}")
+        return self.send_notification(notification)
+
+    def get_security_analytics(self) -> Dict:
+        """Phase 3: 보안 및 스팸 방지 분석 데이터"""
+        from datetime import timedelta
+        current_time = datetime.now()
+        cutoff_time = current_time - timedelta(hours=24)
+
+        # 최근 24시간 통계
+        recent_blocked = [
+            msg for msg in self.blocked_messages
+            if datetime.fromisoformat(msg['timestamp']) > cutoff_time
+        ]
+
+        recent_security_events = [
+            event for event in self.security_events
+            if datetime.fromisoformat(event['timestamp']) > cutoff_time
+        ]
+
+        spam_blocks = [msg for msg in recent_blocked if msg['reason'].startswith('SPAM:')]
+        security_blocks = [msg for msg in recent_blocked if msg['reason'].startswith('SECURITY:')]
+
+        return {
+            'spam_prevention': {
+                'level': self.spam_prevention.level.value,
+                'total_blocked_24h': len(spam_blocks),
+                'duplicate_count': len(self.duplicate_hashes),
+                'active_cooldowns': len(self.cooldown_until),
+                'message_history_size': len(self.message_history)
+            },
+            'security': {
+                'mode': self.security.mode.value,
+                'total_blocked_24h': len(security_blocks),
+                'audit_events_24h': len(recent_security_events),
+                'sensitive_data_masking': self.security.sensitive_data_masking,
+                'audit_logging': self.security.audit_logging
+            },
+            'performance': {
+                'total_messages_processed': len(self.message_history) + len(self.blocked_messages),
+                'block_rate_24h': f"{len(recent_blocked) / max(1, len(self.message_history)) * 100:.1f}%",
+                'last_updated': current_time.strftime('%Y-%m-%d %H:%M:%S')
+            }
+        }
+
 # 전역 알림기 인스턴스
 _notifier_instance = None
 
@@ -733,6 +1374,23 @@ def notify_system_error(error_message: str, execution_id: str = None):
 
 def notify_ec2_shutdown(execution_id: str, reason: str = "파이프라인 완료"):
     return get_notifier().notify_ec2_shutdown(execution_id, reason)
+
+def notify_pipeline_failure(failure_type: str, error_message: str, phase: str = None, execution_id: str = None, metadata: Dict = None):
+    """파이프라인 실패 알림 편의 함수"""
+    return get_notifier().notify_pipeline_failure(failure_type, error_message, phase, execution_id, metadata)
+
+def notify_detailed_failure(failure_type: str, sub_type: str = None, error_message: str = "",
+                          phase: str = None, execution_id: str = None, metadata: Dict = None):
+    """Phase 2: 상세 실패 분류 알림 편의 함수"""
+    return get_notifier().notify_detailed_failure(failure_type, sub_type, error_message, phase, execution_id, metadata)
+
+def send_secure_notification(notification: NotificationMessage):
+    """Phase 3: 보안 및 스팸 방지가 적용된 알림 전송 편의 함수"""
+    return get_notifier().send_notification_with_security(notification)
+
+def get_security_analytics():
+    """Phase 3: 보안 및 스팸 방지 분석 데이터 편의 함수"""
+    return get_notifier().get_security_analytics()
 
 # ✨ NEW: 발굴 종목 리스트 관련 편의 함수들
 def notify_discovered_stocks(technical_candidates: List[Dict], gpt_candidates: List[Dict], execution_id: str):
