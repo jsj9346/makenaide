@@ -14,8 +14,8 @@ import pytz
 import pandas as pd
 import psutil
 
-# Import optimized monitor
-from optimized_data_monitor import get_optimized_monitor
+# Import optimized monitor (commented out - module deleted)
+# from optimized_data_monitor import get_optimized_monitor
 
 # === 전역 변수 초기화 ===
 _conversion_stats = {
@@ -949,7 +949,7 @@ def validate_db_schema_and_indicators():
             
             # 7. static_indicators 컬럼 검증
             expected_static_indicators = [
-                'ma200_slope', 'nvt_relative', 'volume_change_7_30', 'price', 
+                'nvt_relative', 'volume_change_7_30', 'price', 
                 'high_60', 'low_60', 'pivot', 's1', 'r1', 'resistance', 
                 'support', 'atr', 'adx', 'supertrend_signal'
             ]

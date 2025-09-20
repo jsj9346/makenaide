@@ -1,0 +1,168 @@
+graph TD
+    %% ========================================================================
+    %% Makenaide SNS 알림 시스템 아키텍처
+    %% EventBridge + Lambda + EC2 + SNS 통합 설계
+    %% ========================================================================
+
+    %% EventBridge 스케줄러
+    EB["⏰ EventBridge Scheduler<br/>하루 7회 실행<br/>(02:00, 09:00, 15:00, 18:00, 21:00, 23:00 UTC)"]
+
+    %% Lambda 함수
+    EB --> LF["⚡ Lambda Function<br/>makenaide-ec2-auto-starter<br/>• EC2 시작만 담당<br/>• 시작 성공/실패 알림"]
+
+    %% EC2 인스턴스
+    LF --> EC2["🖥️ EC2 Instance<br/>makenaide.py 실행<br/>• SNS 통합 모듈 포함<br/>• 단계별 알림 전송<br/>• 자동 shutdown"]
+
+    %% SNS Topics
+    subgraph "📢 SNS Topics"
+        SNS_T["📈 makenaide-trading-alerts<br/>• 거래 실행 결과<br/>• 포트폴리오 상태<br/>• 수익/손실 알림"]
+
+        SNS_S["🔧 makenaide-system-alerts<br/>• 시스템 오류<br/>• 파이프라인 상태<br/>• EC2 시작/종료"]
+    end
+
+    %% 알림 구독자
+    subgraph "📧 Notification Subscribers"
+        EMAIL1["📨 Trading Email<br/>• 거래 알림<br/>• 포트폴리오 업데이트<br/>• 필터: TRADING, PORTFOLIO"]
+
+        EMAIL2["🚨 System Email<br/>• 시스템 오류<br/>• CRITICAL/WARNING만<br/>• 필터: CRITICAL, WARNING"]
+
+        SLACK["💬 Slack (선택적)<br/>• 실시간 알림<br/>• 팀 공유"]
+
+        SMS["📱 SMS (선택적)<br/>• CRITICAL만<br/>• 긴급 알림"]
+    end
+
+    %% 알림 경로 연결
+    LF --> SNS_S
+    EC2 --> SNS_T
+    EC2 --> SNS_S
+
+    SNS_T --> EMAIL1
+    SNS_S --> EMAIL2
+    SNS_T --> SLACK
+    SNS_S --> SMS
+
+    %% ========================================================================
+    %% 파이프라인 단계별 알림 플로우
+    %% ========================================================================
+
+    subgraph "🔄 Pipeline Notification Flow"
+        P0["📡 Phase 0: Scanner<br/>• 종목 스캔 완료 알림<br/>• 스캔된 종목 수"]
+
+        P1["📊 Phase 1: Data Collection<br/>• 데이터 갭 수집 완료<br/>• 수집된 데이터 요약"]
+
+        P2["🎯 Phase 2: Technical Filter<br/>• Stage 2 후보 발견<br/>• 상위 후보 목록"]
+
+        P3["🤖 Phase 3: GPT Analysis<br/>• GPT 승인 종목<br/>• 분석 비용"]
+
+        MS["🌡️ Market Sentiment<br/>• BEAR 시장 경고<br/>• 거래 중단 알림"]
+
+        TE["💸 Trading Execution<br/>• 매수/매도 성공/실패<br/>• 거래 금액 및 가격"]
+
+        PM["📊 Portfolio Management<br/>• 포트폴리오 현황<br/>• 손익 상태"]
+
+        PC["🏁 Pipeline Complete<br/>• 전체 실행 결과<br/>• 성과 요약"]
+    end
+
+    %% 파이프라인 알림 연결
+    EC2 --> P0
+    P0 --> P1
+    P1 --> P2
+    P2 --> P3
+    P3 --> MS
+    MS --> TE
+    TE --> PM
+    PM --> PC
+
+    %% 각 단계에서 SNS로 알림
+    P0 --> SNS_S
+    P1 --> SNS_S
+    P2 --> SNS_T
+    P3 --> SNS_T
+    MS --> SNS_S
+    TE --> SNS_T
+    PM --> SNS_T
+    PC --> SNS_S
+
+    %% ========================================================================
+    %% 알림 레벨 및 필터링 시스템
+    %% ========================================================================
+
+    subgraph "🚦 Notification Levels & Filtering"
+        CRIT["🚨 CRITICAL<br/>• 시스템 오류<br/>• 거래 실패<br/>• 즉시 알림"]
+
+        WARN["⚠️ WARNING<br/>• BEAR 시장<br/>• 조건 미충족<br/>• 주의 필요"]
+
+        SUCC["✅ SUCCESS<br/>• 거래 성공<br/>• 목표 달성<br/>• 긍정적 결과"]
+
+        INFO["ℹ️ INFO<br/>• 파이프라인 진행<br/>• 상태 업데이트<br/>• 일반 정보"]
+    end
+
+    %% 필터링 정책
+    subgraph "🔍 Filtering Policies"
+        FP1["📈 Trading Filter<br/>• Category: TRADING, PORTFOLIO<br/>• Level: ALL<br/>• Time: 24/7"]
+
+        FP2["🔧 System Filter<br/>• Category: SYSTEM, PIPELINE<br/>• Level: CRITICAL, WARNING<br/>• Quiet Hours: 01:00-07:00"]
+
+        FP3["💰 Cost Control<br/>• Daily Limit: 50 messages<br/>• CRITICAL: No limit<br/>• Auto-reset daily"]
+    end
+
+    %% ========================================================================
+    %% 비용 최적화 및 모니터링
+    %% ========================================================================
+
+    subgraph "💰 Cost Optimization"
+        CO1["📊 Message Tracking<br/>• 일일 메시지 수 추적<br/>• 비용 임계값 모니터링<br/>• 자동 제한"]
+
+        CO2["⏰ Quiet Hours<br/>• 01:00-07:00 KST<br/>• INFO 레벨 제한<br/>• CRITICAL은 예외"]
+
+        CO3["🎯 Smart Filtering<br/>• 중복 알림 방지<br/>• 중요도 기반 우선순위<br/>• 배치 처리"]
+    end
+
+    %% ========================================================================
+    %% 설정 및 환경 변수
+    %% ========================================================================
+
+    subgraph "⚙️ Configuration"
+        ENV["🔧 Environment Variables<br/>• SNS_NOTIFICATIONS_ENABLED<br/>• SNS_CRITICAL_ONLY<br/>• SNS_MAX_DAILY_MESSAGES<br/>• SNS_QUIET_START/END<br/>• SNS_TOPIC_ARNs"]
+
+        CFG["📋 Dynamic Configuration<br/>• Runtime 설정 변경<br/>• 알림 레벨 조정<br/>• 필터 정책 업데이트"]
+    end
+
+    %% ========================================================================
+    %% 스타일링
+    %% ========================================================================
+
+    %% EventBridge & Lambda
+    style EB fill:#ff9800,stroke:#333,stroke-width:3px
+    style LF fill:#2196f3,stroke:#333,stroke-width:3px
+
+    %% EC2 & Pipeline
+    style EC2 fill:#4caf50,stroke:#333,stroke-width:4px
+    style P0 fill:#e1f5fe,stroke:#333,stroke-width:2px
+    style P1 fill:#e1f5fe,stroke:#333,stroke-width:2px
+    style P2 fill:#fff3e0,stroke:#333,stroke-width:2px
+    style P3 fill:#f3e5f5,stroke:#333,stroke-width:2px
+    style MS fill:#ffebee,stroke:#333,stroke-width:3px
+    style TE fill:#e8f5e8,stroke:#333,stroke-width:3px
+    style PM fill:#e3f2fd,stroke:#333,stroke-width:2px
+    style PC fill:#f1f8e9,stroke:#333,stroke-width:3px
+
+    %% SNS Topics
+    style SNS_T fill:#ff4081,stroke:#333,stroke-width:3px
+    style SNS_S fill:#ff5722,stroke:#333,stroke-width:3px
+
+    %% Subscribers
+    style EMAIL1 fill:#8bc34a,stroke:#333,stroke-width:2px
+    style EMAIL2 fill:#ff7043,stroke:#333,stroke-width:2px
+    style SLACK fill:#9c27b0,stroke:#333,stroke-width:2px
+    style SMS fill:#607d8b,stroke:#333,stroke-width:2px
+
+    %% Notification Levels
+    style CRIT fill:#f44336,stroke:#333,stroke-width:3px
+    style WARN fill:#ff9800,stroke:#333,stroke-width:2px
+    style SUCC fill:#4caf50,stroke:#333,stroke-width:2px
+    style INFO fill:#2196f3,stroke:#333,stroke-width:2px
+
+    %% Configuration
+    style ENV fill:#795548,stroke:#333,stroke-width:2px
+    style CFG fill:#607d8b,stroke:#333,stroke-width:2px

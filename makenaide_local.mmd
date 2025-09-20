@@ -1,0 +1,238 @@
+graph TD
+    %% ========================================================================
+    %% Makenaide Local Operation Pipeline
+    %% 로컬 환경 기반 암호화폐 자동매매 시스템
+    %%
+    %% 🏠 LOCAL ARCHITECTURE: 단일 머신 통합 실행
+    %% - AWS 의존성 제거: DynamoDB → SQLite, Lambda → Python Scripts
+    %% - 비용 최적화: 클라우드 비용 0원, 전력비만 발생
+    %% - 개발 편의성: 로컬 디버깅, 실시간 로그 확인
+    %%
+    %% ✅ Local 최적화 특징:
+    %% - 통합 프로세스: 단일 Python 스크립트로 전체 파이프라인 실행
+    %% - 실시간 모니터링: 터미널 기반 실시간 로그 출력
+    %% - 데이터 지속성: SQLite DB + JSON 파일 백업
+    %% - 개발자 친화적: 코드 수정 후 즉시 테스트 가능
+    %% ========================================================================
+
+    %% 로컬 실행 트리거 시스템
+    A1["🖥️ 로컬 스케줄러<br/>cron 또는 Python scheduler<br/>아시아: 09:00, 18:00 KST<br/>유럽: 17:00 KST<br/>미국: 23:00, 07:00 KST"] --> B[makenaide_local_orchestrator.py]
+
+    %% 로컬 통합 오케스트레이터
+    B --> C["🎯 Local Orchestrator 초기화<br/>SQLite DB 연결<br/>업비트 API 인증<br/>로그 시스템 설정"]
+
+    %% Stage 1: Local Analysis Pipeline
+    C --> D["📡 Phase 0: ticker_scanner.py<br/>업비트 전체 종목 스캔<br/>신규/폐지 종목 감지<br/>SQLite 저장"]
+
+    D --> D1["🔔 Scanner Complete<br/>Local Event Handler"]
+
+    D1 --> E["📊 Phase 1: data_collector.py<br/>300일+ 데이터 보존 정책 실행<br/>SQLite 기존 데이터 확인<br/>갭만큼 증분 OHLCV 수집<br/>JSON 파일 백업"]
+
+    E --> E_R["🗑️ 데이터 보존 정책<br/>• 300일 이상 오래된 데이터 감지<br/>• 자동 정리 및 VACUUM 최적화<br/>• 스토리지 용량 최적화<br/>• 기술적 지표 충분한 데이터 보장"]
+
+    E_R --> E0["🔍 데이터 갭 분석<br/>현재 시각 vs SQLite 최신 데이터<br/>Yesterday OHLCV 변경사항 감지"]
+
+    E0 --> E_TI["⚙️ 기술적 지표 자동 업데이트<br/>• NULL → 값 변환 메커니즘<br/>• 조건부 지표 계산 (MA20: 20일+, RSI: 14일+)<br/>• 데이터 누적 시 자동 NULL 해결<br/>• 실시간 지표 재계산"]
+
+    E_TI --> E1{"⚡ 수집 전략 분기<br/>데이터 갭 크기에 따른 처리"}
+
+    E1 -->|갭=0일| E2["✅ 수집 스킵<br/>모든 데이터 최신 상태<br/>기술적 지표 재사용"]
+    E1 -->|갭=1일| E3["🔄 Yesterday 업데이트<br/>HLCV만 업데이트<br/>Open은 변경 없음"]
+    E1 -->|갭>1일| E4["📥 증분 데이터 수집<br/>갭 기간만큼 OHLCV 수집<br/>전체 기술적 지표 재계산"]
+
+    E2 --> E5["🔔 Collection Complete<br/>Local Event Handler"]
+    E3 --> E5
+    E4 --> E5
+
+    %% ========================================================================
+    %% Local Phase 2: 통합 기술적 필터링
+    %% - Serverless 분산 실행 → 로컬 단일 프로세스 실행
+    %% - hybrid_technical_filter.py: Weinstein Stage 2 진입 감지 + 4단계 게이트 필터링
+    %% - 메모리 효율성: 배치 처리로 메모리 사용량 최적화
+    %% ========================================================================
+
+    E5 --> F["🎯 Phase 2: hybrid_technical_filter.py<br/>Weinstein Stage 2 진입 감지<br/>4단계 게이트 필터링 (로컬 실행)<br/>SQLite 결과 저장"]
+
+    F --> F1["🔔 Filter Complete<br/>Local Event Handler"]
+
+    %% ========================================================================
+    %% Local Phase 3: GPT 분석 (선택적)
+    %% - OpenAI API 직접 호출 (AWS Lambda 대신)
+    %% - 비용 절약: 필요한 경우에만 실행
+    %% - 로컬 캐싱: 동일 패턴 재분석 방지
+    %% ========================================================================
+
+    F1 --> G{"💰 GPT 분석 실행 여부<br/>비용 vs 정확도 선택"}
+
+    G -->|Enable GPT| H["🤖 Phase 3: gpt_analyzer.py<br/>OpenAI GPT-4 API 직접 호출<br/>VCP 및 컵앤핸들 감지<br/>로컬 캐시 저장"]
+
+    G -->|Skip GPT| H1["📊 기술적 분석만 사용<br/>Pattern Score 기반 판정<br/>비용 절약 모드"]
+
+    H --> H2["💾 GPT 결과 SQLite 저장<br/>makenaide_gpt_analysis 테이블<br/>거래 준비 플래그 설정"]
+
+    H1 --> H3["💾 기술적 분석 결과 저장<br/>makenaide_technical_analysis 테이블<br/>거래 준비 플래그 설정"]
+
+    H2 --> H4["🧮 Kelly Calculator<br/>패턴별 승률 매핑<br/>포지션 사이징 계산<br/>SQLite 저장"]
+
+    H3 --> H4
+
+    %% ========================================================================
+    %% Stage 2: Local Trading Engine
+    %% - 단일 프로세스에서 실시간 거래 실행
+    %% - 포트폴리오 관리: SQLite 기반 상태 관리
+    %% - 실시간 모니터링: 터미널 출력 + 로그 파일
+    %% ========================================================================
+
+    H4 --> I{"🚦 거래 후보 검증<br/>매수 조건 충족 여부"}
+
+    I -->|No Candidates| J["📭 오늘은 거래 없음<br/>• 매수 조건 미충족<br/>• 로그 기록 후 대기<br/>• 다음 스케줄 대기"]
+
+    I -->|Valid Candidates| K["🔔 거래 엔진 시작<br/>Local Trading Engine"]
+
+    subgraph "⚡ Local Trading Engine"
+        K --> L["📋 분석 결과 로드<br/>• SQLite에서 모든 분석 결과 조회<br/>• Kelly 포지션 사이징 로드<br/>• 매수 후보 목록 준비"]
+
+        L --> M["📊 시장 감정 분석<br/>• Fear&Greed Index API 호출<br/>• BTC 24시간 트렌드 확인<br/>• Market Sentiment 종합 판정"]
+
+        M --> N1{"🌡️ 시장 감정 결과<br/>BEAR / NEUTRAL / BULL"}
+
+        N1 -->|BEAR| N2["🚫 거래 중단<br/>• 약세장 감지로 거래 취소<br/>• 모든 매수 신호 무시<br/>• 리스크 회피 모드<br/>• 로그 기록"]
+
+        N1 -->|NEUTRAL/BULL| O["✅ 조건 검증 + Kelly 조정<br/>• SQLite 포트폴리오 상태 조회<br/>• Kelly 기본값 → 실시간 조정<br/>• 집중도/현금비율 검증"]
+
+        O --> P{"💰 최종 매수 조건 통과?<br/>Kelly 공식 + 리스크 검증"}
+
+        N2 --> S
+
+        P -->|Yes| Q["💸 거래 실행<br/>• Kelly 조정된 할당 비율 적용<br/>• 업비트 API 직접 호출<br/>• 시장가 매수 실행<br/>• 실시간 로그 출력"]
+
+        P -->|No| R["⚠️ 매수 조건 불충족<br/>조건 변화로 인한 거래 취소<br/>로그 기록"]
+
+        Q --> S["📊 포트폴리오 상태 조회<br/>• SQLite에서 현재 보유 종목 확인<br/>• 수익률 및 손실률 계산<br/>• 매도 조건 스캐닝"]
+
+        R --> S
+
+        S --> T["🎯 매도 조건 검증<br/>• 7-8% 손절 조건 확인<br/>• 20-25% 수익 실현 조건<br/>• 기술적 매도 신호 감지"]
+
+        T --> U{"📉 매도 실행 필요?<br/>손절 or 익절 조건 충족"}
+
+        U -->|Yes| V["💹 매도 실행<br/>• 업비트 API 매도 주문<br/>• 거래 결과 SQLite 기록<br/>• 포트폴리오 업데이트<br/>• 실시간 알림"]
+
+        U -->|No| W["✅ 포트폴리오 유지<br/>현재 포지션 보유 지속<br/>상태 로그 기록"]
+
+        V --> X["📋 거래 결과 종합<br/>• SQLite 거래 기록 저장<br/>• 성과 메트릭 업데이트<br/>• JSON 백업 파일 생성"]
+
+        W --> X
+
+        X --> Y["🏁 거래 세션 완료<br/>• 최종 상태 로그 출력<br/>• 성과 요약 표시<br/>• 다음 실행 스케줄 표시"]
+    end
+
+    %% ========================================================================
+    %% 로컬 결과 처리 및 알림 시스템
+    %% ========================================================================
+    Y --> Z["📊 최종 결과 처리<br/>• 거래 성과 분석<br/>• 일일 보고서 업데이트<br/>• 포트폴리오 동기화"]
+
+    Z --> AA["🔔 로컬 알림 시스템<br/>• 터미널 결과 출력<br/>• 이메일 알림 (선택)<br/>• Slack 알림 (선택)<br/>• 로그 파일 저장"]
+
+    J --> BB["📝 No-Trade 로그<br/>거래 없음 기록<br/>SQLite + 로그 파일"]
+
+    %% ========================================================================
+    %% 로컬 데이터 저장소 및 백업 시스템
+    %% ========================================================================
+    subgraph "🗃️ Local Data Layer"
+        CC["🗄️ SQLite Database<br/>• makenaide_local.db<br/>• 고품질 종목 거래/분석 데이터<br/>• 포트폴리오 상태<br/>• 성과 메트릭<br/>• 품질 필터링 메타데이터<br/>• 300일 데이터 보존 정책 적용"]
+
+        DD["📦 JSON 백업 시스템<br/>• data/backups/ 디렉토리<br/>• 일별 데이터 백업<br/>• 성과 분석 아카이브<br/>• 설정 파일 버전 관리<br/>• 품질 필터링 로그"]
+
+        EE["🔄 로컬 동기화<br/>• SQLite ↔ 업비트 API<br/>• 실시간 포트폴리오 동기화<br/>• 백업 파일 자동 생성<br/>• 품질 필터링 결과 캐싱"]
+    end
+
+    %% ========================================================================
+    %% 로컬 모니터링 및 개발 지원 시스템
+    %% ========================================================================
+    subgraph "🛡️ Local Monitoring & Dev Support"
+        FF["🔄 에러 처리 및 재시도<br/>• Python exception handling<br/>• API 호출 실패 재시도<br/>• 네트워크 오류 복구"]
+
+        GG["🚨 로컬 모니터링<br/>• 실시간 터미널 로그<br/>• 파일 기반 로그 시스템<br/>• 성능 메트릭 추적"]
+
+        HH["📊 개발자 도구<br/>• 디버그 모드 지원<br/>• 단계별 실행 가능<br/>• 테스트 데이터 생성"]
+    end
+
+    %% ========================================================================
+    %% 로컬 특화 기능
+    %% ========================================================================
+    subgraph "🚀 Local Specialized Features"
+        II["🧠 로컬 최적화<br/>• 메모리 효율적 처리<br/>• 배치 처리 최적화<br/>• CPU 리소스 관리<br/>• 고품질 종목 집중 처리"]
+
+        JJ["💡 개발 편의성<br/>• 핫 리로드 지원<br/>• 설정 파일 실시간 변경<br/>• 단위 테스트 지원<br/>• 품질 필터링 디버깅"]
+
+        KK["📈 로컬 포트폴리오 관리<br/>• 실시간 손익 계산<br/>• 백테스트 결과 비교<br/>• 성과 시각화 (선택)<br/>• 고품질 종목 성과 분석"]
+
+        LL["🎯 품질 필터링 시스템<br/>• 13개월+ 월봉 데이터 검증<br/>• 24시간 거래대금 3억원+ 검증<br/>• API 호출 67% 절약<br/>• 저장소 사용량 67% 절약"]
+
+        MM["🗂️ 데이터 보존 정책<br/>• 300일 이상 데이터 자동 감지<br/>• 스토리지 최적화 자동 정리<br/>• VACUUM 데이터베이스 최적화<br/>• 기술적 지표 충분 데이터 보장<br/>• MA200(200일) + 여유분 100일"]
+
+        NN["🔢 기술적 지표 자동 업데이트<br/>• NULL → 값 변환 보장 시스템<br/>• 조건별 자동 계산 (MA5/20/60/120/200, RSI)<br/>• 데이터 누적 시 실시간 NULL 해결<br/>• 90.5% MA20, 99.5% RSI 성공률<br/>• calculate_technical_indicators 자동 실행"]
+    end
+
+    %% ========================================================================
+    %% 연결선 정의 (로컬 데이터 흐름)
+    %% ========================================================================
+    H2 --> CC
+    H3 --> CC
+    L --> CC
+    X --> CC
+    Z --> DD
+
+    L --> FF
+    M --> GG
+    Y --> HH
+
+    C --> II
+    X --> JJ
+    S --> KK
+    E0 --> LL
+    E_R --> MM
+    E_TI --> NN
+
+    %% ========================================================================
+    %% 스타일링 (Local 테마)
+    %% ========================================================================
+    style B fill:#ff4757,stroke:#333,stroke-width:4px
+    style K fill:#3742fa,stroke:#333,stroke-width:3px
+    style L fill:#2ed573,stroke:#333,stroke-width:2px
+    style Q fill:#ffa502,stroke:#333,stroke-width:2px
+    style V fill:#ff6348,stroke:#333,stroke-width:2px
+    style Y fill:#32cd32,stroke:#333,stroke-width:4px
+    style AA fill:#32cd32,stroke:#333,stroke-width:2px
+
+    %% Local Analysis Pipeline
+    style D fill:#a8e6cf,stroke:#333,stroke-width:2px
+    style E fill:#a8e6cf,stroke:#333,stroke-width:2px
+    style F fill:#ff9999,stroke:#333,stroke-width:3px
+    style H fill:#a8e6cf,stroke:#333,stroke-width:2px
+
+    %% Local Trading Engine
+    style L fill:#ffd93d,stroke:#333,stroke-width:2px
+    style M fill:#66d9ef,stroke:#333,stroke-width:3px
+    style N1 fill:#66d9ef,stroke:#333,stroke-width:2px
+    style N2 fill:#ff6b6b,stroke:#333,stroke-width:2px
+    style O fill:#ffd93d,stroke:#333,stroke-width:2px
+    style S fill:#ffd93d,stroke:#333,stroke-width:2px
+    style T fill:#ffd93d,stroke:#333,stroke-width:2px
+
+    %% Local Data Layer
+    style CC fill:#dda0dd,stroke:#333,stroke-width:2px
+    style DD fill:#dda0dd,stroke:#333,stroke-width:2px
+    style EE fill:#dda0dd,stroke:#333,stroke-width:2px
+
+    %% Local Monitoring System
+    style FF fill:#ffb3ba,stroke:#333,stroke-width:2px
+    style GG fill:#ffb3ba,stroke:#333,stroke-width:2px
+    style HH fill:#ffb3ba,stroke:#333,stroke-width:2px
+
+    %% Quality Filtering & Data Retention System
+    style E0 fill:#98fb98,stroke:#333,stroke-width:3px
+    style E_R fill:#ffa500,stroke:#333,stroke-width:3px
+    style LL fill:#32cd32,stroke:#333,stroke-width:3px
+    style MM fill:#ff8c00,stroke:#333,stroke-width:3px
