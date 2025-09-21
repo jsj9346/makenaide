@@ -288,49 +288,61 @@ class IntegratedScoringSystem:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
-            # 기존 테이블 구조 확인 및 생성
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS makenaide_technical_analysis (
-                    ticker TEXT PRIMARY KEY,
-                    stage INTEGER,
-                    total_score REAL,
-                    quality_score REAL,
-                    recommendation TEXT,
-                    confidence REAL,
-                    macro_score REAL,
-                    structural_score REAL,
-                    micro_score REAL,
-                    quality_gates_passed BOOLEAN,
-                    analysis_details TEXT,
-                    analysis_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
+            # 통합 technical_analysis 테이블 사용 (Phase 3 통합 완료)
+            # HybridTechnicalFilter 데이터 보존하며 LayeredScoring 컬럼만 업데이트
 
-            # 결과 저장
+            # LayeredScoring 결과를 통합 technical_analysis 테이블에 UPSERT
             for result in results:
+                # 1. 기존 레코드 확인
                 cursor.execute("""
-                    INSERT OR REPLACE INTO makenaide_technical_analysis
-                    (ticker, stage, total_score, quality_score, recommendation, confidence,
-                     macro_score, structural_score, micro_score, quality_gates_passed,
-                     analysis_details, analysis_timestamp)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    result.ticker,
-                    result.stage,
-                    result.total_score,
-                    result.quality_score,
-                    result.recommendation,
-                    result.confidence,
-                    result.macro_score,
-                    result.structural_score,
-                    result.micro_score,
-                    result.quality_gates_passed,
-                    str(result.details),  # JSON 형태로 저장
-                    result.analysis_timestamp
-                ))
+                    SELECT ticker FROM technical_analysis
+                    WHERE ticker = ? AND analysis_date = DATE('now', '+9 hours')
+                """, (result.ticker,))
+
+                existing_record = cursor.fetchone()
+
+                if existing_record:
+                    # 2-A. 기존 레코드가 있으면 LayeredScoring 컬럼만 UPDATE
+                    cursor.execute("""
+                        UPDATE technical_analysis SET
+                            macro_score = ?,
+                            structural_score = ?,
+                            micro_score = ?,
+                            total_score = ?,
+                            quality_gates_passed = ?,
+                            analysis_details = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE ticker = ? AND analysis_date = DATE('now', '+9 hours')
+                    """, (
+                        result.macro_score,
+                        result.structural_score,
+                        result.micro_score,
+                        result.total_score,
+                        result.quality_gates_passed,
+                        str(result.details),
+                        result.ticker
+                    ))
+                else:
+                    # 2-B. 새 레코드면 INSERT (Weinstein Stage 데이터 없이 LayeredScoring만)
+                    cursor.execute("""
+                        INSERT INTO technical_analysis (
+                            ticker, analysis_date,
+                            macro_score, structural_score, micro_score, total_score,
+                            quality_gates_passed, analysis_details,
+                            source_table, created_at, updated_at
+                        ) VALUES (?, DATE('now', '+9 hours'), ?, ?, ?, ?, ?, ?, 'integrated_scoring_system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, (
+                        result.ticker,
+                        result.macro_score,
+                        result.structural_score,
+                        result.micro_score,
+                        result.total_score,
+                        result.quality_gates_passed,
+                        str(result.details)
+                    ))
 
             conn.commit()
-            print(f"💾 {len(results)}개 분석 결과 SQLite 저장 완료")
+            print(f"💾 {len(results)}개 LayeredScoring 결과 통합 테이블 저장 완료")
 
         except Exception as e:
             print(f"❌ DB 저장 실패: {e}")
@@ -351,11 +363,12 @@ class IntegratedScoringSystem:
                 min_score = thresholds['pass_threshold']
 
             query = """
-                SELECT ticker, total_score, recommendation, confidence,
+                SELECT ticker, total_score, recommendation, stage_confidence as confidence,
                        macro_score, structural_score, micro_score,
-                       quality_gates_passed, analysis_timestamp
-                FROM makenaide_technical_analysis
+                       quality_gates_passed, updated_at as analysis_timestamp
+                FROM technical_analysis
                 WHERE total_score >= ? AND quality_gates_passed = 1
+                  AND total_score IS NOT NULL
                 ORDER BY total_score DESC
             """
 
@@ -387,8 +400,9 @@ class IntegratedScoringSystem:
                     AVG(total_score) as avg_score,
                     MAX(total_score) as max_score,
                     MIN(total_score) as min_score
-                FROM makenaide_technical_analysis
-                WHERE DATE(analysis_timestamp) = DATE('now')
+                FROM technical_analysis
+                WHERE DATE(updated_at) = DATE('now', '+9 hours')
+                  AND total_score IS NOT NULL
             """
 
             df = pd.read_sql_query(query, conn)

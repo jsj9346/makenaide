@@ -499,14 +499,35 @@ class HybridTechnicalFilter:
             # 데이터 저장 (UPSERT)
             analysis_date = datetime.now().strftime('%Y-%m-%d')
 
+            # 🚀 Phase 1: 새로운 기술적 지표들을 OHLCV 데이터에서 가져와서 저장
+            df = self.get_ohlcv_data(stage_result.ticker)
+            latest_atr = None
+            latest_supertrend = None
+            latest_macd_histogram = None
+            latest_adx = None
+            latest_support_level = None
+
+            if not df.empty:
+                try:
+                    # 최신 날짜의 지표값들 가져오기
+                    latest_row = df.iloc[-1]
+                    latest_atr = float(latest_row.get('atr')) if pd.notna(latest_row.get('atr')) else None
+                    latest_supertrend = float(latest_row.get('supertrend')) if pd.notna(latest_row.get('supertrend')) else None
+                    latest_macd_histogram = float(latest_row.get('macd_histogram')) if pd.notna(latest_row.get('macd_histogram')) else None
+                    latest_adx = float(latest_row.get('adx')) if pd.notna(latest_row.get('adx')) else None
+                    latest_support_level = float(latest_row.get('support_level')) if pd.notna(latest_row.get('support_level')) else None
+                except Exception as indicator_error:
+                    logger.warning(f"⚠️ {stage_result.ticker} 기술적 지표 값 추출 실패: {indicator_error}")
+
             cursor.execute("""
                 INSERT OR REPLACE INTO technical_analysis (
                     ticker, analysis_date, current_stage, stage_confidence,
                     ma200_trend, price_vs_ma200, breakout_strength,
                     volume_surge, days_in_stage, gate1_stage2, gate2_volume,
                     gate3_momentum, gate4_quality, total_gates_passed,
-                    quality_score, recommendation
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    quality_score, recommendation, atr, supertrend, macd_histogram,
+                    adx, support_level
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 stage_result.ticker, analysis_date, stage_result.current_stage,
                 stage_result.stage_confidence, stage_result.ma200_trend,
@@ -515,7 +536,8 @@ class HybridTechnicalFilter:
                 gate_result.gate1_stage2, gate_result.gate2_volume,
                 gate_result.gate3_momentum, gate_result.gate4_quality,
                 gate_result.total_gates_passed, gate_result.quality_score,
-                gate_result.recommendation
+                gate_result.recommendation, latest_atr, latest_supertrend,
+                latest_macd_histogram, latest_adx, latest_support_level
             ))
 
             conn.commit()

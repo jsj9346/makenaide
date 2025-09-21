@@ -12,7 +12,7 @@ Makenaide 로컬 운영을 위한 완전한 데이터베이스 스키마 초기�
 
 📊 테이블 구조:
 1. Core Tables: tickers, ohlcv_data
-2. Analysis Tables: technical_analysis, makenaide_technical_analysis, gpt_analysis
+2. Analysis Tables: technical_analysis (통합), gpt_analysis
 3. Trading Tables: trades, trade_history, portfolio_history, kelly_analysis
 4. System Tables: failure_*, recovery_*, prediction_*
 5. Meta Tables: disclaimer_agreements, manual_override_log
@@ -129,14 +129,14 @@ class SQLiteDatabaseInitializer:
         """분석 관련 테이블 생성"""
         logger.info("🔍 분석 테이블 생성 중...")
 
-        # 1. technical_analysis 테이블 - Phase 2 hybrid filter에서 사용
+        # 1. 통합 technical_analysis 테이블 - HybridTechnicalFilter + LayeredScoring 통합
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS technical_analysis (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ticker TEXT NOT NULL,
                 analysis_date TEXT NOT NULL,
 
-                -- Weinstein Stage 분석
+                -- Weinstein Stage 분석 (HybridTechnicalFilter 호환)
                 current_stage INTEGER,
                 stage_confidence REAL,
                 ma200_trend TEXT,
@@ -155,36 +155,31 @@ class SQLiteDatabaseInitializer:
                 quality_score REAL,
                 recommendation TEXT,
 
+                -- 핵심 기술적 지표 (trading_engine.py 호환, 타입 최적화)
+                atr REAL,                    -- TEXT → REAL 변경
+                supertrend REAL,             -- TEXT → REAL 변경
+                adx REAL,                    -- 기존 유지
+                macd_histogram REAL,         -- TEXT → REAL 변경
+                support_level REAL,          -- TEXT → REAL 변경
+
+                -- LayeredScoringEngine 확장 (IntegratedScoringSystem 호환)
+                macro_score REAL,
+                structural_score REAL,
+                micro_score REAL,
+                total_score REAL,
+                quality_gates_passed BOOLEAN,
+                analysis_details TEXT,
+
                 -- 메타데이터
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
-                supertrend TEXT,
-                adx REAL,
-                macd_histogram TEXT,
-                atr REAL,
-                support_level TEXT,
 
                 UNIQUE(ticker, analysis_date)
             )
         """)
 
-        # 2. makenaide_technical_analysis 테이블 - integrated_scoring_system에서 사용
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS makenaide_technical_analysis (
-                ticker TEXT PRIMARY KEY,
-                stage INTEGER,
-                total_score REAL,
-                quality_score REAL,
-                recommendation TEXT,
-                confidence REAL,
-                macro_score REAL,
-                structural_score REAL,
-                micro_score REAL,
-                quality_gates_passed BOOLEAN,
-                analysis_details TEXT,
-                analysis_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
+        # 2. [DEPRECATED] makenaide_technical_analysis 테이블 제거됨
+        # → technical_analysis 테이블로 통합됨 (Phase 1 통합 작업)
 
         # 3. gpt_analysis 테이블 - Phase 3 GPT 분석에서 사용
         self.conn.execute("""
@@ -650,7 +645,7 @@ class SQLiteDatabaseInitializer:
 
         # 필수 테이블 목록
         required_tables = [
-            'tickers', 'ohlcv_data', 'technical_analysis', 'makenaide_technical_analysis',
+            'tickers', 'ohlcv_data', 'technical_analysis',
             'gpt_analysis', 'kelly_analysis', 'static_indicators', 'trades', 'trade_history',
             'portfolio_history', 'trailing_stops', 'failure_records', 'failure_patterns',
             'system_health_metrics', 'recovery_attempts', 'recovery_plans', 'recovery_executions',

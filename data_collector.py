@@ -584,6 +584,34 @@ class SimpleDataCollector:
                 logger.warning(f"⚠️ {ticker} volume_ratio 계산 실패: {volume_error}")
                 df_with_indicators['volume_ratio'] = None
 
+            # 🚀 Phase 1: 핵심 기술적 지표 계산 (ATR, Supertrend, MACD Histogram)
+            try:
+                # ATR (Average True Range) 계산
+                df_with_indicators['atr'] = self._calculate_atr(df, period=14)
+
+                # Supertrend 계산
+                df_with_indicators['supertrend'] = self._calculate_supertrend(df, period=10, multiplier=3.0)
+
+                # MACD Histogram 계산
+                df_with_indicators['macd_histogram'] = self._calculate_macd_histogram(df, fast=12, slow=26, signal=9)
+
+                # ADX (Average Directional Index) 계산 - 간단한 버전
+                df_with_indicators['adx'] = self._calculate_adx(df, period=14)
+
+                # 지지선 계산 (최근 저점 기반)
+                df_with_indicators['support_level'] = self._calculate_support_level(df, period=20)
+
+                logger.info(f"🎯 {ticker} 핵심 기술적 지표 계산 완료 (ATR, Supertrend, MACD, ADX, Support)")
+
+            except Exception as indicator_error:
+                logger.warning(f"⚠️ {ticker} 핵심 기술적 지표 계산 실패: {indicator_error}")
+                # NULL 값으로 설정하여 기존 동작 유지
+                df_with_indicators['atr'] = None
+                df_with_indicators['supertrend'] = None
+                df_with_indicators['macd_histogram'] = None
+                df_with_indicators['adx'] = None
+                df_with_indicators['support_level'] = None
+
             logger.debug(f"✅ {ticker} 기술적 지표 계산 완료")
             return df_with_indicators
 
@@ -604,6 +632,232 @@ class SimpleDataCollector:
             except Exception as basic_error:
                 logger.error(f"❌ {ticker} 기본 지표 계산도 실패: {basic_error}")
                 return df
+
+    def _calculate_atr(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """ATR (Average True Range) 계산"""
+        try:
+            import numpy as np
+
+            # True Range 계산
+            high_low = df['high'] - df['low']
+            high_close = np.abs(df['high'] - df['close'].shift())
+            low_close = np.abs(df['low'] - df['close'].shift())
+
+            # 세 값 중 최대값이 True Range
+            ranges = pd.concat([high_low, high_close, low_close], axis=1)
+            true_range = ranges.max(axis=1)
+
+            # ATR = True Range의 이동평균
+            atr = true_range.rolling(window=period).mean()
+
+            return atr
+        except Exception as e:
+            logger.warning(f"ATR 계산 실패: {e}")
+            return pd.Series([None] * len(df), index=df.index)
+
+    def _calculate_supertrend(self, df: pd.DataFrame, period: int = 10, multiplier: float = 3.0) -> pd.Series:
+        """Supertrend 지표 계산 - 단순화된 안정 버전"""
+        try:
+            import numpy as np
+
+            # 데이터 유효성 검사
+            if len(df) < period:
+                logger.warning(f"Supertrend 계산: 데이터 부족 (필요: {period}, 실제: {len(df)})")
+                return pd.Series([None] * len(df), index=df.index)
+
+            # HL2 (High-Low 평균)
+            hl2 = (df['high'] + df['low']) / 2
+
+            # ATR 계산
+            atr = self._calculate_atr(df, period)
+
+            # NaN 값 처리
+            if atr.isna().all():
+                logger.warning("Supertrend 계산: ATR 계산 실패")
+                return pd.Series([None] * len(df), index=df.index)
+
+            # 기본 상단/하단 밴드
+            upper_basic = hl2 + (multiplier * atr)
+            lower_basic = hl2 - (multiplier * atr)
+
+            # 동적 밴드 계산 - 단순화된 버전
+            upper_band = upper_basic.copy()
+            lower_band = lower_basic.copy()
+            supertrend = pd.Series([None] * len(df), index=df.index, dtype='float64')
+
+            # 첫 번째 유효한 인덱스 찾기
+            first_valid_idx = None
+            for i in range(len(df)):
+                if not pd.isna(upper_basic.iloc[i]) and not pd.isna(lower_basic.iloc[i]):
+                    first_valid_idx = i
+                    break
+
+            if first_valid_idx is None:
+                logger.warning("Supertrend 계산: 유효한 밴드 데이터 없음")
+                return pd.Series([None] * len(df), index=df.index)
+
+            # 동적 밴드 업데이트
+            for i in range(first_valid_idx + 1, len(df)):
+                if not pd.isna(upper_basic.iloc[i]) and not pd.isna(lower_basic.iloc[i]):
+                    # 상단 밴드 업데이트
+                    if (upper_basic.iloc[i] < upper_band.iloc[i-1] or
+                        df['close'].iloc[i-1] > upper_band.iloc[i-1]):
+                        upper_band.iloc[i] = upper_basic.iloc[i]
+                    else:
+                        upper_band.iloc[i] = upper_band.iloc[i-1]
+
+                    # 하단 밴드 업데이트
+                    if (lower_basic.iloc[i] > lower_band.iloc[i-1] or
+                        df['close'].iloc[i-1] < lower_band.iloc[i-1]):
+                        lower_band.iloc[i] = lower_basic.iloc[i]
+                    else:
+                        lower_band.iloc[i] = lower_band.iloc[i-1]
+
+            # Supertrend 계산 - 단순화된 로직
+            trend = 1  # 1: 상승, -1: 하락
+
+            for i in range(first_valid_idx, len(df)):
+                if pd.isna(upper_band.iloc[i]) or pd.isna(lower_band.iloc[i]):
+                    continue
+
+                close_price = df['close'].iloc[i]
+
+                if pd.isna(close_price):
+                    continue
+
+                # 첫 번째 값 설정
+                if i == first_valid_idx:
+                    supertrend.iloc[i] = lower_band.iloc[i]  # 상승 트렌드로 시작
+                    trend = 1
+                    continue
+
+                # 트렌드 전환 로직 - 단순화
+                if trend == 1:  # 현재 상승 트렌드
+                    if close_price < lower_band.iloc[i]:
+                        trend = -1  # 하락 트렌드로 전환
+                        supertrend.iloc[i] = upper_band.iloc[i]
+                    else:
+                        supertrend.iloc[i] = lower_band.iloc[i]  # 상승 트렌드 유지
+                else:  # 현재 하락 트렌드
+                    if close_price > upper_band.iloc[i]:
+                        trend = 1  # 상승 트렌드로 전환
+                        supertrend.iloc[i] = lower_band.iloc[i]
+                    else:
+                        supertrend.iloc[i] = upper_band.iloc[i]  # 하락 트렌드 유지
+
+            return supertrend
+
+        except Exception as e:
+            logger.warning(f"Supertrend 계산 실패: {e}")
+            import traceback
+            logger.debug(f"Supertrend 계산 오류 상세: {traceback.format_exc()}")
+            return pd.Series([None] * len(df), index=df.index)
+
+    def _calculate_macd_histogram(self, df: pd.DataFrame, fast: int = 12, slow: int = 26, signal: int = 9) -> pd.Series:
+        """MACD Histogram 계산"""
+        try:
+            # EMA 계산
+            ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+            ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+
+            # MACD 라인
+            macd_line = ema_fast - ema_slow
+
+            # Signal 라인 (MACD의 EMA)
+            signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+
+            # MACD Histogram (MACD - Signal)
+            macd_histogram = macd_line - signal_line
+
+            return macd_histogram
+        except Exception as e:
+            logger.warning(f"MACD Histogram 계산 실패: {e}")
+            return pd.Series([None] * len(df), index=df.index)
+
+    def _calculate_adx(self, df: pd.DataFrame, period: int = 14) -> pd.Series:
+        """ADX (Average Directional Index) 계산 - 개선된 버전"""
+        try:
+            import numpy as np
+
+            # 데이터 유효성 검사
+            if len(df) < period * 2:  # ADX는 더 많은 데이터가 필요
+                logger.warning(f"ADX 계산: 데이터 부족 (필요: {period * 2}, 실제: {len(df)})")
+                return pd.Series([None] * len(df), index=df.index)
+
+            # DM+ 및 DM- 계산
+            high_diff = df['high'].diff()
+            low_diff = -df['low'].diff()
+
+            dm_plus = pd.Series(np.where((high_diff > low_diff) & (high_diff > 0), high_diff, 0), index=df.index)
+            dm_minus = pd.Series(np.where((low_diff > high_diff) & (low_diff > 0), low_diff, 0), index=df.index)
+
+            # ATR 계산
+            atr = self._calculate_atr(df, period)
+
+            # ATR이 0이거나 NaN인 경우 처리
+            atr_safe = atr.replace(0, np.nan)  # 0을 NaN으로 변경하여 나누기 오류 방지
+
+            # DI+ 및 DI- 계산
+            dm_plus_smooth = dm_plus.rolling(window=period).mean()
+            dm_minus_smooth = dm_minus.rolling(window=period).mean()
+
+            di_plus = 100 * (dm_plus_smooth / atr_safe)
+            di_minus = 100 * (dm_minus_smooth / atr_safe)
+
+            # DX 계산 (0 나누기 방지)
+            di_sum = di_plus + di_minus
+            di_diff = np.abs(di_plus - di_minus)
+
+            # di_sum이 0이거나 매우 작은 값인 경우 처리
+            dx = pd.Series(index=df.index, dtype='float64')
+            for i in range(len(df)):
+                if pd.isna(di_sum.iloc[i]) or pd.isna(di_diff.iloc[i]) or di_sum.iloc[i] == 0:
+                    dx.iloc[i] = np.nan
+                else:
+                    dx.iloc[i] = 100 * (di_diff.iloc[i] / di_sum.iloc[i])
+
+            # ADX 계산 (DX의 지수이동평균)
+            # 첫 번째 유효한 ADX 값 찾기
+            first_valid_idx = dx.first_valid_index()
+            if first_valid_idx is None:
+                return pd.Series([None] * len(df), index=df.index)
+
+            adx = pd.Series(index=df.index, dtype='float64')
+
+            # 첫 번째 ADX 값은 DX 값들의 단순 평균
+            start_idx = df.index.get_loc(first_valid_idx)
+            if start_idx + period <= len(df):
+                first_adx_values = dx.iloc[start_idx:start_idx + period].dropna()
+                if len(first_adx_values) > 0:
+                    adx.iloc[start_idx + period - 1] = first_adx_values.mean()
+
+                    # 이후 값들은 지수이동평균으로 계산
+                    alpha = 1.0 / period
+                    for i in range(start_idx + period, len(df)):
+                        if not pd.isna(dx.iloc[i]) and not pd.isna(adx.iloc[i-1]):
+                            adx.iloc[i] = alpha * dx.iloc[i] + (1 - alpha) * adx.iloc[i-1]
+
+            return adx
+
+        except Exception as e:
+            logger.warning(f"ADX 계산 실패: {e}")
+            import traceback
+            logger.debug(f"ADX 계산 오류 상세: {traceback.format_exc()}")
+            return pd.Series([None] * len(df), index=df.index)
+
+    def _calculate_support_level(self, df: pd.DataFrame, period: int = 20) -> pd.Series:
+        """지지선 계산 (최근 period 기간의 최저점 기반)"""
+        try:
+            # 최근 period 기간의 최저점을 지지선으로 설정
+            support = df['low'].rolling(window=period).min()
+
+            # 더 정교한 지지선: 최근 저점들의 평균
+            low_percentile = df['low'].rolling(window=period).quantile(0.1)  # 하위 10%
+
+            return low_percentile
+        except Exception as e:
+            logger.warning(f"지지선 계산 실패: {e}")
+            return pd.Series([None] * len(df), index=df.index)
 
     def save_ohlcv_data(self, ticker: str, df: pd.DataFrame) -> bool:
         """OHLCV 데이터를 데이터베이스에 저장"""

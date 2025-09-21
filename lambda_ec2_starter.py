@@ -153,31 +153,11 @@ EC2 인스턴스가 이미 실행 중이므로 새로운 파이프라인 실행�
             # 참고: 실행 중인 인스턴스의 User Data는 변경할 수 없으므로
             # 별도의 시작 스크립트를 사용해야 함
 
-            # 성공 알림
-            send_sns_notification(
-                subject="🚀 Makenaide EC2 자동 시작 성공",
-                message=f"""
-✅ Makenaide EC2 자동 시작 성공
-
-EventBridge 스케줄에 따라 EC2 인스턴스를 성공적으로 시작했습니다.
-
-📊 상세 정보:
-- 인스턴스 ID: {EC2_INSTANCE_ID}
-- 이전 상태: {current_state} → starting
-- 스케줄: {schedule_name} ({kst_time})
-- 시장 타이밍: {market_timing}
-- 파이프라인 유형: {pipeline_type}
-- 실행 ID: {execution_id}
-
-🎯 다음 단계:
-1. EC2 부팅 완료 (약 2-3분)
-2. Makenaide 파이프라인 자동 실행
-3. 파이프라인 완료 후 EC2 자동 종료
-
-📧 파이프라인 실행 결과는 별도 SNS 알림으로 전송됩니다.
-                """.strip(),
-                category="SYSTEM"
-            )
+            # ✅ EC2 시작 성공 (알림 생략, 로그만 기록)
+            logger.info("✅ EC2 시작 성공 - SNS 알림 생략 (스팸 방지)")
+            logger.info(f"📊 상세 정보: ID={EC2_INSTANCE_ID}, 상태={current_state}→starting, 스케줄={schedule_name}")
+            logger.info(f"🎯 실행 ID: {execution_id}, 시장 타이밍: {market_timing}, 파이프라인: {pipeline_type}")
+            logger.info("📧 거래 결과는 별도 알림으로 전송됩니다")
 
             return {
                 'statusCode': 200,
@@ -195,22 +175,32 @@ EventBridge 스케줄에 따라 EC2 인스턴스를 성공적으로 시작했습
             logger.error(f"❌ 예상치 못한 EC2 상태: {current_state}")
 
             send_sns_notification(
-                subject="❌ Makenaide EC2 시작 실패 - 예상치 못한 상태",
+                subject="🚨 Makenaide EC2 시작 실패 - 즉시 조치 필요",
                 message=f"""
-🚨 Makenaide EC2 시작 실패
+💥 CRITICAL: Makenaide EC2 시작 실패
 
-예상치 못한 EC2 인스턴스 상태로 인해 시작할 수 없습니다.
+예상치 못한 EC2 상태로 인해 자동매매 파이프라인을 시작할 수 없습니다.
 
 📊 상세 정보:
 - 인스턴스 ID: {EC2_INSTANCE_ID}
-- 현재 상태: {current_state}
+- 현재 상태: {current_state} ← 문제 상태
+- 예상 상태: stopped
 - 요청된 스케줄: {schedule_name} ({kst_time})
 - 실행 ID: {execution_id}
 
-🔧 조치 필요:
-AWS 콘솔에서 EC2 인스턴스 상태를 확인하고 수동으로 조치하세요.
+🚨 영향:
+- 자동매매 파이프라인 실행 불가
+- 거래 기회 상실 가능성
+
+🔧 즉시 조치 방법:
+1. AWS 콘솔 → EC2 → 인스턴스 ({EC2_INSTANCE_ID}) 확인
+2. 상태가 'running'이면 → 수동으로 'stop' 후 재시작
+3. 상태가 'pending'이면 → 완료될 때까지 대기 후 재시작
+4. 기타 상태면 → 인스턴스 재부팅 또는 지원팀 문의
+
+📞 긴급 시: AWS 콘솔에서 수동 실행 가능
                 """.strip(),
-                category="SYSTEM"
+                category="CRITICAL"
             )
 
             return {

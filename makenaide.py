@@ -116,6 +116,9 @@ class MakenaideLocalOrchestrator:
         self.trading_engine = None
         self.sns_notifier = None  # SNS 알림 시스템 (Phase 1-3)
 
+        # 📊 시장 감정 분석 결과 저장 (SNS 알림용)
+        self.last_sentiment_result = None
+
         # Phase 4 패턴 분석 및 예방 시스템
         self.failure_tracker = None
         self.predictive_analyzer = None
@@ -658,7 +661,12 @@ class MakenaideLocalOrchestrator:
 
             if not sentiment_result:
                 logger.warning("⚠️ 실시간 시장 감정 분석 실패 - 기본값 사용")
+                # 기본값으로 더미 결과 저장
+                self.last_sentiment_result = None
                 return MarketSentiment.NEUTRAL, True, 1.0  # 기본값
+
+            # 📊 결과를 인스턴스 변수로 저장 (SNS 알림용)
+            self.last_sentiment_result = sentiment_result
 
             sentiment = sentiment_result.final_sentiment
             can_trade = sentiment_result.trading_allowed
@@ -681,6 +689,7 @@ class MakenaideLocalOrchestrator:
         except Exception as e:
             logger.error(f"❌ 실시간 시장 감정 분석 실패: {e}")
             self.execution_stats['errors'].append(f"실시간 시장 감정 분석 실패: {e}")
+            self.last_sentiment_result = None
             return MarketSentiment.NEUTRAL, True, 1.0  # 기본값으로 거래 허용
 
     def execute_trades(self, position_sizes: Dict[str, float], position_adjustment: float) -> int:
@@ -1145,16 +1154,20 @@ class MakenaideLocalOrchestrator:
         """실제 DB에서 최신 기술적 분석 결과 조회 (시장 기회 실시간 파악)"""
         try:
             with get_db_connection_context() as conn:
-                # 오늘 날짜의 최신 기술적 분석 결과 조회 (추천 등급 높은 순)
-                today = datetime.now().strftime('%Y-%m-%d')
+                # 🆕 오늘 날짜의 최신 기술적 분석 결과만 조회 (과거 데이터 반복 발송 방지)
+                # GPT Analysis와 동일한 날짜 필터링 로직 적용
 
+                # 통합 technical_analysis 테이블에서 LayeredScoring 데이터 조회
                 query = """
                 SELECT ticker, quality_score, quality_gates_passed, recommendation,
-                       stage, confidence, macro_score, structural_score
-                FROM makenaide_technical_analysis
+                       current_stage as stage, stage_confidence as confidence,
+                       macro_score, structural_score
+                FROM technical_analysis
                 WHERE quality_score >= ?
                   AND recommendation IN ('STRONG_BUY', 'BUY', 'WATCH')
-                ORDER BY quality_score DESC, confidence DESC
+                  AND DATE(updated_at) = DATE('now', '+9 hours')
+                  AND total_score IS NOT NULL
+                ORDER BY quality_score DESC, stage_confidence DESC
                 LIMIT 15
                 """
 
@@ -1312,8 +1325,9 @@ class MakenaideLocalOrchestrator:
                 else:
                     logger.warning("⚠️ Kelly 포지션 사이징 SNS 알림 전송 실패")
 
-            # 📊 시장 분석 종합 요약 알림 (실제 통계)
+            # 📊 시장 분석 종합 요약 알림 (실제 시장 데이터 포함)
             market_summary = {
+                # 파이프라인 통계
                 'technical_count': len(technical_candidates),
                 'gpt_count': len(gpt_candidates),
                 'kelly_count': len(kelly_results),
@@ -1322,18 +1336,69 @@ class MakenaideLocalOrchestrator:
                 'errors_count': len(self.execution_stats.get('errors', []))
             }
 
-            summary_success = self.sns_notifier.notify_market_analysis_summary(
-                market_data=market_summary,
-                execution_id=execution_id
-            )
+            # 📈 실제 시장 데이터 추가 (정적성 문제 해결)
+            if self.last_sentiment_result:
+                # Fear & Greed Index 데이터
+                if self.last_sentiment_result.fear_greed_data:
+                    market_summary['fear_greed_index'] = self.last_sentiment_result.fear_greed_data.value
+                else:
+                    market_summary['fear_greed_index'] = 50  # 기본값
 
-            if summary_success:
-                logger.info("✅ 시장 분석 요약 SNS 알림 전송 완료")
+                # BTC 트렌드 데이터
+                if self.last_sentiment_result.btc_trend_data:
+                    market_summary['btc_change_24h'] = self.last_sentiment_result.btc_trend_data.change_24h
+                    market_summary['btc_trend'] = self._get_btc_trend_classification(self.last_sentiment_result.btc_trend_data.change_24h)
+                else:
+                    market_summary['btc_change_24h'] = 0.0
+                    market_summary['btc_trend'] = 'SIDEWAYS'
+
+                # 최종 시장 감정 데이터
+                market_summary['final_sentiment'] = self.last_sentiment_result.final_sentiment.value
+                market_summary['trading_allowed'] = self.last_sentiment_result.trading_allowed
+                market_summary['position_adjustment'] = self.last_sentiment_result.position_adjustment
+                market_summary['total_score'] = self.last_sentiment_result.total_score
+                market_summary['confidence'] = self.last_sentiment_result.confidence
+                market_summary['reasoning'] = self.last_sentiment_result.reasoning
             else:
-                logger.warning("⚠️ 시장 분석 요약 SNS 알림 전송 실패")
+                # 기본값 (시장 감정 분석 실패 시)
+                market_summary['fear_greed_index'] = 50
+                market_summary['btc_change_24h'] = 0.0
+                market_summary['btc_trend'] = 'SIDEWAYS'
+                market_summary['final_sentiment'] = 'NEUTRAL'
+                market_summary['trading_allowed'] = True
+                market_summary['position_adjustment'] = 1.0
+                market_summary['total_score'] = 50.0
+                market_summary['confidence'] = 0.5
+                market_summary['reasoning'] = '시장 감정 분석 데이터 없음'
+
+            # 📊 조건부 시장 분석 요약 알림 (BEAR 시장에서만 발송)
+            current_sentiment = market_summary.get('final_sentiment', 'NEUTRAL')
+
+            if current_sentiment == 'BEAR':
+                logger.info("🚨 BEAR 시장 감지 - 시장 분석 요약 알림 발송")
+                summary_success = self.sns_notifier.notify_market_analysis_summary(
+                    market_data=market_summary,
+                    execution_id=execution_id
+                )
+
+                if summary_success:
+                    logger.info("✅ BEAR 시장 분석 요약 SNS 알림 전송 완료")
+                else:
+                    logger.warning("⚠️ BEAR 시장 분석 요약 SNS 알림 전송 실패")
+            else:
+                logger.info(f"ℹ️ {current_sentiment} 시장 상황으로 시장 분석 요약 알림 생략 (BEAR 시장에서만 발송)")
 
         except Exception as e:
             logger.error(f"❌ SNS 알림 전송 중 오류: {e}")
+
+    def _get_btc_trend_classification(self, change_24h: float) -> str:
+        """BTC 24시간 변동률을 기반으로 트렌드 분류"""
+        if change_24h > 5.0:
+            return "BULLISH"
+        elif change_24h < -5.0:
+            return "BEARISH"
+        else:
+            return "SIDEWAYS"
 
     async def run_full_pipeline(self):
         """전체 파이프라인 실행"""
