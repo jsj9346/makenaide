@@ -44,10 +44,20 @@ class SmartShutdown:
         return logger
 
     def _get_instance_id(self):
-        """EC2 Instance ID 획득"""
+        """EC2 Instance ID 획득 (IMDSv2 사용)"""
         try:
+            # IMDSv2 토큰 획득
+            token_response = requests.put(
+                'http://169.254.169.254/latest/api/token',
+                headers={'X-aws-ec2-metadata-token-ttl-seconds': '21600'},
+                timeout=5
+            )
+            token = token_response.text.strip()
+
+            # Instance ID 획득
             response = requests.get(
                 'http://169.254.169.254/latest/meta-data/instance-id',
+                headers={'X-aws-ec2-metadata-token': token},
                 timeout=5
             )
             return response.text.strip()
