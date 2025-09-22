@@ -1,7 +1,7 @@
 import time
 from functools import wraps
 import re
-import psycopg2
+# import psycopg2  # PostgreSQL 의존성 제거 - SQLite 사용
 import os
 from dotenv import load_dotenv
 import functools
@@ -195,14 +195,24 @@ def load_env():
     load_dotenv()
 
 # === DB 연결 함수 ===
+# PostgreSQL 함수는 SQLite 마이그레이션으로 인해 사용 중단
+# def get_db_connection():
+#     return psycopg2.connect(
+#         host=os.getenv("PG_HOST"),
+#         port=os.getenv("PG_PORT"),
+#         dbname=os.getenv("PG_DATABASE"),
+#         user=os.getenv("PG_USER"),
+#         password=os.getenv("PG_PASSWORD")
+#     )
+
+# SQLite용 DB 연결 - db_manager_sqlite.py 사용 권장
 def get_db_connection():
-    return psycopg2.connect(
-        host=os.getenv("PG_HOST"),
-        port=os.getenv("PG_PORT"),
-        dbname=os.getenv("PG_DATABASE"),
-        user=os.getenv("PG_USER"),
-        password=os.getenv("PG_PASSWORD")
-    )
+    """
+    레거시 호환성을 위한 더미 함수
+    실제로는 db_manager_sqlite.py의 get_db_connection_context() 사용 권장
+    """
+    import sqlite3
+    return sqlite3.connect('makenaide_local.db')
 
 def setup_logger():
     """
