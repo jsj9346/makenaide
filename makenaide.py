@@ -1122,33 +1122,48 @@ class MakenaideLocalOrchestrator:
         except Exception as e:
             logger.error(f"❌ 로그 백업 실패: {e}")
 
-    def safe_shutdown_ec2(self, delay_minutes: int = 1):
-        """안전한 EC2 종료 (딜레이와 함께)"""
+    def smart_shutdown_ec2(self, reason: str = "파이프라인 완료", stats: dict = None):
+        """AWS CLI 기반 Smart Shutdown (개선된 안전 종료)"""
         try:
-            logger.info(f"🔌 EC2 자동 종료 예약 ({delay_minutes}분 후)")
+            logger.info(f"🚀 Smart Shutdown 시작: {reason}")
 
-            # 시스템 정리
+            # Smart Shutdown 모듈 import
+            from smart_shutdown import SmartShutdown
+
+            # 시스템 정리 (기존 cleanup 호출)
             self.cleanup()
 
-            # 종료 명령 (딜레이 적용)
-            import subprocess
-            result = subprocess.run([
-                'sudo', 'shutdown', '-h', f'+{delay_minutes}'
-            ], check=False, capture_output=True, text=True)
+            # Smart Shutdown 실행
+            shutdown_system = SmartShutdown()
+            success = shutdown_system.execute_smart_shutdown(reason, stats)
 
-            if result.returncode == 0:
-                logger.info(f"✅ EC2 종료 명령 성공 ({delay_minutes}분 후 종료)")
+            if success:
+                logger.info("✅ Smart Shutdown 성공")
+                return True
             else:
-                logger.error(f"❌ EC2 종료 명령 실패: {result.stderr}")
+                logger.warning("⚠️ Smart Shutdown 일부 실패 - 수동 확인 필요")
+                return False
 
         except Exception as e:
-            logger.error(f"❌ EC2 종료 실행 실패: {e}")
-            # 대체 종료 시도
+            logger.error(f"❌ Smart Shutdown 실행 실패: {e}")
+            logger.warning("🔄 기존 shutdown 방식으로 대체 시도")
+
+            # 대체 종료 시도 (기존 방식)
             try:
-                subprocess.run(['sudo', 'poweroff'], check=False)
-                logger.warning("⚠️ 대체 종료 명령 실행")
-            except:
-                logger.error("💥 모든 종료 명령 실패")
+                import subprocess
+                result = subprocess.run([
+                    'sudo', 'shutdown', '-h', '+1'
+                ], check=False, capture_output=True, text=True)
+
+                if result.returncode == 0:
+                    logger.info("✅ 대체 종료 명령 성공")
+                    return True
+                else:
+                    logger.error(f"❌ 대체 종료 실패: {result.stderr}")
+                    return False
+            except Exception as fallback_error:
+                logger.error(f"💥 모든 종료 방식 실패: {fallback_error}")
+                return False
 
     def _get_latest_technical_analysis(self) -> List[Dict]:
         """실제 DB에서 최신 기술적 분석 결과 조회 (시장 기회 실시간 파악)"""
@@ -1664,9 +1679,9 @@ async def main():
         logger.info("🎉 파이프라인 성공적으로 완료")
 
         if auto_shutdown:
-            logger.info("🔌 EC2 자동 종료 시작")
-            # safe_shutdown_ec2 메서드 사용 (개선된 종료 프로세스)
-            orchestrator.safe_shutdown_ec2(delay_minutes=1)
+            logger.info("🔌 EC2 Smart Shutdown 시작")
+            # smart_shutdown_ec2 메서드 사용 (AWS CLI 기반 개선된 종료)
+            orchestrator.smart_shutdown_ec2("파이프라인 성공 완료")
         else:
             # 일반 정리만 수행
             orchestrator.cleanup()
@@ -1676,9 +1691,9 @@ async def main():
         logger.error("💥 파이프라인 실행 실패")
 
         if auto_shutdown:
-            logger.error("🔌 EC2 자동 종료 시작 (실패 케이스)")
+            logger.error("🔌 EC2 Smart Shutdown 시작 (실패 케이스)")
             # 실패 시에도 EC2 종료 (비용 절약)
-            orchestrator.safe_shutdown_ec2(delay_minutes=1)
+            orchestrator.smart_shutdown_ec2("파이프라인 실패")
         else:
             # 일반 정리만 수행
             orchestrator.cleanup()
