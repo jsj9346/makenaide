@@ -24,8 +24,9 @@ class SmartShutdown:
     def __init__(self):
         self.logger = self._setup_logger()
         self.instance_id = self._get_instance_id()
-        self.ec2 = boto3.client('ec2')
-        self.sns = boto3.client('sns')
+        self.region = 'ap-northeast-2'  # Seoul region
+        self.ec2 = boto3.client('ec2', region_name=self.region)
+        self.sns = boto3.client('sns', region_name=self.region)
         self.shutdown_reason = "파이프라인 완료"
 
     def _setup_logger(self):
