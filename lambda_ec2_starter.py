@@ -24,7 +24,7 @@ ec2 = boto3.client('ec2')
 sns = boto3.client('sns')
 
 # 설정
-EC2_INSTANCE_ID = 'i-082bf343089af62d3'
+EC2_INSTANCE_ID = 'i-075ee29859eac9eeb'
 SNS_SYSTEM_ALERTS_ARN = 'arn:aws:sns:ap-northeast-2:901361833359:makenaide-system-alerts'
 
 # EC2 User Data 스크립트 (Makenaide 자동 실행)
