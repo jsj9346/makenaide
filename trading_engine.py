@@ -94,19 +94,87 @@ class TradingConfig:
 # PyramidingManager 클래스는 PyramidStateManager로 대체됨
 
 class TrailingStopManager:
-    """ATR 기반 트레일링 스탑 관리자 (trade_executor.py에서 이식)"""
+    """
+    ATR 기반 트레일링 스탑 관리자 (trade_executor.py에서 이식)
 
-    def __init__(self, atr_multiplier: float = 1.0, per_ticker_config: Optional[Dict[str, float]] = None):
+    Min/Max 클램핑 로직 추가 (Quick Win #2):
+    - 최소 손절: 5% (너무 타이트한 스탑 방지)
+    - 최대 손절: 15% (과도한 손실 방지)
+    """
+
+    def __init__(
+        self,
+        atr_multiplier: float = 1.0,
+        per_ticker_config: Optional[Dict[str, float]] = None,
+        min_stop_pct: float = 0.05,  # 최소 5% 손절
+        max_stop_pct: float = 0.15   # 최대 15% 손절
+    ):
         self.atr_multiplier = atr_multiplier
         self.per_ticker_config = per_ticker_config or {}
+        self.min_stop_pct = min_stop_pct
+        self.max_stop_pct = max_stop_pct
         self.entry_price = {}
         self.highest_price = {}
         self.atr = {}
         self.stop_price = {}
+        self.stop_type = {}  # 손절 타입 추적용
 
     def get_atr_multiplier(self, ticker: str) -> float:
         """티커별 ATR 배수 반환"""
         return self.per_ticker_config.get(ticker, self.atr_multiplier)
+
+    def _apply_stop_clamping(
+        self,
+        ticker: str,
+        trail_price: float,
+        fixed_stop: float,
+        entry_price: float
+    ) -> Tuple[float, str]:
+        """
+        Min/Max 클램핑을 적용한 최종 손절가 계산
+
+        Args:
+            ticker: 종목 코드
+            trail_price: 트레일링 스탑 가격
+            fixed_stop: 고정 손절 가격
+            entry_price: 진입가
+
+        Returns:
+            Tuple[final_stop_price, stop_type]
+            stop_type: 'atr_trailing', 'atr_fixed', 'clamped_min', 'clamped_max'
+        """
+        # Step 1: ATR 기반 손절가 선택 (트레일링 vs 고정)
+        atr_based_stop = max(trail_price, fixed_stop)
+        is_trailing = trail_price > fixed_stop
+
+        # Step 2: 손절 비율 계산
+        stop_pct = (entry_price - atr_based_stop) / entry_price
+
+        # Step 3: 클램핑 적용
+        if stop_pct < self.min_stop_pct:
+            # 너무 타이트한 스탑 → 최소값으로 클램핑
+            final_stop = entry_price * (1 - self.min_stop_pct)
+            stop_type = 'clamped_min'
+            logger.info(
+                f"🔒 {ticker} 손절가 최소 클램핑: {stop_pct*100:.2f}% → {self.min_stop_pct*100:.0f}% "
+                f"(ATR 기반: {atr_based_stop:.0f}, 클램핑 후: {final_stop:.0f})"
+            )
+
+        elif stop_pct > self.max_stop_pct:
+            # 너무 루즈한 스탑 → 최대값으로 클램핑
+            final_stop = entry_price * (1 - self.max_stop_pct)
+            stop_type = 'clamped_max'
+            logger.info(
+                f"🔒 {ticker} 손절가 최대 클램핑: {stop_pct*100:.2f}% → {self.max_stop_pct*100:.0f}% "
+                f"(ATR 기반: {atr_based_stop:.0f}, 클램핑 후: {final_stop:.0f})"
+            )
+
+        else:
+            # 정상 범위 → ATR 로직 그대로 사용
+            final_stop = atr_based_stop
+            stop_type = 'atr_trailing' if is_trailing else 'atr_fixed'
+
+        return final_stop, stop_type
 
     def get_atr_with_fallback(self, ticker: str, current_price: float, db_path: str = "./makenaide_local.db") -> float:
         """
@@ -184,10 +252,31 @@ class TrailingStopManager:
             self.highest_price[ticker] = current_price
             self.atr[ticker] = atr_value
 
-            # 초기 손절가: 진입가 - 1 ATR
-            self.stop_price[ticker] = current_price - atr_value
+            # ATR 배수 조회
+            atr_multiplier = self.get_atr_multiplier(ticker)
 
-            logger.info(f"🎯 {ticker} 트레일링 스탑 초기화: 진입가={current_price:.0f}, ATR={atr_value:.2f}, 초기 손절가={self.stop_price[ticker]:.0f}")
+            # 초기 손절가 계산: 진입가 - (ATR × 배수)
+            # 트레일링 스탑은 최고가 기준이지만 초기에는 진입가 = 최고가
+            trail_price = current_price - (atr_value * atr_multiplier)
+            # 고정 손절가: 진입가 - ATR
+            fixed_stop = current_price - atr_value
+
+            # 🎯 Quick Win #2: 초기 손절가에도 클램핑 적용
+            final_stop, stop_type = self._apply_stop_clamping(
+                ticker=ticker,
+                trail_price=trail_price,
+                fixed_stop=fixed_stop,
+                entry_price=current_price
+            )
+
+            self.stop_price[ticker] = final_stop
+            self.stop_type[ticker] = stop_type
+
+            logger.info(
+                f"🎯 {ticker} 트레일링 스탑 초기화: "
+                f"진입가={current_price:.0f}, ATR={atr_value:.2f}, "
+                f"손절가={final_stop:.0f} ({stop_type})"
+            )
             return False
 
         # 최고가 업데이트
@@ -204,15 +293,27 @@ class TrailingStopManager:
         # 고정 손절 가격: 진입가 - ATR
         fixed_stop = self.entry_price[ticker] - atr_value
 
-        # 더 높은 가격(더 타이트한 스탑) 선택
-        new_stop = max(trail_price, fixed_stop)
-        self.stop_price[ticker] = new_stop
+        # 🎯 Quick Win #2: Min/Max 클램핑 적용
+        final_stop, stop_type = self._apply_stop_clamping(
+            ticker=ticker,
+            trail_price=trail_price,
+            fixed_stop=fixed_stop,
+            entry_price=self.entry_price[ticker]
+        )
+
+        # 손절가 및 타입 업데이트
+        self.stop_price[ticker] = final_stop
+        self.stop_type[ticker] = stop_type
 
         # 현재가가 손절가 아래로 떨어지면 청산 신호
         should_exit = current_price <= self.stop_price[ticker]
 
         if should_exit:
-            logger.info(f"🚨 {ticker} 트레일링 스탑 청산 신호: 현재가={current_price:.0f} ≤ 손절가={self.stop_price[ticker]:.0f}")
+            logger.info(
+                f"🚨 {ticker} 트레일링 스탑 청산 신호: "
+                f"현재가={current_price:.0f} ≤ 손절가={self.stop_price[ticker]:.0f}, "
+                f"손절타입={stop_type}"
+            )
 
         return should_exit
 
