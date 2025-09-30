@@ -1474,6 +1474,9 @@ class LocalTradingEngine:
             estimated_value = sell_quantity * current_price
             net_value = estimated_value * (1 - self.config.taker_fee_rate)
 
+            # 🔧 FIX: requested_amount 설정 (DB CHECK 제약 조건 충족용)
+            trade_result.requested_amount = estimated_value
+
             if net_value < 5000:  # 업비트 최소 매도 금액
                 trade_result.error_message = f"매도 금액 부족: {net_value:,.0f} < 5,000원"
                 trade_result.status = TradeStatus.CANCELLED
