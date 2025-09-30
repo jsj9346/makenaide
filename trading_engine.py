@@ -806,13 +806,12 @@ class LocalTradingEngine:
                     buy_timestamp = self.get_last_buy_timestamp(ticker)
                     hold_days = 0
                     if buy_timestamp:
-                        # 시간 차이 계산 (최소 1일로 설정)
-                        time_diff = datetime.now() - buy_timestamp
-                        hold_days = max(1, time_diff.days)
+                        # 달력 기준 일수 계산 (시간 무관, 날짜만 비교)
+                        now = datetime.now()
+                        hold_days = (now.date() - buy_timestamp.date()).days
 
-                        # 같은 날 매수한 경우에도 시간이 충분히 지났으면 1일로 계산
-                        if time_diff.days == 0 and time_diff.total_seconds() > 3600:  # 1시간 이상
-                            hold_days = 1
+                        # 최소 1일 보장 (당일 매수는 1일로 계산)
+                        hold_days = max(1, hold_days)
 
                     position = PositionInfo(
                         ticker=ticker,

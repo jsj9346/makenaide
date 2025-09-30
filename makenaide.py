@@ -498,6 +498,27 @@ class MakenaideLocalOrchestrator:
 
             logger.info(f"📊 분석 대상 종목: {len(active_tickers)}개")
 
+            # 기존 보유 포지션 조회 및 제외
+            held_tickers = set()
+            if self.trading_engine:
+                try:
+                    positions = self.trading_engine.get_current_positions()
+                    held_tickers = {pos.ticker for pos in positions}
+
+                    if held_tickers:
+                        logger.info(f"🔒 현재 보유 중인 {len(held_tickers)}개 종목 제외: {', '.join(sorted(held_tickers))}")
+                except Exception as e:
+                    logger.warning(f"⚠️ 보유 포지션 조회 실패: {e}")
+
+            # 기존 포지션 제외한 티커만 분석
+            active_tickers = [t for t in active_tickers if t not in held_tickers]
+
+            if not active_tickers:
+                logger.info("📭 분석 가능한 신규 종목이 없습니다 (모두 보유 중)")
+                return []
+
+            logger.info(f"📊 신규 분석 대상 종목: {len(active_tickers)}개")
+
             # 통합 필터 실행 (AUTO 모드로 지능형 분석)
             analysis_results = []
             technical_candidates_data = []  # SNS 알림용 상세 데이터
