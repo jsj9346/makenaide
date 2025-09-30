@@ -171,6 +171,7 @@ class SQLiteDatabaseInitializer:
                 analysis_details TEXT,
 
                 -- 메타데이터
+                source_table TEXT,               -- 데이터 출처 추적 (integrated_scoring_system 호환)
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
 
@@ -270,6 +271,40 @@ class SQLiteDatabaseInitializer:
             )
         """)
 
+        # 6. unified_technical_analysis 테이블 - 통합 기술적 필터 결과 (technical_filter.py 호환)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS unified_technical_analysis (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                ticker TEXT NOT NULL,
+                analysis_date TEXT NOT NULL,
+                filter_mode TEXT NOT NULL,
+
+                -- Weinstein Stage 결과
+                current_stage INTEGER,
+                stage_confidence REAL,
+                ma200_trend TEXT,
+                price_vs_ma200 REAL,
+                breakout_strength REAL,
+
+                -- Gate 결과
+                gates_passed INTEGER,
+                quality_score REAL,
+                technical_bonus REAL,
+
+                -- 최종 결과
+                final_recommendation TEXT,
+                final_confidence REAL,
+                processing_time_ms REAL,
+
+                -- 메타데이터
+                mode_selection_reason TEXT,
+                warnings TEXT,
+
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(ticker, analysis_date, filter_mode)
+            )
+        """)
+
         # 분석 테이블 인덱스 생성
         indexes = [
             "CREATE INDEX IF NOT EXISTS idx_technical_analysis_ticker ON technical_analysis(ticker)",
@@ -280,7 +315,12 @@ class SQLiteDatabaseInitializer:
             "CREATE INDEX IF NOT EXISTS idx_kelly_ticker ON kelly_analysis(ticker)",
             "CREATE INDEX IF NOT EXISTS idx_kelly_date ON kelly_analysis(analysis_date)",
             "CREATE INDEX IF NOT EXISTS idx_static_indicators_ticker ON static_indicators(ticker)",
-            "CREATE INDEX IF NOT EXISTS idx_static_indicators_updated_at ON static_indicators(updated_at)"
+            "CREATE INDEX IF NOT EXISTS idx_static_indicators_updated_at ON static_indicators(updated_at)",
+            # unified_technical_analysis 테이블 인덱스
+            "CREATE INDEX IF NOT EXISTS idx_unified_technical_analysis_ticker ON unified_technical_analysis(ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_unified_technical_analysis_date ON unified_technical_analysis(analysis_date)",
+            "CREATE INDEX IF NOT EXISTS idx_unified_technical_analysis_mode ON unified_technical_analysis(filter_mode)",
+            "CREATE INDEX IF NOT EXISTS idx_unified_technical_analysis_recommendation ON unified_technical_analysis(final_recommendation)"
         ]
 
         for index in indexes:
@@ -292,21 +332,48 @@ class SQLiteDatabaseInitializer:
         """거래 관련 테이블 생성"""
         logger.info("💰 거래 테이블 생성 중...")
 
-        # 1. trades 테이블 - 실시간 거래 기록
+        # 1. trades 테이블 - 실시간 거래 기록 (Enhanced Schema v2.4.0)
         self.conn.execute("""
             CREATE TABLE IF NOT EXISTS trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                -- 기본 거래 정보
                 ticker TEXT NOT NULL,
-                order_type TEXT NOT NULL,
-                status TEXT NOT NULL,
+                order_type TEXT NOT NULL CHECK(order_type IN ('BUY', 'SELL')),
+
+                -- 강화된 상태 관리 (TradeStatus 시스템)
+                status TEXT NOT NULL CHECK(status IN ('FULL_FILLED', 'PARTIAL_FILLED', 'CANCELLED', 'FAILED', 'PENDING')),
+
+                -- 거래소 연동 정보
                 order_id TEXT,
-                quantity REAL,
-                price REAL,
-                amount_krw REAL,
-                fee REAL,
+
+                -- 물량 및 가격 정보 (부분 체결 지원)
+                requested_quantity REAL NOT NULL,        -- 요청한 수량
+                filled_quantity REAL NOT NULL DEFAULT 0,  -- 실제 체결된 수량
+                requested_amount REAL NOT NULL,           -- 요청한 금액 (KRW)
+                filled_amount REAL NOT NULL DEFAULT 0,    -- 실제 체결된 금액 (KRW)
+                average_price REAL,                       -- 평균 체결가
+
+                -- 체결률 및 메타데이터 (자동 계산)
+                fill_rate REAL DEFAULT 0,
+
+                -- 피라미딩 관련
+                is_pyramid BOOLEAN NOT NULL DEFAULT 0,
+                is_pyramid_eligible BOOLEAN DEFAULT 0,
+
+                -- 수수료 및 오류 처리
+                fee REAL DEFAULT 0,
                 error_message TEXT,
-                timestamp TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+
+                -- 타임스탬프
+                timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                -- 제약 조건
+                CHECK(filled_quantity <= requested_quantity),
+                CHECK(filled_amount <= requested_amount * 1.01), -- 수수료 고려 1% 여유
+                CHECK(fill_rate >= 0 AND fill_rate <= 1)
             )
         """)
 
@@ -353,6 +420,69 @@ class SQLiteDatabaseInitializer:
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
+        """)
+
+        # trades 테이블 인덱스 생성
+        trades_indexes = [
+            "CREATE INDEX IF NOT EXISTS idx_trades_ticker ON trades(ticker)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades(timestamp)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_order_type ON trades(order_type)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_pyramid_eligible ON trades(is_pyramid_eligible)",
+            "CREATE INDEX IF NOT EXISTS idx_trades_fill_rate ON trades(fill_rate)"
+        ]
+
+        for index in trades_indexes:
+            self.conn.execute(index)
+
+        # trades 테이블 트리거 생성 (자동 계산)
+        # Insert 트리거
+        self.conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS calculate_trade_metrics_insert
+                AFTER INSERT ON trades
+            BEGIN
+                UPDATE trades
+                SET fill_rate = CASE
+                        WHEN NEW.requested_quantity > 0 THEN NEW.filled_quantity / NEW.requested_quantity
+                        WHEN NEW.requested_amount > 0 THEN NEW.filled_amount / NEW.requested_amount
+                        ELSE 0
+                    END,
+                    is_pyramid_eligible = CASE
+                        WHEN NEW.status IN ('FULL_FILLED', 'PARTIAL_FILLED') AND NEW.filled_quantity > 0 THEN 1
+                        ELSE 0
+                    END
+                WHERE id = NEW.id;
+            END
+        """)
+
+        # Update 트리거
+        self.conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS calculate_trade_metrics_update
+                AFTER UPDATE ON trades
+            BEGIN
+                UPDATE trades
+                SET fill_rate = CASE
+                        WHEN NEW.requested_quantity > 0 THEN NEW.filled_quantity / NEW.requested_quantity
+                        WHEN NEW.requested_amount > 0 THEN NEW.filled_amount / NEW.requested_amount
+                        ELSE 0
+                    END,
+                    is_pyramid_eligible = CASE
+                        WHEN NEW.status IN ('FULL_FILLED', 'PARTIAL_FILLED') AND NEW.filled_quantity > 0 THEN 1
+                        ELSE 0
+                    END,
+                    updated_at = datetime('now')
+                WHERE id = NEW.id;
+            END
+        """)
+
+        # Updated_at 트리거
+        self.conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS trades_updated_at
+                AFTER UPDATE ON trades
+                WHEN NEW.updated_at = OLD.updated_at
+            BEGIN
+                UPDATE trades SET updated_at = datetime('now') WHERE id = NEW.id;
+            END
         """)
 
         logger.info("✅ 거래 테이블 생성 완료")
@@ -646,11 +776,11 @@ class SQLiteDatabaseInitializer:
         # 필수 테이블 목록
         required_tables = [
             'tickers', 'ohlcv_data', 'technical_analysis',
-            'gpt_analysis', 'kelly_analysis', 'static_indicators', 'trades', 'trade_history',
-            'portfolio_history', 'trailing_stops', 'failure_records', 'failure_patterns',
-            'system_health_metrics', 'recovery_attempts', 'recovery_plans', 'recovery_executions',
-            'recovery_action_stats', 'prediction_results', 'prediction_accuracy', 'trend_analysis',
-            'disclaimer_agreements', 'manual_override_log'
+            'gpt_analysis', 'kelly_analysis', 'static_indicators', 'unified_technical_analysis',
+            'trades', 'trade_history', 'portfolio_history', 'trailing_stops', 'failure_records',
+            'failure_patterns', 'system_health_metrics', 'recovery_attempts', 'recovery_plans',
+            'recovery_executions', 'recovery_action_stats', 'prediction_results', 'prediction_accuracy',
+            'trend_analysis', 'disclaimer_agreements', 'manual_override_log'
         ]
 
         # 테이블 존재 여부 확인
@@ -669,7 +799,8 @@ class SQLiteDatabaseInitializer:
         required_indexes = [
             'idx_ohlcv_data_ticker', 'idx_ohlcv_data_date',
             'idx_technical_analysis_ticker', 'idx_gpt_analysis_ticker',
-            'idx_kelly_ticker', 'idx_failure_records_timestamp'
+            'idx_kelly_ticker', 'idx_failure_records_timestamp',
+            'idx_unified_technical_analysis_ticker'
         ]
 
         for index in required_indexes:

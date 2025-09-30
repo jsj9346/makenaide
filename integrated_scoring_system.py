@@ -302,9 +302,13 @@ class IntegratedScoringSystem:
                 existing_record = cursor.fetchone()
 
                 if existing_record:
-                    # 2-A. 기존 레코드가 있으면 LayeredScoring 컬럼만 UPDATE
+                    # 2-A. 기존 레코드가 있으면 LayeredScoring 전체 컬럼 UPDATE
                     cursor.execute("""
                         UPDATE technical_analysis SET
+                            quality_score = ?,
+                            recommendation = ?,
+                            current_stage = ?,
+                            stage_confidence = ?,
                             macro_score = ?,
                             structural_score = ?,
                             micro_score = ?,
@@ -314,6 +318,10 @@ class IntegratedScoringSystem:
                             updated_at = CURRENT_TIMESTAMP
                         WHERE ticker = ? AND analysis_date = DATE('now', '+9 hours')
                     """, (
+                        result.quality_score,
+                        result.recommendation,
+                        result.stage,
+                        result.confidence,
                         result.macro_score,
                         result.structural_score,
                         result.micro_score,
@@ -323,16 +331,21 @@ class IntegratedScoringSystem:
                         result.ticker
                     ))
                 else:
-                    # 2-B. 새 레코드면 INSERT (Weinstein Stage 데이터 없이 LayeredScoring만)
+                    # 2-B. 새 레코드면 INSERT (LayeredScoring 전체 데이터 저장)
                     cursor.execute("""
                         INSERT INTO technical_analysis (
                             ticker, analysis_date,
+                            quality_score, recommendation, current_stage, stage_confidence,
                             macro_score, structural_score, micro_score, total_score,
                             quality_gates_passed, analysis_details,
                             source_table, created_at, updated_at
-                        ) VALUES (?, DATE('now', '+9 hours'), ?, ?, ?, ?, ?, ?, 'integrated_scoring_system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        ) VALUES (?, DATE('now', '+9 hours'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'integrated_scoring_system', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """, (
                         result.ticker,
+                        result.quality_score,
+                        result.recommendation,
+                        result.stage,
+                        result.confidence,
                         result.macro_score,
                         result.structural_score,
                         result.micro_score,

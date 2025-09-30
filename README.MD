@@ -34,18 +34,18 @@ graph TD
     subgraph "🖥️ EC2 Local Integrated Pipeline (단일 프로세스)"
         C --> D["📡 Phase 0: scanner.py<br/>업비트 전체 종목 스캔<br/>신규/폐지 종목 감지<br/>SQLite 저장"]
         D --> E["📊 Phase 1: data_collector.py<br/>300일+ 데이터 보존 정책<br/>증분 OHLCV 수집<br/>기술적 지표 자동 계산"]
-        E --> F["🎯 Phase 2: hybrid_technical_filter.py<br/>Weinstein Stage 2 진입 감지<br/>4단계 게이트 필터링"]
+        E --> F["🎯 Phase 2: integrated_scoring_system.py<br/>LayeredScoringEngine 점수제 분석<br/>Weinstein Stage 2 진입 감지"]
         F --> G["🤖 Phase 3: gpt_analyzer.py<br/>GPT VCP/컵앤핸들 분석<br/>(선택적 실행)"]
         G --> H["💰 kelly_calculator.py<br/>패턴별 승률 매핑<br/>포지션 사이징 계산"]
         H --> I["🌡️ market_sentiment.py<br/>Fear&Greed Index<br/>BEAR 시장 자동 차단"]
         I --> J["💸 trading_engine.py<br/>Kelly 조정 + 거래 실행<br/>포트폴리오 관리"]
     end
 
-    J --> K["📊 SQLite 업데이트<br/>로그 저장 + S3 백업"]
+    J --> K["📊 SQLite 업데이트<br/>로그 저장 + 백업"]
     J --> L["📧 SNS 알림<br/>거래 결과 + 시스템 상태"]
 
     subgraph "🗃️ Local Data Layer"
-        M["🗄️ SQLite Database<br/>makenaide_local.db<br/>통합 로컬 데이터베이스"]
+        M["🗄️ SQLite Database<br/>makenaide_local.db<br/>통합 로컬 데이터베이스<br/>19개 핵심 테이블"]
         N["📦 JSON 백업<br/>일별 백업 파일<br/>성과 분석 아카이브"]
     end
 ```
@@ -56,6 +56,28 @@ graph TD
 - **수동 실행**: 필요시 직접 실행
 - **자동 실행**: 시스템 스케줄러 활용 (선택적)
 - **24시간 대응**: 글로벌 암호화폐 시장 특성 반영
+
+## 🆕 현재 버전 주요 개선사항
+
+### LayeredScoringEngine 통합 점수제 시스템
+- **통합 분석**: `integrated_scoring_system.py`를 통한 다차원 점수제 분석
+- **기술적 필터**: `technical_filter.py`의 UnifiedFilterResult 시스템
+- **성능 최적화**: 기존 4단계 게이트 시스템을 점수제로 통합하여 정확도 향상
+
+### 데이터베이스 인프라 강화
+- **19개 핵심 테이블**: 완전한 거래 생태계 구축
+- **자동 초기화**: `init_db_sqlite.py`를 통한 원클릭 데이터베이스 설정
+- **성능 최적화**: WAL 모드, 인덱스, 외래키 제약조건
+
+### AWS 자동화 및 모니터링
+- **완전 자동화**: `deploy_complete_automation.py`로 원클릭 배포
+- **스마트 스케줄링**: EventBridge 기반 글로벌 시장 대응
+- **EC2 자동 관리**: 자동 시작/종료/업데이트 시스템
+
+### 고급 리스크 관리
+- **실시간 시장 감정**: `real_time_market_sentiment.py`
+- **Kelly 공식 최적화**: 패턴별 승률 매핑 고도화
+- **피라미드 포지션**: 고급 포지션 스케일링 로직
 
 ## 🚀 빠른 시작
 
@@ -77,8 +99,11 @@ pip install -r requirements.txt
 ### 2. 로컬 데이터베이스 초기화
 
 ```bash
-# SQLite 데이터베이스 초기화
-python3 -c "from db_manager_sqlite import *; init_database()"
+# SQLite 데이터베이스 초기화 (19개 핵심 테이블)
+python3 -c "from init_db_sqlite import SQLiteDatabaseInitializer; SQLiteDatabaseInitializer().initialize_complete_database()"
+
+# 데이터베이스 상태 확인
+python3 check_db.py
 
 # 환경 변수 확인
 python3 -c "import os; print('Upbit API:', bool(os.getenv('UPBIT_ACCESS_KEY')))"
@@ -94,9 +119,10 @@ python3 makenaide.py --risk-level moderate
 python3 makenaide.py --dry-run --no-gpt
 
 # 개별 모듈 테스트
-python3 scanner.py                  # 종목 스캔 테스트
-python3 data_collector.py           # 데이터 수집 테스트
-python3 hybrid_technical_filter.py  # 기술적 분석 테스트
+python3 scanner.py                    # 종목 스캔 테스트
+python3 data_collector.py             # 데이터 수집 테스트
+python3 integrated_scoring_system.py  # 통합 점수제 분석 테스트
+python3 kelly_calculator.py           # 포지션 사이징 테스트
 ```
 
 ### 4. 알림 시스템 설정 (선택적)
@@ -140,27 +166,35 @@ python3 -c "from utils import send_email; send_email('테스트', '로컬 알림
 
 ```
 makenaide/
-├── 🎯 makenaide.py                 # 메인 로컬 오케스트레이터
-├── 📡 scanner.py                   # 업비트 종목 스캔
-├── 📊 data_collector.py            # OHLCV 증분 데이터 수집
-├── 🎯 hybrid_technical_filter.py   # Weinstein Stage 2 분석
-├── 🤖 gpt_analyzer.py              # GPT-4 VCP 패턴 분석
-├── 💰 kelly_calculator.py          # Kelly 포지션 사이징
-├── 🌡️ market_sentiment.py         # 시장 감정 분석
-├── 💸 trading_engine.py            # 실시간 매수/매도 실행
-├── 🗄️ db_manager_sqlite.py         # SQLite 로컬 DB 관리
-├── 🔧 utils.py                     # 공통 유틸리티
+├── 🎯 makenaide.py                   # 메인 로컬 오케스트레이터
+├── 📡 scanner.py                     # 업비트 종목 스캔
+├── 📊 data_collector.py              # OHLCV 증분 데이터 수집
+├── 🎯 integrated_scoring_system.py   # 통합 점수제 분석 시스템
+├── 🎯 technical_filter.py            # 통합 기술적 필터 시스템
+├── 🤖 gpt_analyzer.py                # GPT VCP 패턴 분석
+├── 💰 kelly_calculator.py            # Kelly 포지션 사이징
+├── 🌡️ market_sentiment.py           # 시장 감정 분석
+├── 💸 trading_engine.py              # 실시간 매수/매도 실행
+├── 🗄️ db_manager_sqlite.py           # SQLite 로컬 DB 관리
+├── 🗄️ init_db_sqlite.py             # SQLite 데이터베이스 초기화
+├── 🔧 utils.py                       # 공통 유틸리티
+├── 📧 sns_notification_system.py     # SNS 알림 시스템
+│
+├── 🤖 AWS 자동화 모듈
+├── 🚀 deploy_complete_automation.py  # 완전 자동화 배포
+├── ⚡ lambda_ec2_starter.py          # EC2 자동 시작 Lambda
+├── 📅 eventbridge_scheduler.py       # EventBridge 스케줄링
+├── 🔄 ec2_auto_update.py             # EC2 자동 업데이트
 │
 ├── 📋 설정 및 문서
-├── 📝 CLAUDE.md                    # 프로젝트 가이드라인
-├── 🗺️ makenaide_local.mmd          # EC2 로컬 아키텍처 다이어그램
-├── ⚙️ .env                         # 환경 변수 설정
-├── 📦 requirements.txt             # Python 의존성
+├── 📝 CLAUDE.md                      # 프로젝트 가이드라인
+├── ⚙️ .env                           # 환경 변수 설정
+├── 📦 requirements.txt               # Python 의존성
 │
 ├── 📊 로컬 데이터베이스 및 백업
-├── 💾 makenaide_local.db           # SQLite 통합 데이터베이스
-├── 📂 logs/                        # 실시간 로그 디렉토리
-└── 🗃️ data/backups/               # 일별 JSON 백업
+├── 💾 makenaide_local.db             # SQLite 통합 데이터베이스 (19개 테이블)
+├── 📂 logs/                          # 실시간 로그 디렉토리
+└── 🗃️ data/backups/                 # 일별 JSON 백업
 ```
 
 ## 🛠️ 개발 및 배포
@@ -172,13 +206,14 @@ python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 
-# SQLite 데이터베이스 초기화
-python3 -c "from db_manager_sqlite import *; init_database()"
+# SQLite 데이터베이스 초기화 (19개 핵심 테이블)
+python3 -c "from init_db_sqlite import SQLiteDatabaseInitializer; SQLiteDatabaseInitializer().initialize_complete_database()"
 
 # 개별 모듈 테스트
-python3 scanner.py                  # 종목 스캔 테스트
-python3 data_collector.py           # 데이터 수집 테스트
-python3 hybrid_technical_filter.py  # 기술적 분석 테스트
+python3 scanner.py                    # 종목 스캔 테스트
+python3 data_collector.py             # 데이터 수집 테스트
+python3 integrated_scoring_system.py  # 통합 점수제 분석 테스트
+python3 kelly_calculator.py           # 포지션 사이징 테스트
 
 # 전체 파이프라인 로컬 테스트
 python3 makenaide.py --dry-run --no-gpt
@@ -192,7 +227,7 @@ scp -i your-key.pem *.py user@server:/home/user/makenaide/
 # 원격 서버에서 환경 설정
 ssh -i your-key.pem user@server
 cd makenaide
-python3 -c "from db_manager_sqlite import *; init_database()"
+python3 -c "from init_db_sqlite import SQLiteDatabaseInitializer; SQLiteDatabaseInitializer().initialize_complete_database()"
 
 # 시스템 설정 완료
 ```

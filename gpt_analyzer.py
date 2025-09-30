@@ -7,7 +7,7 @@ gpt_analyzer.py - Phase 3 GPT 기반 차트 패턴 분석기
 - Cup & Handle 패턴 감지 - 윌리엄 오닐 전략
 - OpenAI GPT-5-mini API 연동 - 비용 최적화 ($0.00015/1K tokens)
 - 지능적 선택 실행 - 기술적 점수 15점 이상만 GPT 분석
-- 3단계 캐싱 시스템 - 메모리 → DB(24시간) → API 호출
+- 3단계 캐싱 시스템 - 메모리 → DB(72시간) → API 호출
 
 💰 비용 최적화:
 - GPT-5-mini 사용: 최신 모델로 높은 분석 품질 확보
@@ -167,7 +167,7 @@ class CacheManager:
     def __init__(self, db_path: str = "./makenaide_local.db"):
         self.db_path = db_path
         self.memory_cache = {}  # 메모리 캐시
-        self.db_cache_hours = 24  # DB 캐시 24시간
+        self.db_cache_hours = 72  # DB 캐시 72시간 (3일)
 
     def get_cache_key(self, ticker: str, date: str) -> str:
         """캐시 키 생성"""
@@ -184,7 +184,7 @@ class CacheManager:
         except Exception:
             return False
 
-    def get_cached_analysis(self, ticker: str, max_age_hours: int = 24) -> Optional[GPTAnalysisResult]:
+    def get_cached_analysis(self, ticker: str, max_age_hours: int = 72) -> Optional[GPTAnalysisResult]:
         """캐시된 분석 결과 조회"""
         try:
             # 1. 메모리 캐시 확인
@@ -192,24 +192,30 @@ class CacheManager:
             cache_key = self.get_cache_key(ticker, today)
 
             if cache_key in self.memory_cache:
-                logger.debug(f"🚀 {ticker}: 메모리 캐시 히트")
+                logger.info(f"🚀 {ticker}: 메모리 캐시 히트 (즉시 반환, 비용 절약)")
                 return self.memory_cache[cache_key]
 
-            # 2. DB 캐시 확인
+            # 2. DB 캐시 확인 - 3일(72시간) 이내 데이터 검색으로 변경
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
+            # 72시간(3일) 이내 데이터만 검색
+            cutoff_time = datetime.now() - timedelta(hours=max_age_hours)
+            cutoff_str = cutoff_time.strftime('%Y-%m-%d %H:%M:%S')
+
             cursor.execute("""
                 SELECT * FROM gpt_analysis
-                WHERE ticker = ? AND DATE(created_at) = ?
+                WHERE ticker = ? AND created_at >= ?
                 ORDER BY created_at DESC LIMIT 1
-            """, (ticker, today))
+            """, (ticker, cutoff_str))
 
             row = cursor.fetchone()
             conn.close()
 
-            if row and self.is_cache_valid(row[14], max_age_hours):  # created_at 컬럼
-                logger.info(f"💾 {ticker}: DB 캐시 히트")
+            if row:
+                cached_time = datetime.fromisoformat(row[16])  # created_at 컬럼 (인덱스 16)
+                age_hours = (datetime.now() - cached_time).total_seconds() / 3600
+                logger.info(f"💾 {ticker}: DB 캐시 히트 (생성: {age_hours:.1f}시간 전, 유효기간: {max_age_hours}시간)")
                 result = self._row_to_result(row)
                 self.memory_cache[cache_key] = result  # 메모리 캐시에도 저장
                 return result
@@ -229,33 +235,33 @@ class CacheManager:
 
     def _row_to_result(self, row) -> GPTAnalysisResult:
         """DB row를 GPTAnalysisResult로 변환"""
-        # DB 스키마에 맞춰 파싱
+        # DB 스키마에 맞춰 파싱 (실제 테이블 구조 기준)
         vcp = VCPAnalysis(
-            detected=bool(row[3]),
-            confidence=row[4],
-            stage=row[5],
-            volatility_ratio=row[6] or 0.0,
-            reasoning="DB에서 로드"
+            detected=bool(row[3]),   # vcp_detected
+            confidence=row[4],       # vcp_confidence
+            stage=row[5],           # vcp_stage
+            volatility_ratio=row[6] or 0.0,  # vcp_volatility_ratio
+            reasoning="DB에서 로드"  # vcp_reasoning 컬럼이 없음
         )
 
         cup_handle = CupHandleAnalysis(
-            detected=bool(row[7]),
-            confidence=row[8],
-            cup_depth_ratio=row[9] or 0.0,
-            handle_duration_days=row[10] or 0,
-            reasoning="DB에서 로드"
+            detected=bool(row[7]),   # cup_handle_detected
+            confidence=row[8],       # cup_handle_confidence
+            cup_depth_ratio=row[9] or 0.0,     # cup_depth_ratio
+            handle_duration_days=row[10] or 0,  # handle_duration_days
+            reasoning="DB에서 로드"   # cup_handle_reasoning 컬럼이 없음
         )
 
         return GPTAnalysisResult(
-            ticker=row[1],
-            analysis_date=row[2],
+            ticker=row[1],           # ticker
+            analysis_date=row[2],    # analysis_date
             vcp_analysis=vcp,
             cup_handle_analysis=cup_handle,
-            recommendation=GPTRecommendation(row[11]),
-            confidence=row[12],
-            reasoning=row[13] or "",
-            api_cost_usd=row[14] or 0.0,
-            processing_time_ms=row[15] or 0
+            recommendation=GPTRecommendation(row[11]),  # gpt_recommendation
+            confidence=row[12],      # gpt_confidence
+            reasoning=row[13] or "", # gpt_reasoning
+            api_cost_usd=row[14] or 0.0,       # api_cost_usd
+            processing_time_ms=row[15] or 0    # processing_time_ms
         )
 
 class GPTPatternAnalyzer:
@@ -307,12 +313,14 @@ class GPTPatternAnalyzer:
                 vcp_confidence REAL DEFAULT 0.0,
                 vcp_stage INTEGER DEFAULT 0,
                 vcp_volatility_ratio REAL DEFAULT 0.0,
+                vcp_reasoning TEXT DEFAULT '',
 
                 -- Cup & Handle 패턴 분석
                 cup_handle_detected BOOLEAN DEFAULT 0,
                 cup_handle_confidence REAL DEFAULT 0.0,
                 cup_depth_ratio REAL DEFAULT 0.0,
                 handle_duration_days INTEGER DEFAULT 0,
+                cup_handle_reasoning TEXT DEFAULT '',
 
                 -- GPT 종합 분석
                 gpt_recommendation TEXT DEFAULT 'HOLD',
@@ -369,7 +377,7 @@ class GPTPatternAnalyzer:
                     continue
 
                 # 3. GPT 분석 실행
-                gpt_result = self.analyze_single_ticker(ticker)
+                gpt_result = self.analyze_ticker(ticker)
                 if gpt_result:
                     candidate['gpt_analysis'] = gpt_result
                     candidate['final_score'] = self._calculate_enhanced_score(candidate, gpt_result)
@@ -389,12 +397,18 @@ class GPTPatternAnalyzer:
         logger.info(f"✅ GPT 분석 완료: {gpt_analyzed_count}개 종목 분석")
         return enhanced_results
 
-    def analyze_single_ticker(self, ticker: str) -> Optional[GPTAnalysisResult]:
+    def analyze_ticker(self, ticker: str) -> Optional[GPTAnalysisResult]:
         """개별 종목 GPT 패턴 분석"""
         start_time = time.time()
 
         try:
-            # 1. OHLCV 데이터 로드
+            # 1. 캐시 확인 (중요: API 호출 전 반드시 확인)
+            cached_result = self.cache_manager.get_cached_analysis(ticker)
+            if cached_result:
+                logger.info(f"🚀 {ticker}: 캐시 히트! API 호출 건너뛰기 (비용 절약)")
+                return cached_result
+
+            # 2. OHLCV 데이터 로드
             df = self._get_ohlcv_data(ticker)
             if df.empty:
                 logger.warning(f"📊 {ticker}: 데이터 없음")
@@ -425,7 +439,7 @@ class GPTPatternAnalyzer:
             self._save_analysis_result(result)
             self.cache_manager.save_to_cache(result)
 
-            logger.info(f"✅ {ticker}: GPT 분석 완료 (${cost:.4f}, {processing_time}ms)")
+            logger.info(f"✅ {ticker}: GPT 분석 완료 (${cost:.4f}, {processing_time}ms) → 3일 캐시 저장")
             return result
 
         except Exception as e:
@@ -526,161 +540,169 @@ Recent 20-Day Price Movement:
 
         return chart_text
 
-    def _call_openai_api(self, chart_text: str, ticker: str) -> Tuple[VCPAnalysis, CupHandleAnalysis, GPTRecommendation, float, str, float]:
-        """OpenAI API 호출"""
-        try:
-            # 비용 계산
-            estimated_cost = self.cost_manager.estimate_cost(len(chart_text))
+    def _call_openai_api(self, chart_text: str, ticker: str, max_retries: int = 2) -> Tuple[VCPAnalysis, CupHandleAnalysis, GPTRecommendation, float, str, float]:
+        """OpenAI API 호출 (재시도 로직 포함)"""
 
-            # Enhanced prompt for structured JSON response
-            prompt = f"""
-You are an expert technical chart analyst. Please analyze the following cryptocurrency chart patterns:
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                logger.debug(f"🔄 {ticker} API 호출 시도 {attempt + 1}/{max_retries}")
+
+                # 비용 계산
+                estimated_cost = self.cost_manager.estimate_cost(len(chart_text))
+
+                # Enhanced prompt with stronger JSON enforcement
+                prompt = f"""
+Analyze this cryptocurrency chart data and respond ONLY with valid JSON:
 
 {chart_text}
 
-Analyze these two specific chart patterns:
+Required analysis: VCP pattern and Cup & Handle pattern detection.
 
-1. VCP (Volatility Contraction Pattern) - Mark Minervini Strategy:
-- Sequential contractions: Each pullback should be within 25% of previous high
-- Volatility decline: Progressive volatility contraction over time
-- Volume pattern: Decreasing volume during contractions, surging on breakouts
-- Minimum 3 contraction cycles required for valid VCP pattern
-
-2. Cup & Handle Pattern - William O'Neil Strategy:
-- Cup formation: U-shaped pattern with 12-33% depth from peak to trough
-- Handle formation: Slight pullback and sideways consolidation on right side of cup
-- Volume: Decreasing volume at cup bottom, increasing on breakout
-- Duration: Appropriate formation timeframe (weeks to months)
-
-**CRITICAL: You must respond ONLY in the exact JSON format below. Do not include any other text:**
+CRITICAL: Respond with ONLY this JSON structure (no other text):
 
 {{
-    "vcp": {{
-        "detected": true,
-        "confidence": 0.75,
-        "stage": 3,
-        "volatility_ratio": 0.15,
-        "reasoning": "VCP pattern analysis rationale in 50 characters or less"
-    }},
-    "cup_handle": {{
-        "detected": false,
-        "confidence": 0.3,
-        "cup_depth_ratio": 0.0,
-        "handle_duration_days": 0,
-        "reasoning": "Cup&Handle pattern analysis rationale in 50 characters or less"
-    }},
-    "overall": {{
-        "recommendation": "BUY",
-        "confidence": 0.8,
-        "reasoning": "Overall investment opinion in 80 characters or less"
-    }}
+"vcp": {{"detected": true, "confidence": 0.75, "stage": 3, "volatility_ratio": 0.15, "reasoning": "Brief VCP analysis"}},
+"cup_handle": {{"detected": false, "confidence": 0.3, "cup_depth_ratio": 0.0, "handle_duration_days": 0, "reasoning": "Brief Cup analysis"}},
+"overall": {{"recommendation": "BUY", "confidence": 0.8, "reasoning": "Brief overall analysis"}}
 }}
 
-**MANDATORY REQUIREMENTS:**
-- detected: Must be true or false (boolean)
-- confidence: Must be number between 0.0-1.0 (2 decimal places)
-- stage: Must be integer between 1-4 (VCP only)
-- volatility_ratio: Must be number between 0.0-1.0 (VCP only)
-- cup_depth_ratio: Must be number between 0.0-1.0 (Cup&Handle only)
-- handle_duration_days: Must be integer 0 or greater (Cup&Handle only)
-- recommendation: Must be exactly one of "STRONG_BUY", "BUY", "HOLD", "AVOID"
-- reasoning: Must be non-empty string
+Requirements:
+- detected: boolean (true/false)
+- confidence: float (0.0-1.0)
+- stage: integer (1-4)
+- volatility_ratio: float (0.0-1.0)
+- cup_depth_ratio: float (0.0-1.0)
+- handle_duration_days: integer (0+)
+- recommendation: "STRONG_BUY", "BUY", "HOLD", or "AVOID"
+- reasoning: string (under 100 chars)
 
-**Follow the exact structure shown above for your response.**
+RESPOND ONLY WITH VALID JSON. NO OTHER TEXT.
 """
 
-            # OpenAI API 호출 (새로운 API 형식)
-            if not self.openai_client:
-                raise Exception("OpenAI 클라이언트가 초기화되지 않았습니다")
+                # OpenAI API 호출 (새로운 API 형식)
+                if not self.openai_client:
+                    raise Exception("OpenAI 클라이언트가 초기화되지 않았습니다")
 
-            response = self.openai_client.chat.completions.create(
-                model="gpt-5-mini",  # GPT-5-mini 사용
-                messages=[
-                    {"role": "system", "content": "You are a professional technical chart analyst. You must respond ONLY in the specified JSON format. Do not include any other text or explanations. Ensure exact JSON format compliance to prevent parsing errors."},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=1000,
-                temperature=0.1
-            )
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-5-mini",  # GPT-5-mini 사용
+                    messages=[
+                        {"role": "system", "content": "You are a professional technical chart analyst. You must respond ONLY in the specified JSON format. Do not include any other text or explanations. Ensure exact JSON format compliance to prevent parsing errors."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_completion_tokens=1000,  # max_tokens → max_completion_tokens 변경
+                    # temperature 파라미터 제거 - gpt-5-mini에서 지원하지 않음 (기본값 1 사용)
+                )
 
-            # 응답 파싱 (JSON 정형화 처리)
-            response_text = response.choices[0].message.content.strip()
+                # 응답 파싱 (JSON 정형화 처리)
+                response_text = response.choices[0].message.content.strip()
 
-            # JSON 추출 (```json ``` 블록이 있을 경우 처리)
-            if "```json" in response_text:
-                start = response_text.find("```json") + 7
-                end = response_text.find("```", start)
-                if end != -1:
-                    response_text = response_text[start:end].strip()
-            elif "```" in response_text:
-                start = response_text.find("```") + 3
-                end = response_text.find("```", start)
-                if end != -1:
-                    response_text = response_text[start:end].strip()
+                # 응답 상세 디버깅
+                logger.debug(f"🔍 {ticker} 원본 응답 길이: {len(response_text)}")
+                if len(response_text) == 0:
+                    logger.error(f"❌ {ticker} 빈 응답 수신")
+                    raise Exception("빈 응답 수신")
 
-            try:
-                analysis_data = json.loads(response_text)
-            except json.JSONDecodeError as e:
-                logger.error(f"❌ {ticker} JSON 파싱 실패: {e}")
-                logger.error(f"응답 내용: {response_text[:200]}...")
-                raise Exception(f"JSON 파싱 실패: {e}")
+                # JSON 추출 (```json ``` 블록이 있을 경우 처리)
+                if "```json" in response_text:
+                    start = response_text.find("```json") + 7
+                    end = response_text.find("```", start)
+                    if end != -1:
+                        response_text = response_text[start:end].strip()
+                        logger.debug(f"🔍 {ticker} JSON 블록 추출 완료")
+                elif "```" in response_text:
+                    start = response_text.find("```") + 3
+                    end = response_text.find("```", start)
+                    if end != -1:
+                        response_text = response_text[start:end].strip()
+                        logger.debug(f"🔍 {ticker} 코드 블록 추출 완료")
 
-            # VCP 분석 결과 (타입 검증 및 기본값 처리)
-            vcp_data = analysis_data.get('vcp', {})
-            vcp_analysis = VCPAnalysis(
-                detected=bool(vcp_data.get('detected', False)),
-                confidence=float(vcp_data.get('confidence', 0.0)),
-                stage=int(vcp_data.get('stage', 0)),
-                volatility_ratio=float(vcp_data.get('volatility_ratio', 0.0)),
-                reasoning=str(vcp_data.get('reasoning', '패턴 감지되지 않음'))
-            )
+                # JSON 파싱 전 최종 검증
+                if not response_text or not response_text.strip():
+                    logger.error(f"❌ {ticker} 추출된 JSON 텍스트가 비어있음")
+                    raise Exception("추출된 JSON 텍스트가 비어있음")
 
-            # Cup & Handle 분석 결과 (타입 검증 및 기본값 처리)
-            cup_data = analysis_data.get('cup_handle', {})
-            cup_handle_analysis = CupHandleAnalysis(
-                detected=bool(cup_data.get('detected', False)),
-                confidence=float(cup_data.get('confidence', 0.0)),
-                cup_depth_ratio=float(cup_data.get('cup_depth_ratio', 0.0)),
-                handle_duration_days=int(cup_data.get('handle_duration_days', 0)),
-                reasoning=str(cup_data.get('reasoning', '패턴 감지되지 않음'))
-            )
+                try:
+                    analysis_data = json.loads(response_text)
+                    logger.debug(f"✅ {ticker} JSON 파싱 성공")
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ {ticker} JSON 파싱 실패: {e}")
+                    logger.error(f"응답 전체 내용 ({len(response_text)}자): {repr(response_text)}")
+                    logger.error(f"응답 미리보기: {response_text[:500]}...")
+                    raise Exception(f"JSON 파싱 실패: {e}")
 
-            # 종합 분석 결과 (타입 검증 및 기본값 처리)
-            overall = analysis_data.get('overall', {})
-            recommendation_str = overall.get('recommendation', 'HOLD')
+                # VCP 분석 결과 (타입 검증 및 기본값 처리)
+                vcp_data = analysis_data.get('vcp', {})
+                vcp_analysis = VCPAnalysis(
+                    detected=bool(vcp_data.get('detected', False)),
+                    confidence=float(vcp_data.get('confidence', 0.0)),
+                    stage=int(vcp_data.get('stage', 0)),
+                    volatility_ratio=float(vcp_data.get('volatility_ratio', 0.0)),
+                    reasoning=str(vcp_data.get('reasoning', '패턴 감지되지 않음'))
+                )
 
-            # 유효한 추천 등급 확인
-            valid_recommendations = ['STRONG_BUY', 'BUY', 'HOLD', 'AVOID']
-            if recommendation_str not in valid_recommendations:
-                logger.warning(f"⚠️ {ticker}: 잘못된 추천 등급 '{recommendation_str}' → 'HOLD'로 변경")
-                recommendation_str = 'HOLD'
+                # Cup & Handle 분석 결과 (타입 검증 및 기본값 처리)
+                cup_data = analysis_data.get('cup_handle', {})
+                cup_handle_analysis = CupHandleAnalysis(
+                    detected=bool(cup_data.get('detected', False)),
+                    confidence=float(cup_data.get('confidence', 0.0)),
+                    cup_depth_ratio=float(cup_data.get('cup_depth_ratio', 0.0)),
+                    handle_duration_days=int(cup_data.get('handle_duration_days', 0)),
+                    reasoning=str(cup_data.get('reasoning', '패턴 감지되지 않음'))
+                )
 
-            recommendation = GPTRecommendation(recommendation_str)
-            confidence = float(overall.get('confidence', 0.0))
-            reasoning = str(overall.get('reasoning', '분석 결과 없음'))
+                # 종합 분석 결과 (타입 검증 및 기본값 처리)
+                overall = analysis_data.get('overall', {})
+                recommendation_str = overall.get('recommendation', 'HOLD')
 
-            # 값 범위 검증
-            vcp_analysis.confidence = max(0.0, min(1.0, vcp_analysis.confidence))
-            vcp_analysis.stage = max(1, min(4, vcp_analysis.stage))
-            vcp_analysis.volatility_ratio = max(0.0, min(1.0, vcp_analysis.volatility_ratio))
+                # 유효한 추천 등급 확인
+                valid_recommendations = ['STRONG_BUY', 'BUY', 'HOLD', 'AVOID']
+                if recommendation_str not in valid_recommendations:
+                    logger.warning(f"⚠️ {ticker}: 잘못된 추천 등급 '{recommendation_str}' → 'HOLD'로 변경")
+                    recommendation_str = 'HOLD'
 
-            cup_handle_analysis.confidence = max(0.0, min(1.0, cup_handle_analysis.confidence))
-            cup_handle_analysis.cup_depth_ratio = max(0.0, min(1.0, cup_handle_analysis.cup_depth_ratio))
-            cup_handle_analysis.handle_duration_days = max(0, cup_handle_analysis.handle_duration_days)
+                recommendation = GPTRecommendation(recommendation_str)
+                confidence = float(overall.get('confidence', 0.0))
+                reasoning = str(overall.get('reasoning', '분석 결과 없음'))
 
-            confidence = max(0.0, min(1.0, confidence))
+                # 값 범위 검증
+                vcp_analysis.confidence = max(0.0, min(1.0, vcp_analysis.confidence))
+                vcp_analysis.stage = max(1, min(4, vcp_analysis.stage))
+                vcp_analysis.volatility_ratio = max(0.0, min(1.0, vcp_analysis.volatility_ratio))
 
-            logger.info(f"🤖 {ticker}: GPT-5-mini 분석 완료 - {recommendation.value} ({confidence:.2f})")
+                cup_handle_analysis.confidence = max(0.0, min(1.0, cup_handle_analysis.confidence))
+                cup_handle_analysis.cup_depth_ratio = max(0.0, min(1.0, cup_handle_analysis.cup_depth_ratio))
+                cup_handle_analysis.handle_duration_days = max(0, cup_handle_analysis.handle_duration_days)
 
-            return vcp_analysis, cup_handle_analysis, recommendation, confidence, reasoning, estimated_cost
+                confidence = max(0.0, min(1.0, confidence))
 
-        except Exception as e:
-            logger.error(f"❌ {ticker} OpenAI API 호출 실패: {e}")
+                logger.info(f"🤖 {ticker}: GPT-5-mini 분석 완료 - {recommendation.value} ({confidence:.2f})")
 
-            # 기본값 반환
-            vcp_analysis = VCPAnalysis(False, 0.0, 0, 0.0, "API 호출 실패")
-            cup_handle_analysis = CupHandleAnalysis(False, 0.0, 0.0, 0, "API 호출 실패")
-            return vcp_analysis, cup_handle_analysis, GPTRecommendation.HOLD, 0.0, "분석 실패", 0.0
+                return vcp_analysis, cup_handle_analysis, recommendation, confidence, reasoning, estimated_cost
+
+            except Exception as e:
+                last_exception = e
+                logger.warning(f"⚠️ {ticker} API 시도 {attempt + 1} 실패: {e}")
+
+                if attempt == max_retries - 1:
+                    # 모든 시도 실패
+                    logger.error(f"❌ {ticker} 모든 재시도 실패: {last_exception}")
+
+                    # 기본값 반환
+                    vcp_analysis = VCPAnalysis(False, 0.0, 0, 0.0, "API 호출 실패")
+                    cup_handle_analysis = CupHandleAnalysis(False, 0.0, 0.0, 0, "API 호출 실패")
+                    return vcp_analysis, cup_handle_analysis, GPTRecommendation.HOLD, 0.0, "분석 실패", 0.0
+                else:
+                    # 다음 시도를 위해 잠시 대기
+                    import time
+                    time.sleep(1)
+                    continue
+
+        # 이 부분에 도달하면 안 됨 (모든 경로에서 return이 있어야 함)
+        logger.error(f"❌ {ticker} 예상치 못한 코드 경로")
+        vcp_analysis = VCPAnalysis(False, 0.0, 0, 0.0, "예상치 못한 오류")
+        cup_handle_analysis = CupHandleAnalysis(False, 0.0, 0.0, 0, "예상치 못한 오류")
+        return vcp_analysis, cup_handle_analysis, GPTRecommendation.HOLD, 0.0, "예상치 못한 오류", 0.0
 
     def _calculate_enhanced_score(self, technical_result: Dict, gpt_result: GPTAnalysisResult) -> float:
         """기술적 분석 + GPT 분석 종합 점수"""
@@ -711,17 +733,17 @@ Analyze these two specific chart patterns:
             cursor.execute("""
                 INSERT OR REPLACE INTO gpt_analysis (
                     ticker, analysis_date,
-                    vcp_detected, vcp_confidence, vcp_stage, vcp_volatility_ratio,
-                    cup_handle_detected, cup_handle_confidence, cup_depth_ratio, handle_duration_days,
+                    vcp_detected, vcp_confidence, vcp_stage, vcp_volatility_ratio, vcp_reasoning,
+                    cup_handle_detected, cup_handle_confidence, cup_depth_ratio, handle_duration_days, cup_handle_reasoning,
                     gpt_recommendation, gpt_confidence, gpt_reasoning,
                     api_cost_usd, processing_time_ms, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
             """, (
                 result.ticker, result.analysis_date,
                 result.vcp_analysis.detected, result.vcp_analysis.confidence,
-                result.vcp_analysis.stage, result.vcp_analysis.volatility_ratio,
+                result.vcp_analysis.stage, result.vcp_analysis.volatility_ratio, result.vcp_analysis.reasoning,
                 result.cup_handle_analysis.detected, result.cup_handle_analysis.confidence,
-                result.cup_handle_analysis.cup_depth_ratio, result.cup_handle_analysis.handle_duration_days,
+                result.cup_handle_analysis.cup_depth_ratio, result.cup_handle_analysis.handle_duration_days, result.cup_handle_analysis.reasoning,
                 result.recommendation.value, result.confidence, result.reasoning,
                 result.api_cost_usd, result.processing_time_ms
             ))

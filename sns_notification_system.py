@@ -519,6 +519,26 @@ class MakenaideSNSNotifier:
             )
             return self.send_notification(notification)
 
+    def notify_direct_purchase_detected(self, tickers: List[str], execution_id: str):
+        """직접 매수 종목 감지 알림"""
+        ticker_count = len(tickers)
+        ticker_list = ', '.join(tickers)
+
+        notification = NotificationMessage(
+            level=NotificationLevel.WARNING,
+            category=NotificationCategory.PORTFOLIO,
+            title=f"직접 매수 종목 {ticker_count}개 감지",
+            message=f"시스템 외부에서 직접 매수한 종목이 감지되어 자동으로 포트폴리오에 등록되었습니다.\n\n감지된 종목: {ticker_list}\n\n이제 해당 종목들도 자동 포트폴리오 관리 대상에 포함됩니다.",
+            timestamp=datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            execution_id=execution_id,
+            metadata={
+                'detected_tickers': tickers,
+                'ticker_count': ticker_count,
+                'detection_time': datetime.now().isoformat()
+            }
+        )
+        return self.send_notification(notification)
+
     def notify_pipeline_complete(self, execution_summary: Dict, execution_id: str):
         """파이프라인 완료 알림"""
         success = execution_summary.get('success', False)
@@ -637,7 +657,7 @@ class MakenaideSNSNotifier:
             title = f"발굴 종목 리스트 (기술적: {total_technical}개, GPT: {total_gpt}개)"
 
             notification = NotificationMessage(
-                level=NotificationLevel.SUCCESS,
+                level=NotificationLevel.CRITICAL,  # 발굴 종목은 중요한 거래 기회이므로 조용한 시간대에도 알림
                 category=NotificationCategory.TRADING,
                 title=title,
                 message="\n".join(message_parts),

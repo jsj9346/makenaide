@@ -27,6 +27,7 @@ import logging
 import sqlite3
 import time
 import json
+import struct
 import pyupbit
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -38,14 +39,16 @@ from utils import setup_restricted_logger, load_blacklist
 from db_manager_sqlite import get_db_connection_context
 from scanner import update_tickers
 from data_collector import SimpleDataCollector
-from integrated_scoring_system import IntegratedScoringSystem
+from integrated_scoring_system import IntegratedScoringSystem  # Legacy system (kept for compatibility)
+from technical_filter import TechnicalFilter, FilterMode, UnifiedFilterResult  # New unified system
 from gpt_analyzer import GPTPatternAnalyzer
 from kelly_calculator import KellyCalculator, RiskLevel
 from market_sentiment import IntegratedMarketSentimentAnalyzer, MarketSentiment
 from real_time_market_sentiment import RealTimeMarketSentiment
 # from trade_executor import buy_asset, sell_asset  # 삭제된 레거시 모듈
 # from portfolio_manager import PortfolioManager  # trading_engine으로 통합됨
-from trading_engine import LocalTradingEngine, TradingConfig, OrderStatus, TradeResult
+from trading_engine import LocalTradingEngine, TradingConfig
+from trade_status import TradeStatus, TradeResult
 
 # 환경 변수 로드
 load_dotenv()
@@ -53,28 +56,44 @@ load_dotenv()
 # 로거 설정 (모든 import 전에 먼저 설정)
 logger = setup_restricted_logger('makenaide_orchestrator')
 
-# SNS 알림 시스템 import (Phase 1-3)
-try:
-    from sns_notification_system import (
-        MakenaideSNSNotifier,
-        notify_discovered_stocks,
-        notify_kelly_position_sizing,
-        notify_market_analysis_summary,
-        notify_pipeline_failure,
-        notify_detailed_failure,
-        send_secure_notification,
-        get_security_analytics,
-        FailureType,
-        FailureSubType,
-        NotificationMessage,
-        NotificationLevel,
-        NotificationCategory
-    )
-    SNS_AVAILABLE = True
-    logger.info("✅ SNS 알림 시스템 로드 완료 (Phase 1-3 기능 포함)")
-except ImportError as e:
-    logger.warning(f"⚠️ SNS 알림 시스템을 사용할 수 없습니다: {e}")
+# SNS 알림 시스템 설정 및 import (Phase 1-3)
+# 세분화된 환경변수로 SNS 알림 제어
+ENABLE_ANALYSIS_SNS = os.getenv('ENABLE_ANALYSIS_SNS', 'true').lower() == 'true'  # 분석 결과 SNS (기본값: 활성화)
+ENABLE_TRADING_SNS = os.getenv('ENABLE_TRADING_SNS', 'false').lower() == 'true'   # 거래 실행 SNS (기본값: 비활성화)
+
+# 하나라도 활성화되어 있으면 SNS 모듈 로드
+if ENABLE_ANALYSIS_SNS or ENABLE_TRADING_SNS:
+    try:
+        from sns_notification_system import (
+            MakenaideSNSNotifier,
+            notify_discovered_stocks,
+            notify_kelly_position_sizing,
+            notify_market_analysis_summary,
+            notify_pipeline_failure,
+            notify_detailed_failure,
+            send_secure_notification,
+            get_security_analytics,
+            FailureType,
+            FailureSubType,
+            NotificationMessage,
+            NotificationLevel,
+            NotificationCategory
+        )
+        SNS_AVAILABLE = True
+        logger.info(f"✅ SNS 알림 시스템 로드 완료 (분석: {ENABLE_ANALYSIS_SNS}, 거래: {ENABLE_TRADING_SNS})")
+    except ImportError as e:
+        logger.warning(f"⚠️ SNS 알림 시스템을 사용할 수 없습니다: {e}")
+        SNS_AVAILABLE = False
+else:
+    logger.info("📴 SNS 알림 완전 비활성화 설정")
     SNS_AVAILABLE = False
+    # SNS 관련 클래스들을 None으로 설정하여 에러 방지
+    MakenaideSNSNotifier = None
+    FailureType = None
+    FailureSubType = None
+    NotificationLevel = None
+    NotificationMessage = None
+    NotificationCategory = None
 
 # Phase 4 패턴 분석 및 예방 시스템 import
 try:
@@ -92,11 +111,13 @@ class OrchestratorConfig:
     """오케스트레이터 설정"""
     enable_gpt_analysis: bool = True  # GPT 분석 활성화 여부
     max_gpt_budget_daily: float = 5.0  # 일일 GPT 비용 한도 (USD)
-    min_quality_score: float = 12.0  # 최소 품질 점수
+    min_quality_score: float = 8.0  # 최소 품질 점수 (실제 데이터 분포 기반 조정)
     risk_level: RiskLevel = RiskLevel.MODERATE  # 리스크 레벨
     dry_run: bool = False  # 실제 거래 실행 여부
     max_positions: int = 8  # 최대 동시 보유 종목 수
     portfolio_allocation_limit: float = 0.25  # 전체 포트폴리오 대비 최대 할당 비율
+    auto_sync_enabled: bool = True  # 포트폴리오 자동 동기화 활성화 여부
+    sync_policy: str = 'aggressive'  # 포트폴리오 동기화 정책 (기본: 전체 동기화)
 
 class MakenaideLocalOrchestrator:
     """Makenaide 로컬 통합 오케스트레이터"""
@@ -187,9 +208,13 @@ class MakenaideLocalOrchestrator:
             self.data_collector = SimpleDataCollector(db_path=self.db_path)
             logger.info("✅ 데이터 수집기 초기화 완료")
 
-            # 기술적 필터 초기화 (새로운 점수제 시스템)
-            self.technical_filter = IntegratedScoringSystem(db_path=self.db_path)
-            logger.info("✅ 기술적 필터 초기화 완료 (LayeredScoringEngine 점수제 시스템)")
+            # 기술적 필터 초기화 (통합된 필터링 시스템)
+            self.technical_filter = TechnicalFilter(db_path=self.db_path)
+            logger.info("✅ 통합 기술적 필터 초기화 완료 (4-Layer Architecture with FilterMode)")
+
+            # 레거시 시스템 백업 (호환성 유지)
+            self.legacy_scoring_system = IntegratedScoringSystem(db_path=self.db_path)
+            logger.info("✅ 레거시 점수 시스템 백업 초기화 완료")
 
             # GPT 분석기 초기화 (선택적)
             if self.config.enable_gpt_analysis:
@@ -215,14 +240,33 @@ class MakenaideLocalOrchestrator:
             self.trading_engine = LocalTradingEngine(trading_config, dry_run=self.config.dry_run)
             logger.info("✅ Trading Engine 초기화 완료 (포트폴리오 관리 기능 포함)")
 
+            # 포트폴리오 동기화 검증 및 자동 동기화
+            sync_success, sync_details = self.trading_engine.validate_and_sync_portfolio(
+                auto_sync=self.config.auto_sync_enabled,
+                sync_policy=self.config.sync_policy
+            )
+
+            if not sync_success and not self.config.auto_sync_enabled:
+                logger.warning("⚠️ 포트폴리오 동기화 불일치가 감지되었지만 자동 동기화가 비활성화되어 있습니다.")
+                logger.warning("수동으로 portfolio_sync_tool.py를 실행하여 동기화를 진행하시기 바랍니다.")
+            elif sync_success and sync_details.get('status') == 'synced':
+                logger.info("✅ 포트폴리오 동기화 상태 확인 완료")
+            elif sync_success and 'synced_count' in sync_details:
+                synced_count = sync_details['synced_count']
+                total_value = sync_details.get('total_value', 0)
+                logger.info(f"🔄 포트폴리오 자동 동기화 완료: {synced_count}개 종목, {total_value:,.0f} KRW")
+
             # SNS 알림 시스템 초기화
             if SNS_AVAILABLE:
                 try:
                     self.sns_notifier = MakenaideSNSNotifier()
-                    logger.info("✅ SNS 알림 시스템 초기화 완료")
+                    logger.info(f"✅ SNS 알림 시스템 초기화 완료 (분석: {ENABLE_ANALYSIS_SNS}, 거래: {ENABLE_TRADING_SNS})")
                 except Exception as e:
                     logger.warning(f"⚠️ SNS 알림 시스템 초기화 실패: {e}")
                     self.sns_notifier = None
+            else:
+                logger.info("📴 SNS 알림 시스템 비활성화")
+                self.sns_notifier = None
 
             # Phase 4 패턴 분석 및 예방 시스템 초기화
             try:
@@ -372,11 +416,22 @@ class MakenaideLocalOrchestrator:
                 return False
 
             # collect_all_data는 collection_stats를 반환하므로 성공 여부는 통계로 판단
+            # 실제 실패만 에러로 처리 (skip은 정상 상황)
+            failed_collections = results.get('summary', {}).get('failed', 0)
             successful_collections = results.get('summary', {}).get('success', 0)
-            if successful_collections == 0:
-                logger.error("❌ 데이터 수집 실패: 성공한 수집이 없음")
-                self.execution_stats['errors'].append("Phase 1 실패: 성공한 데이터 수집 없음")
+            skipped_collections = results.get('summary', {}).get('skipped', 0)
+
+            # 실제 실패가 있을 때만 에러 처리
+            if failed_collections > 0:
+                logger.error(f"❌ 데이터 수집 중 {failed_collections}개 실패")
+                self.execution_stats['errors'].append(f"Phase 1 실패: {failed_collections}개 데이터 수집 실패")
                 return False
+
+            # 성공 또는 스킵된 경우 모두 정상 처리
+            if successful_collections > 0:
+                logger.info(f"✅ 새로운 데이터 수집 완료: {successful_collections}개")
+            else:
+                logger.info(f"✅ 모든 데이터가 최신 상태: {skipped_collections}개 스킵")
 
             # 수집 결과 통계 로깅
             summary = results.get('summary', {})
@@ -417,61 +472,137 @@ class MakenaideLocalOrchestrator:
             return False
 
     async def run_phase_2_technical_filter(self) -> List[str]:
-        """Phase 2: LayeredScoringEngine 점수제 기술적 필터링"""
+        """Phase 2: 통합 기술적 필터링 시스템 (4-Layer Architecture)"""
         try:
-            logger.info("🎯 Phase 2: LayeredScoringEngine 점수제 분석 시작")
+            logger.info("🎯 Phase 2: 통합 기술적 필터링 시스템 분석 시작")
+            phase_start_time = time.time()  # 성능 모니터링을 위한 시작 시간
 
-            # 점수제 필터 실행 (새로운 시스템)
-            analysis_results = await self.technical_filter.run_full_analysis()
-
-            if not analysis_results:
-                logger.info("📭 분석 가능한 종목이 없습니다")
+            # 활성 종목 조회 (DB에서 스캔된 종목 가져오기)
+            try:
+                with get_db_connection_context() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT DISTINCT ticker
+                        FROM ohlcv_data
+                        WHERE date >= date('now', '-7 days')
+                        ORDER BY ticker
+                    """)
+                    active_tickers = [row[0] for row in cursor.fetchall()]
+            except Exception as e:
+                logger.error(f"❌ 활성 종목 조회 실패: {e}")
                 return []
+
+            if not active_tickers:
+                logger.info("📭 분석 가능한 종목이 없습니다 (DB에 최근 데이터 없음)")
+                return []
+
+            logger.info(f"📊 분석 대상 종목: {len(active_tickers)}개")
+
+            # 통합 필터 실행 (AUTO 모드로 지능형 분석)
+            analysis_results = []
+            technical_candidates_data = []  # SNS 알림용 상세 데이터
+
+            for ticker in active_tickers:
+                try:
+                    # TechnicalFilter AUTO 모드로 분석
+                    result = self.technical_filter.analyze_ticker(ticker, FilterMode.AUTO)
+
+                    if result:
+                        analysis_results.append(result)
+
+                        # 매수 권고 종목만 후보로 선정
+                        if result.final_recommendation.value in ['STRONG_BUY', 'BUY', 'BUY_LITE']:
+                            technical_candidates_data.append({
+                                'ticker': ticker,
+                                'recommendation': result.final_recommendation.value,
+                                'confidence': result.final_confidence,
+                                'quality_score': result.final_quality_score,
+                                'filter_mode': result.filter_mode.value,
+                                'processing_time': result.processing_time_ms
+                            })
+
+                except Exception as e:
+                    logger.warning(f"⚠️ {ticker} 분석 실패: {e}")
+                    continue
 
             # 품질 점수 임계값 필터링
             filtered_candidates = []
-            technical_candidates_data = []  # SNS 알림용 상세 데이터
 
-            for result in analysis_results:
-                ticker = result.ticker
-                total_score = result.total_score
-                quality_gates_passed = result.quality_gates_passed
-                recommendation = result.recommendation
+            for candidate in technical_candidates_data:
+                ticker = candidate['ticker']
+                recommendation = candidate['recommendation']
+                confidence = candidate['confidence']
+                quality_score = candidate['quality_score']
+                filter_mode = candidate['filter_mode']
 
-                # SNS 알림용 데이터 저장 (모든 후보)
-                technical_candidates_data.append({
-                    'ticker': ticker,
-                    'quality_score': total_score,  # 총점을 품질 점수로 사용
-                    'gates_passed': '통과' if quality_gates_passed else '미통과',
-                    'recommendation': recommendation,
-                    'pattern_type': f'Stage {result.stage}',
-                    'price': 0,  # 필요시 추가 구현
-                    'volume_ratio': 0,  # 필요시 추가 구현
-                    'macro_score': result.macro_score,
-                    'structural_score': result.structural_score,
-                    'micro_score': result.micro_score,
-                    'confidence': result.confidence
-                })
-
-                # 매수 추천이고 Quality Gate를 통과한 종목만 필터링
-                if recommendation == "BUY" and quality_gates_passed and total_score >= self.config.min_quality_score:
+                # 고품질 후보 선정 (높은 신뢰도와 품질 점수)
+                if confidence >= 0.7 and quality_score >= self.config.min_quality_score:
                     filtered_candidates.append(ticker)
-                    logger.info(f"✅ {ticker}: 총점 {total_score:.1f}, Quality Gate 통과, 권고: {recommendation}")
-                    logger.info(f"   └ Macro: {result.macro_score:.1f}, Structural: {result.structural_score:.1f}, Micro: {result.micro_score:.1f}")
+                    logger.info(f"✅ {ticker}: {recommendation} (신뢰도: {confidence:.3f}, 품질: {quality_score:.1f}, 모드: {filter_mode})")
                 else:
-                    if total_score < self.config.min_quality_score:
-                        logger.info(f"⏭️ {ticker}: 총점 {total_score:.1f} (임계값 {self.config.min_quality_score} 미달)")
-                    elif not quality_gates_passed:
-                        logger.info(f"⏭️ {ticker}: Quality Gate 미통과 (총점 {total_score:.1f})")
+                    if confidence < 0.7:
+                        logger.info(f"⏭️ {ticker}: 낮은 신뢰도 {confidence:.3f} (임계값 0.7)")
+                    elif quality_score < self.config.min_quality_score:
+                        logger.info(f"⏭️ {ticker}: 낮은 품질 점수 {quality_score:.1f} (임계값 {self.config.min_quality_score})")
                     else:
-                        logger.info(f"⏭️ {ticker}: {recommendation} 권고 (총점 {total_score:.1f})")
+                        logger.info(f"⏭️ {ticker}: {recommendation} (신뢰도: {confidence:.3f})")
 
             # 기술적 분석 결과를 통계에 저장
             self.execution_stats['technical_candidates'] = technical_candidates_data
-            self.execution_stats['phases_completed'].append('Phase 2: LayeredScoringEngine Filter')
+            self.execution_stats['phases_completed'].append('Phase 2: Unified Technical Filter')
             self.execution_stats['trading_candidates'] = len(filtered_candidates)
 
+            # 분석 통계 정보 로깅
+            stats = self.technical_filter.get_analysis_stats()
+            logger.info(f"📊 분석 통계: {stats}")
+
+            # 시장 감정 캐시 성능 리포트
+            if hasattr(self.technical_filter, 'get_sentiment_cache_stats'):
+                cache_stats = self.technical_filter.get_sentiment_cache_stats()
+                logger.info("🎯 시장 감정 캐시 성능 리포트:")
+                logger.info(f"   💡 캐시 효율성: {cache_stats.get('cache_efficiency', 0):.1f}%")
+                logger.info(f"   📋 총 요청: {cache_stats.get('total_requests', 0)}회")
+                logger.info(f"   🎯 캐시 히트: {cache_stats.get('cache_hits', 0)}회")
+                logger.info(f"   🌐 API 호출: {cache_stats.get('api_calls', 0)}회")
+
+                # 성능 향상 효과 계산
+                total_requests = cache_stats.get('total_requests', 0)
+                api_calls = cache_stats.get('api_calls', 0)
+                if total_requests > 0 and api_calls > 0:
+                    time_saved_estimate = (total_requests - api_calls) * 0.65  # 평균 0.65초/호출
+                    logger.info(f"   ⚡ 예상 시간 절약: {time_saved_estimate:.1f}초")
+
+            # 성능 회귀 방지 모니터링
+            if hasattr(self.technical_filter, 'record_performance_metrics'):
+                try:
+                    session_id = f"phase2_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                    processing_time_ms = (time.time() - phase_start_time) * 1000
+
+                    # 성능 메트릭 기록
+                    self.technical_filter.record_performance_metrics(
+                        session_id=session_id,
+                        total_tickers=len(technical_candidates_data),
+                        processing_time_ms=processing_time_ms
+                    )
+
+                    # 성능 회귀 감지
+                    regression_result = self.technical_filter.check_performance_regression(session_id)
+
+                    if regression_result.get('regression_detected', False):
+                        logger.warning(f"🚨 성능 회귀 감지 알림:")
+                        logger.warning(f"   📉 {regression_result.get('message', '알 수 없는 성능 저하')}")
+
+                        # 운영팀 알림이 필요한 경우 여기에 SNS/이메일 등 추가 가능
+                        self.execution_stats['warnings'].append(f"성능 회귀 감지: {regression_result.get('message')}")
+                    else:
+                        logger.info(f"🎯 성능 모니터링: {regression_result.get('message', '정상')}")
+
+                except Exception as e:
+                    logger.error(f"❌ 성능 모니터링 실패: {e}")
+
             logger.info(f"✅ Phase 2 완료: {len(filtered_candidates)}개 거래 후보 발견 (총 {len(technical_candidates_data)}개 종목 분석)")
+            logger.info(f"🎯 필터링 모드 사용 분포: {[candidate['filter_mode'] for candidate in technical_candidates_data]}")
+
             return filtered_candidates
 
         except Exception as e:
@@ -554,20 +685,20 @@ class MakenaideLocalOrchestrator:
                         # SNS 알림용 데이터 저장 (모든 GPT 분석 결과)
                         gpt_candidates_data.append({
                             'ticker': ticker,
-                            'recommendation': result.get('recommendation', 'Unknown'),
-                            'confidence': result.get('confidence', 0.0),
-                            'pattern': result.get('pattern', ''),
-                            'reasoning': result.get('reasoning', ''),
-                            'risk_level': result.get('risk_level', 'Unknown'),
-                            'cost': 0.05  # 추정 비용
+                            'recommendation': result.recommendation.value,
+                            'confidence': result.confidence,
+                            'pattern': 'VCP' if result.vcp_analysis.detected else 'Cup&Handle' if result.cup_handle_analysis.detected else 'None',
+                            'reasoning': result.reasoning,
+                            'risk_level': 'moderate',  # GPT 분석은 기본 moderate
+                            'cost': result.api_cost_usd
                         })
 
-                        if result.get('recommendation') == 'BUY':
-                            confidence = result.get('confidence', 0.0)
+                        if result.recommendation.value in ['BUY', 'STRONG_BUY']:
+                            confidence = result.confidence * 100  # 0.8 → 80%
                             logger.info(f"✅ {ticker}: GPT 매수 추천 (신뢰도: {confidence:.1f}%)")
                             gpt_approved_candidates.append(ticker)
                         else:
-                            recommendation = result.get('recommendation', 'Unknown')
+                            recommendation = result.recommendation.value
                             logger.info(f"⏭️ {ticker}: GPT 분석 결과 - {recommendation}")
                     else:
                         # 분석 실패한 경우도 기록
@@ -582,9 +713,11 @@ class MakenaideLocalOrchestrator:
                         })
                         logger.info(f"❌ {ticker}: GPT 분석 실패")
 
-                    # 비용 추정 (GPT-5-mini 기준)
-                    estimated_cost = 0.05  # 대략적인 비용 추정
-                    total_cost += estimated_cost
+                    # 실제 비용 누적
+                    if result:
+                        total_cost += result.api_cost_usd
+                    else:
+                        total_cost += 0.0  # 실패한 경우 비용 없음
 
                     time.sleep(1)  # API 레이트 리미트 고려
 
@@ -627,12 +760,22 @@ class MakenaideLocalOrchestrator:
 
             for ticker in candidates:
                 try:
-                    # 패턴 분석 및 포지션 사이징
-                    position_size = self.kelly_calculator.calculate_position_size(ticker)
+                    # 데이터베이스에서 기술적 분석 결과 조회
+                    technical_result = self._get_technical_analysis_for_kelly(ticker)
 
-                    if position_size > 0:
-                        position_sizes[ticker] = position_size
-                        logger.info(f"📊 {ticker}: Kelly 포지션 {position_size:.1f}%")
+                    if not technical_result:
+                        logger.warning(f"⚠️ {ticker}: 기술적 분석 데이터 없음")
+                        continue
+
+                    # GPT 분석 결과 조회 (있을 경우)
+                    gpt_result = self._get_gpt_analysis_for_kelly(ticker)
+
+                    # Kelly 계산 실행
+                    kelly_result = self.kelly_calculator.calculate_position_size(technical_result, gpt_result)
+
+                    if kelly_result and kelly_result.final_position_pct > 0:
+                        position_sizes[ticker] = kelly_result.final_position_pct
+                        logger.info(f"📊 {ticker}: Kelly 포지션 {kelly_result.final_position_pct:.1f}%")
                     else:
                         logger.info(f"⏭️ {ticker}: Kelly 포지션 사이징 조건 미충족")
 
@@ -706,7 +849,7 @@ class MakenaideLocalOrchestrator:
                 return len(position_sizes)
 
             trades_executed = 0
-            total_balance = self.trading_engine.get_total_balance()
+            total_balance = self.trading_engine.get_total_balance_krw()  # 🔧 메서드 이름 수정: get_total_balance → get_total_balance_krw
 
             for ticker, base_position in position_sizes.items():
                 try:
@@ -719,21 +862,24 @@ class MakenaideLocalOrchestrator:
                     # 실제 투자 금액 계산
                     investment_amount = total_balance * (adjusted_position / 100)
 
-                    # 최소 주문 금액 확인
+                    # 최소 주문 금액 확인 및 조정
                     if investment_amount < 10000:  # 1만원 최소
-                        logger.info(f"⏭️ {ticker}: 투자 금액 부족 ({investment_amount:,.0f}원)")
-                        continue
+                        original_amount = investment_amount
+                        investment_amount = 10000  # 최소 거래단위로 자동 조정
+                        logger.info(f"🔄 {ticker}: 포지션 사이징 자동 조정 ({original_amount:,.0f}원 → {investment_amount:,.0f}원)")
+
 
                     logger.info(f"💰 {ticker}: {adjusted_position:.1f}% ({investment_amount:,.0f}원) 매수 시도")
 
                     # 매수 실행
-                    result = self.trading_engine.execute_buy_order(ticker, investment_amount)
+                    result = self.trading_engine.execute_buy_order(ticker, investment_amount, is_pyramid=False)
 
-                    if result and result.status == OrderStatus.SUCCESS:
+                    if result and result.status in [TradeStatus.FULL_FILLED, TradeStatus.PARTIAL_FILLED]:
                         trades_executed += 1
-                        logger.info(f"✅ {ticker}: 매수 성공")
+                        logger.info(f"✅ {ticker}: 매수 성공 ({result.status.korean_name})")
                     else:
-                        logger.warning(f"❌ {ticker}: 매수 실패")
+                        status_msg = result.status.korean_name if result else "알 수 없는 오류"
+                        logger.warning(f"❌ {ticker}: 매수 실패 ({status_msg})")
 
                     time.sleep(0.5)  # API 레이트 리미트 고려
 
@@ -761,6 +907,27 @@ class MakenaideLocalOrchestrator:
                 trading_config = TradingConfig(take_profit_percent=0)  # 기술적 신호에만 의존
                 self.trading_engine = LocalTradingEngine(trading_config, dry_run=self.config.dry_run)
                 logger.info("✅ Trading Engine 재초기화 완료")
+
+            # 🔍 직접 매수 종목 감지 및 자동 초기화 (포트폴리오 관리 전 실행)
+            logger.info("🔍 직접 매수 종목 감지 및 초기화 시작")
+            direct_purchases = self.trading_engine.detect_and_initialize_direct_purchases()
+
+            if direct_purchases:
+                logger.warning(f"⚠️ 직접 매수 종목 {len(direct_purchases)}개 감지 및 초기화: {', '.join(direct_purchases)}")
+                # SNS 알림 발송 (거래 관련 알림)
+                if self.sns_notifier and ENABLE_TRADING_SNS:
+                    try:
+                        self.sns_notifier.notify_direct_purchase_detected(
+                            tickers=direct_purchases,
+                            execution_id=self.execution_id
+                        )
+                        logger.info("📱 직접 매수 종목 감지 SNS 알림 발송 완료")
+                    except Exception as e:
+                        logger.error(f"❌ 직접 매수 종목 SNS 알림 발송 실패: {e}")
+                else:
+                    logger.debug("📴 거래 SNS 비활성화로 직접 매수 종목 감지 알림 스킵")
+            else:
+                logger.info("✅ 직접 매수 종목 감지 완료 - 모든 포지션이 시스템을 통해 관리됨")
 
             # LocalTradingEngine의 향상된 포트폴리오 관리 시스템 실행 (피라미딩 + 트레일링 스탑)
             portfolio_result = self.trading_engine.process_enhanced_portfolio_management()
@@ -1166,58 +1333,64 @@ class MakenaideLocalOrchestrator:
                 return False
 
     def _get_latest_technical_analysis(self) -> List[Dict]:
-        """실제 DB에서 최신 기술적 분석 결과 조회 (시장 기회 실시간 파악)"""
+        """실제 DB에서 최신 기술적 분석 결과 조회 (TechnicalFilter 시스템 연동)"""
+        import sqlite3
         try:
-            with get_db_connection_context() as conn:
-                # 🆕 오늘 날짜의 최신 기술적 분석 결과만 조회 (과거 데이터 반복 발송 방지)
-                # GPT Analysis와 동일한 날짜 필터링 로직 적용
+            # 직접 SQLite 연결 사용 (연결 풀 문제 회피)
+            conn = sqlite3.connect(self.db_path)
 
-                # 통합 technical_analysis 테이블에서 LayeredScoring 데이터 조회
-                query = """
-                SELECT ticker, quality_score, quality_gates_passed, recommendation,
-                       current_stage as stage, stage_confidence as confidence,
-                       macro_score, structural_score
-                FROM technical_analysis
+            # 🆕 새로운 unified_technical_analysis 테이블에서 데이터 조회
+            # TechnicalFilter 시스템과 완전 호환
+
+            query = """
+                SELECT ticker, quality_score, gates_passed, final_recommendation,
+                       current_stage, final_confidence, filter_mode,
+                       breakout_strength, technical_bonus
+                FROM unified_technical_analysis
                 WHERE quality_score >= ?
-                  AND recommendation IN ('STRONG_BUY', 'BUY', 'WATCH')
-                  AND DATE(updated_at) = DATE('now', '+9 hours')
-                  AND total_score IS NOT NULL
-                ORDER BY quality_score DESC, stage_confidence DESC
+                  AND final_recommendation IN ('STRONG_BUY', 'BUY', 'BUY_LITE')
+                  AND DATE(analysis_date) = DATE('now', '+9 hours')
+                  AND final_confidence IS NOT NULL
+                ORDER BY quality_score DESC, final_confidence DESC
                 LIMIT 15
                 """
 
-                cursor = conn.execute(query, (self.config.min_quality_score,))
-                results = cursor.fetchall()
+            cursor = conn.execute(query, (self.config.min_quality_score,))
+            results = cursor.fetchall()
 
-                candidates = []
-                for row in results:
-                    ticker = row[0]
+            candidates = []
+            for row in results:
+                ticker = row[0]
 
-                    # 🔥 실시간 가격 조회 (시장 기회 즉시 파악)
-                    try:
-                        current_price = pyupbit.get_current_price(ticker)
-                        if current_price is None:
-                            current_price = 0
-                    except:
+                # 🔥 실시간 가격 조회 (시장 기회 즉시 파악)
+                try:
+                    current_price = pyupbit.get_current_price(ticker)
+                    if current_price is None:
                         current_price = 0
+                except:
+                    current_price = 0
 
-                    candidates.append({
-                        'ticker': ticker,
-                        'quality_score': row[1],
-                        'gates_passed': row[2],  # quality_gates_passed (Boolean)
-                        'recommendation': row[3],
-                        'pattern_type': f"Stage {row[4]}" if row[4] else 'Stage 2',  # stage
-                        'price': current_price,  # 🔥 실시간 가격 정보
-                        'confidence': row[5],  # confidence
-                        'macro_score': row[6],  # macro_score
-                        'structural_score': row[7]  # structural_score
-                    })
+                # 📊 종목 정보 구성 (새로운 TechnicalFilter 필드 사용) - 안전한 타입 변환 적용
+                candidates.append({
+                    'ticker': ticker,
+                    'quality_score': self._safe_convert_to_float(row[1], 0.0),
+                    'gates_passed': self._safe_convert_to_int(row[2], 0),  # 🔧 바이너리 데이터 안전 처리
+                    'recommendation': row[3] if row[3] else 'HOLD',  # final_recommendation
+                    'pattern_type': f"Stage {row[4]}" if row[4] else 'Stage 2',
+                    'price': current_price,  # 🔥 실시간 가격 정보
+                    'confidence': self._safe_convert_to_float(row[5], 0.0),  # final_confidence
+                    'filter_mode': row[6] if row[6] else 'integrated',  # 새로운 필드: 분석 모드
+                    'breakout_strength': self._safe_convert_to_float(row[7], 0.0),  # 새로운 필드
+                    'technical_bonus': self._safe_convert_to_float(row[8], 0.0),  # 새로운 필드
+                    'analysis_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                })
 
-                logger.info(f"🎯 실제 DB에서 {len(candidates)}개 기술적 분석 종목 조회")
-                return candidates
+            conn.close()
+            logger.info(f"✅ TechnicalFilter 기반 기술적 분석 후보 {len(candidates)}개 조회 완료")
+            return candidates
 
         except Exception as e:
-            logger.error(f"❌ 기술적 분석 DB 조회 실패: {e}")
+            logger.error(f"❌ TechnicalFilter 기반 기술적 분석 결과 조회 실패: {e}")
             return []
 
     def _get_latest_gpt_analysis(self) -> List[Dict]:
@@ -1314,31 +1487,37 @@ class MakenaideLocalOrchestrator:
 
             # 📊 데이터가 있는 경우에만 알림 전송 (빈 알림 방지)
             if technical_candidates or gpt_candidates:
-                # 발굴 종목 알림 전송
-                success = self.sns_notifier.notify_discovered_stocks(
-                    technical_candidates=technical_candidates,
-                    gpt_candidates=gpt_candidates,
-                    execution_id=execution_id
-                )
+                # 발굴 종목 알림 전송 (분석 관련 알림)
+                if self.sns_notifier and ENABLE_ANALYSIS_SNS:
+                    success = self.sns_notifier.notify_discovered_stocks(
+                        technical_candidates=technical_candidates,
+                        gpt_candidates=gpt_candidates,
+                        execution_id=execution_id
+                    )
 
-                if success:
-                    logger.info(f"✅ 발굴 종목 리스트 SNS 알림 전송 완료 (기술적: {len(technical_candidates)}, GPT: {len(gpt_candidates)})")
+                    if success:
+                        logger.info(f"✅ 발굴 종목 리스트 SNS 알림 전송 완료 (기술적: {len(technical_candidates)}, GPT: {len(gpt_candidates)})")
+                    else:
+                        logger.warning("⚠️ 발굴 종목 리스트 SNS 알림 전송 실패")
                 else:
-                    logger.warning("⚠️ 발굴 종목 리스트 SNS 알림 전송 실패")
+                    logger.debug("📴 분석 SNS 비활성화로 발굴 종목 알림 스킵")
             else:
                 logger.info("📭 발굴된 종목이 없어 SNS 알림을 생략합니다")
 
-            # 💰 Kelly 포지션 사이징 결과 알림 (별도)
+            # 💰 Kelly 포지션 사이징 결과 알림 (별도) - 분석 관련 알림
             if kelly_results:
-                kelly_success = self.sns_notifier.notify_kelly_position_sizing(
-                    kelly_results=kelly_results,
-                    execution_id=execution_id
-                )
+                if self.sns_notifier and ENABLE_ANALYSIS_SNS:
+                    kelly_success = self.sns_notifier.notify_kelly_position_sizing(
+                        position_sizes=kelly_results,  # 🔧 매개변수 이름 수정: kelly_results → position_sizes
+                        execution_id=execution_id
+                    )
 
-                if kelly_success:
-                    logger.info(f"✅ Kelly 포지션 사이징 SNS 알림 전송 완료 ({len(kelly_results)}개 종목)")
+                    if kelly_success:
+                        logger.info(f"✅ Kelly 포지션 사이징 SNS 알림 전송 완료 ({len(kelly_results)}개 종목)")
+                    else:
+                        logger.warning("⚠️ Kelly 포지션 사이징 SNS 알림 전송 실패")
                 else:
-                    logger.warning("⚠️ Kelly 포지션 사이징 SNS 알림 전송 실패")
+                    logger.debug("📴 분석 SNS 비활성화로 Kelly 포지션 사이징 알림 스킵")
 
             # 📊 시장 분석 종합 요약 알림 (실제 시장 데이터 포함)
             market_summary = {
@@ -1391,15 +1570,18 @@ class MakenaideLocalOrchestrator:
 
             if current_sentiment == 'BEAR':
                 logger.info("🚨 BEAR 시장 감지 - 시장 분석 요약 알림 발송")
-                summary_success = self.sns_notifier.notify_market_analysis_summary(
-                    market_data=market_summary,
-                    execution_id=execution_id
-                )
+                if self.sns_notifier and ENABLE_ANALYSIS_SNS:
+                    summary_success = self.sns_notifier.notify_market_analysis_summary(
+                        market_data=market_summary,
+                        execution_id=execution_id
+                    )
 
-                if summary_success:
-                    logger.info("✅ BEAR 시장 분석 요약 SNS 알림 전송 완료")
+                    if summary_success:
+                        logger.info("✅ BEAR 시장 분석 요약 SNS 알림 전송 완료")
+                    else:
+                        logger.warning("⚠️ BEAR 시장 분석 요약 SNS 알림 전송 실패")
                 else:
-                    logger.warning("⚠️ BEAR 시장 분석 요약 SNS 알림 전송 실패")
+                    logger.debug("📴 분석 SNS 비활성화로 BEAR 시장 분석 요약 알림 스킵")
             else:
                 logger.info(f"ℹ️ {current_sentiment} 시장 상황으로 시장 분석 요약 알림 생략 (BEAR 시장에서만 발송)")
 
@@ -1633,6 +1815,161 @@ class MakenaideLocalOrchestrator:
             self.generate_phase4_daily_report()
             return False
 
+    def _get_technical_analysis_for_kelly(self, ticker: str) -> Optional[Dict]:
+        """특정 종목의 기술적 분석 결과를 Kelly Calculator용으로 조회"""
+        try:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+
+                # 🔧 실제 테이블 구조에 맞게 조회 쿼리 수정
+                query = """
+                SELECT ticker, quality_score, total_gates_passed, recommendation,
+                       stage_confidence, breakout_strength, current_stage, volume_surge
+                FROM technical_analysis
+                WHERE ticker = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+
+                cursor.execute(query, (ticker,))
+                row = cursor.fetchone()
+
+                if not row:
+                    return None
+
+                # 🔧 Kelly Calculator가 기대하는 형태로 변환 - 실제 컬럼에서 매핑
+                technical_result = {
+                    'ticker': row[0],
+                    'quality_score': self._safe_convert_to_float(row[1], 10.0),
+                    'stage_2_entry': (self._safe_convert_to_int(row[6], 1) == 2),  # current_stage == 2이면 Stage 2 진입
+                    'volume_breakout': (self._safe_convert_to_float(row[7], 0.0) > 1.5),  # volume_surge > 1.5면 volume breakout
+                    'ma_trend_strength': self._safe_convert_to_float(row[4], 0.0),  # stage_confidence를 ma_trend_strength로 매핑
+                    'volatility_contraction': True,  # 기본값 True (VCP 패턴 가정)
+                    'volume_dry_up': (self._safe_convert_to_float(row[7], 0.0) < 0.8),  # volume_surge < 0.8이면 volume dry up
+                    'recommendation': row[3] if row[3] else 'HOLD',
+                    'confidence': self._safe_convert_to_float(row[4], 0.0),  # stage_confidence
+                    'breakout_strength': self._safe_convert_to_float(row[5], 0.0),
+                    'technical_bonus': max(0.0, self._safe_convert_to_float(row[1], 10.0) - 10.0),  # quality_score - 10을 bonus로 사용
+                }
+
+                return technical_result
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} 기술적 분석 조회 실패: {e}")
+            return None
+
+    def _get_gpt_analysis_for_kelly(self, ticker: str) -> Optional[Dict]:
+        """특정 종목의 GPT 분석 결과를 Kelly Calculator용으로 조회"""
+        try:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+
+                # 가장 최신 GPT 분석 결과 조회
+                today = datetime.now().strftime('%Y-%m-%d')
+                query = """
+                SELECT gpt_recommendation, gpt_confidence
+                FROM gpt_analysis
+                WHERE ticker = ? AND analysis_date = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+
+                cursor.execute(query, (ticker, today))
+                row = cursor.fetchone()
+
+                if not row:
+                    return None
+
+                # Kelly Calculator가 기대하는 형태로 변환 - 안전한 타입 변환 적용
+                gpt_result = {
+                    'recommendation': row[0],
+                    'confidence': self._safe_convert_to_float(row[1], 0.0)
+                }
+
+                return gpt_result
+
+        except Exception as e:
+            logger.warning(f"⚠️ {ticker} GPT 분석 조회 실패: {e}")
+            return None
+
+    def _safe_convert_to_int(self, value, default: int = 0) -> int:
+        """SQLite에서 조회된 값을 안전하게 정수로 변환"""
+        if value is None:
+            return default
+
+        # 이미 정수인 경우
+        if isinstance(value, int):
+            return value
+
+        # 문자열인 경우
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                logger.warning(f"⚠️ 문자열을 정수로 변환 실패: '{value}' → 기본값 {default} 사용")
+                return default
+
+        # 바이너리 데이터인 경우
+        if isinstance(value, bytes):
+            try:
+                if len(value) == 8:
+                    # 8바이트 바이너리를 64비트 리틀 엔디안 정수로 해석
+                    return struct.unpack('<Q', value)[0]
+                elif len(value) == 4:
+                    # 4바이트 바이너리를 32비트 리틀 엔디안 정수로 해석
+                    return struct.unpack('<I', value)[0]
+                elif len(value) == 1:
+                    # 1바이트 바이너리를 정수로 해석
+                    return struct.unpack('B', value)[0]
+                else:
+                    # 다른 길이의 바이너리는 첫 바이트만 사용
+                    return value[0] if len(value) > 0 else default
+            except (struct.error, IndexError) as e:
+                logger.warning(f"⚠️ 바이너리 데이터를 정수로 변환 실패: {value.hex()} → 기본값 {default} 사용 ({e})")
+                return default
+
+        # 부동소수점인 경우
+        if isinstance(value, float):
+            return int(value)
+
+        # 기타 타입인 경우
+        logger.warning(f"⚠️ 알 수 없는 타입을 정수로 변환: {type(value)} {value} → 기본값 {default} 사용")
+        return default
+
+    def _safe_convert_to_float(self, value, default: float = 0.0) -> float:
+        """SQLite에서 조회된 값을 안전하게 부동소수점으로 변환"""
+        if value is None:
+            return default
+
+        # 이미 부동소수점인 경우
+        if isinstance(value, float):
+            return value
+
+        # 정수인 경우
+        if isinstance(value, int):
+            return float(value)
+
+        # 문자열인 경우
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                logger.warning(f"⚠️ 문자열을 부동소수점으로 변환 실패: '{value}' → 기본값 {default} 사용")
+                return default
+
+        # 바이너리 데이터인 경우 (일단 정수로 변환 후 부동소수점으로)
+        if isinstance(value, bytes):
+            try:
+                int_value = self._safe_convert_to_int(value, 0)
+                return float(int_value)
+            except Exception as e:
+                logger.warning(f"⚠️ 바이너리 데이터를 부동소수점으로 변환 실패: {value.hex()} → 기본값 {default} 사용 ({e})")
+                return default
+
+        # 기타 타입인 경우
+        logger.warning(f"⚠️ 알 수 없는 타입을 부동소수점으로 변환: {type(value)} {value} → 기본값 {default} 사용")
+        return default
+
 async def main():
     """메인 실행 함수"""
     import argparse
@@ -1644,8 +1981,18 @@ async def main():
                        default='moderate', help='리스크 레벨 설정')
     parser.add_argument('--max-gpt-budget', type=float, default=5.0,
                        help='일일 GPT 비용 한도 (USD)')
+    parser.add_argument('--auto-sync', action='store_true', default=True,
+                       help='포트폴리오 자동 동기화 활성화 (기본값)')
+    parser.add_argument('--no-auto-sync', action='store_true',
+                       help='포트폴리오 자동 동기화 비활성화')
+    parser.add_argument('--sync-policy', choices=['conservative', 'moderate', 'aggressive'],
+                       default='aggressive', help='포트폴리오 동기화 정책 (기본: aggressive - 모든 금액 동기화)')
 
     args = parser.parse_args()
+
+    # auto-sync 설정 조정
+    if args.no_auto_sync:
+        args.auto_sync = False
 
     # 설정 생성
     risk_level_map = {
@@ -1658,7 +2005,9 @@ async def main():
         enable_gpt_analysis=not args.no_gpt,
         max_gpt_budget_daily=args.max_gpt_budget,
         risk_level=risk_level_map[args.risk_level],
-        dry_run=args.dry_run
+        dry_run=args.dry_run,
+        auto_sync_enabled=args.auto_sync,
+        sync_policy=args.sync_policy
     )
 
     # 실행 모드 출력
@@ -1667,6 +2016,8 @@ async def main():
     logger.info(f"   - 거래 실행: {'DRY RUN' if config.dry_run else '실제 거래'}")
     logger.info(f"   - 리스크 레벨: {config.risk_level.value}")
     logger.info(f"   - GPT 일일 예산: ${config.max_gpt_budget_daily}")
+    logger.info(f"   - 포트폴리오 자동 동기화: {'활성화' if config.auto_sync_enabled else '비활성화'}")
+    logger.info(f"   - 동기화 정책: {config.sync_policy} ({'모든 금액 동기화' if config.sync_policy == 'aggressive' else '제한적 동기화'})")
 
     # 오케스트레이터 실행
     orchestrator = MakenaideLocalOrchestrator(config)

@@ -74,6 +74,11 @@ class SimpleDataCollector:
                 ma200 REAL,
                 rsi REAL,
                 volume_ratio REAL,
+                atr REAL,
+                supertrend REAL,
+                macd_histogram REAL,
+                adx REAL,
+                support_level REAL,
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now')),
                 PRIMARY KEY (ticker, date)
@@ -81,6 +86,25 @@ class SimpleDataCollector:
             """
 
             cursor.execute(create_table_sql)
+
+            # 기존 테이블에 누락된 컬럼 추가 (ALTER TABLE)
+            missing_columns = [
+                ('atr', 'REAL'),
+                ('supertrend', 'REAL'),
+                ('macd_histogram', 'REAL'),
+                ('adx', 'REAL'),
+                ('support_level', 'REAL')
+            ]
+
+            for column_name, column_type in missing_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE ohlcv_data ADD COLUMN {column_name} {column_type};")
+                    logger.info(f"✅ ohlcv_data 테이블에 {column_name} 컬럼 추가")
+                except sqlite3.OperationalError as e:
+                    if "duplicate column name" in str(e).lower():
+                        logger.debug(f"📋 {column_name} 컬럼이 이미 존재함")
+                    else:
+                        logger.warning(f"⚠️ {column_name} 컬럼 추가 실패: {e}")
 
             # 인덱스 생성
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ohlcv_data_ticker ON ohlcv_data(ticker);")
@@ -873,8 +897,9 @@ class SimpleDataCollector:
                     INSERT OR REPLACE INTO ohlcv_data (
                         ticker, date, open, high, low, close, volume,
                         ma5, ma20, ma60, ma120, ma200, rsi, volume_ratio,
+                        atr, supertrend, macd_histogram, adx, support_level,
                         updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 """, (
                     ticker,
                     date.strftime('%Y-%m-%d'),
@@ -889,7 +914,12 @@ class SimpleDataCollector:
                     float(row['ma120']) if pd.notna(row['ma120']) else None,
                     float(row['ma200']) if pd.notna(row['ma200']) else None,
                     float(row['rsi']) if pd.notna(row['rsi']) else None,
-                    float(row['volume_ratio']) if pd.notna(row['volume_ratio']) else None
+                    float(row['volume_ratio']) if pd.notna(row['volume_ratio']) else None,
+                    float(row['atr']) if pd.notna(row['atr']) else None,
+                    float(row['supertrend']) if pd.notna(row['supertrend']) else None,
+                    float(row['macd_histogram']) if pd.notna(row['macd_histogram']) else None,
+                    float(row['adx']) if pd.notna(row['adx']) else None,
+                    float(row['support_level']) if pd.notna(row['support_level']) else None
                 ))
                 saved_count += 1
 

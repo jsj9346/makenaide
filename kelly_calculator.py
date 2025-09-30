@@ -182,6 +182,15 @@ class KellyCalculator:
                 avg_loss=0.08,   # 평균 8% 손실
                 base_position=1.5  # 1.5% 기본 포지션
             ),
+
+            # 알 수 없는 패턴 (보수적 접근)
+            PatternType.UNKNOWN: PatternProbability(
+                pattern_type=PatternType.UNKNOWN,
+                win_rate=0.500,  # 50% 승률 (중립적)
+                avg_win=0.10,    # 평균 10% 수익 (보수적)
+                avg_loss=0.08,   # 평균 8% 손실
+                base_position=1.5  # 1.5% 기본 포지션 (최소 수준)
+            ),
         }
 
     def _initialize_quality_adjustments(self) -> List[QualityScoreAdjustment]:
@@ -247,31 +256,263 @@ class KellyCalculator:
     def detect_pattern_type(self, technical_result: Dict) -> PatternType:
         """기술적 분석 결과에서 패턴 타입 감지"""
 
+        # 🔧 실제 데이터 구조에 맞게 매핑된 결과 사용
+        mapped_result = self._map_technical_data(technical_result)
+
         # Stage 1→2 전환 감지 (최우선)
-        if self._is_stage_1_to_2_transition(technical_result):
+        if self._is_stage_1_to_2_transition(mapped_result):
             return PatternType.STAGE_1_TO_2
 
         # VCP 패턴 감지
-        if self._is_vcp_pattern(technical_result):
+        if self._is_vcp_pattern(mapped_result):
             return PatternType.VCP_BREAKOUT
 
         # Cup & Handle 패턴 감지
-        if self._is_cup_handle_pattern(technical_result):
+        if self._is_cup_handle_pattern(mapped_result):
             return PatternType.CUP_HANDLE
 
         # 60일 고점 돌파 감지
-        if self._is_60d_high_breakout(technical_result):
+        if self._is_60d_high_breakout(mapped_result):
             return PatternType.HIGH_60D_BREAKOUT
 
         # Stage 2 지속 감지
-        if self._is_stage_2_continuation(technical_result):
+        if self._is_stage_2_continuation(mapped_result):
             return PatternType.STAGE_2_CONTINUATION
 
         # 단순 MA200 돌파
-        if self._is_ma200_breakout(technical_result):
+        if self._is_ma200_breakout(mapped_result):
             return PatternType.MA200_BREAKOUT
 
-        return PatternType.UNKNOWN
+        # 🔍 디버깅: 어떤 패턴도 감지되지 않은 경우 로깅
+        logger.debug(f"⚠️ 패턴 감지 실패 - 매핑된 데이터: {mapped_result}")
+
+        # 🎯 강화된 fallback 패턴 감지 (관대한 조건으로 UNKNOWN 방지)
+
+        # 1차 fallback: 기존 최소 조건
+        if mapped_result.get('price_above_ma20') and mapped_result.get('ma_trend_strength', 0) > 0.1:
+            logger.info("🎯 기존 fallback: MA20 위 + 약한 트렌드 → STAGE_2_CONTINUATION")
+            return PatternType.STAGE_2_CONTINUATION
+
+        # 2차 fallback: Stage 기반 패턴 감지
+        if mapped_result.get('stage_2_entry') or mapped_result.get('stage_2_continuation'):
+            logger.info("✅ Stage 기반 fallback: STAGE_2_CONTINUATION")
+            return PatternType.STAGE_2_CONTINUATION
+
+        # 3차 fallback: 추천 등급 기반 패턴 결정
+        raw_recommendation = str(mapped_result.get('recommendation', '')).upper()
+        if 'STRONG_BUY' in raw_recommendation or 'BUY' in raw_recommendation:
+            logger.info("✅ 추천 등급 기반 fallback: MA200_BREAKOUT")
+            return PatternType.MA200_BREAKOUT
+
+        # 4차 fallback: 볼륨이나 트렌드 지표 기반
+        if (mapped_result.get('volume_breakout') or
+            mapped_result.get('ma20_uptrend') or
+            mapped_result.get('price_above_ma200')):
+            logger.info("✅ 기술적 지표 기반 fallback: MA200_BREAKOUT")
+            return PatternType.MA200_BREAKOUT
+
+        # 최종 fallback: UNKNOWN 완전 방지
+        logger.warning("⚠️ 모든 패턴 감지 실패 - 보수적 MA200 돌파 패턴 적용")
+        return PatternType.MA200_BREAKOUT  # UNKNOWN 대신 가장 보수적인 패턴
+
+    def _map_technical_data(self, raw_data: Dict) -> Dict:
+        """
+        실제 기술적 분석 데이터를 Kelly Calculator가 이해할 수 있는 형태로 매핑
+
+        Args:
+            raw_data: 실제 technical_analysis 테이블의 데이터
+
+        Returns:
+            Dict: Kelly Calculator용 매핑된 데이터
+        """
+        mapped = {}
+
+        try:
+            # analysis_details 정보 파싱 (실제 DB 컬럼명에 맞게 수정)
+            layers_data = raw_data.get('analysis_details') or raw_data.get('layers_data')
+            if isinstance(layers_data, str):
+                import json
+                layers_data = json.loads(layers_data)
+
+            if not layers_data:
+                logger.debug("⚠️ analysis_details가 없음 - 기존 컬럼 기반 매핑 사용")
+                layers_data = {}
+
+                # 대안: 기존 technical_analysis 테이블의 직접 컬럼 사용
+                return self._map_from_direct_columns(raw_data)
+
+            # 패턴 정보 추출
+            patterns_found = []
+            if 'micro' in layers_data and 'modules' in layers_data['micro']:
+                pattern_module = layers_data['micro']['modules'].get('PatternRecognition', {})
+                pattern_details = pattern_module.get('details', {})
+                patterns_found = pattern_details.get('patterns_found', [])
+
+            # 이동평균 정보 추출
+            ma_info = {}
+            if 'structural' in layers_data and 'modules' in layers_data['structural']:
+                ma_module = layers_data['structural']['modules'].get('MovingAverage', {})
+                ma_details = ma_module.get('details', {})
+                ma_info = ma_details
+
+            # 볼륨 정보 추출
+            volume_info = {}
+            if 'macro' in layers_data and 'modules' in layers_data['macro']:
+                volume_module = layers_data['macro']['modules'].get('VolumeProfile', {})
+                volume_details = volume_module.get('details', {})
+                volume_info = volume_details
+
+            # Stage 1→2 전환 매핑
+            mapped['stage_2_entry'] = (
+                ma_info.get('price_vs_ma20', False) and
+                ma_info.get('ma20_slope', 0) > 0.5 and
+                raw_data.get('stage_status', '') != 'AVOID'
+            )
+
+            mapped['volume_breakout'] = (
+                volume_info.get('spike_ratio', 0) > 1.5 or
+                volume_info.get('volume_trend', 0) > 1.2
+            )
+
+            mapped['ma_trend_strength'] = abs(ma_info.get('ma20_slope', 0)) / 100.0
+
+            # VCP 패턴 매핑
+            mapped['volatility_contraction'] = (
+                'ascending_triangle' in patterns_found or
+                'bull_flag' in patterns_found or
+                'consolidation' in patterns_found
+            )
+
+            mapped['volume_dry_up'] = volume_info.get('volume_trend', 1.0) < 0.8
+
+            # Cup & Handle 패턴 매핑
+            mapped['cup_formation'] = (
+                'cup_handle' in patterns_found or
+                'rounding_bottom' in patterns_found or
+                'u_shape' in patterns_found
+            )
+
+            mapped['handle_formation'] = 'handle' in str(patterns_found)
+            mapped['cup_depth_ok'] = True  # 일단 True로 설정
+
+            # 60일 고점 돌파 매핑
+            mapped['high_60d_breakout'] = (
+                'breakout' in patterns_found or
+                'resistance_break' in patterns_found or
+                raw_data.get('price_position', 0) > 0.8
+            )
+
+            # Stage 2 지속 매핑
+            stage_status = raw_data.get('stage_status', '').upper()
+            mapped['stage_2_active'] = stage_status in ['BUY', 'STRONG_BUY', 'HOLD']
+            mapped['price_above_ma20'] = ma_info.get('price_vs_ma20', False)
+
+            # MA200 돌파 매핑
+            mapped['ma200_breakout'] = (
+                ma_info.get('price_vs_ma200', False) or
+                (ma_info.get('current_price', 0) > ma_info.get('ma200', 0) if ma_info.get('ma200') else False)
+            )
+
+            logger.debug(f"🔧 기술적 분석 데이터 매핑 완료: {len(mapped)}개 필드 생성")
+            return mapped
+
+        except Exception as e:
+            logger.warning(f"⚠️ 기술적 분석 데이터 매핑 실패: {e}, 원본 데이터 사용")
+            return raw_data
+
+    def _map_from_direct_columns(self, raw_data: Dict) -> Dict:
+        """
+        analysis_details가 없을 때 technical_analysis 테이블의 직접 컬럼들을 사용한 매핑
+
+        Args:
+            raw_data: technical_analysis 테이블의 raw 데이터
+
+        Returns:
+            Dict: Kelly Calculator용 매핑된 데이터
+        """
+        mapped = {}
+
+        try:
+            # Stage 분석 기반 매핑 - 문자열과 정수 모두 처리
+            current_stage_raw = raw_data.get('current_stage', 0)
+
+            # Stage 값 정규화 (문자열과 정수 모두 처리)
+            if isinstance(current_stage_raw, str):
+                # "Stage 2", "stage 2", "Stage2" 등 모든 형태 처리
+                import re
+                stage_match = re.search(r'[Ss]tage\s*(\d+)', str(current_stage_raw))
+                current_stage = int(stage_match.group(1)) if stage_match else 0
+            else:
+                current_stage = int(current_stage_raw) if current_stage_raw else 0
+
+            stage_confidence = float(raw_data.get('stage_confidence', 0))
+            recommendation = str(raw_data.get('recommendation', '')).upper()
+
+            # Stage 1→2 전환 매핑 (조건 완화)
+            mapped['stage_2_entry'] = (
+                current_stage == 2 and
+                stage_confidence > 0.6 and  # 0.7 → 0.6으로 완화
+                recommendation in ['BUY', 'STRONG_BUY', 'HOLD']  # HOLD도 포함
+            )
+
+            # 볼륨 돌파 매핑
+            volume_surge = raw_data.get('volume_surge', 0)
+            mapped['volume_breakout'] = volume_surge > 1.5
+
+            # 트렌드 강도 매핑
+            ma200_slope = raw_data.get('ma200_slope', 0) or 0
+            mapped['ma_trend_strength'] = abs(ma200_slope) / 100.0
+
+            # VCP 패턴 매핑 (품질 점수 기반)
+            quality_score = raw_data.get('quality_score', 0) or 0
+            total_gates_passed = raw_data.get('total_gates_passed', 0) or 0
+
+            mapped['volatility_contraction'] = (
+                quality_score > 15 and
+                total_gates_passed >= 3
+            )
+
+            mapped['volume_dry_up'] = volume_surge < 0.8
+
+            # Cup & Handle 패턴 매핑 (구조적 점수 기반)
+            breakout_strength = raw_data.get('breakout_strength', 0) or 0
+            mapped['cup_formation'] = breakout_strength > 0.6
+            mapped['handle_formation'] = breakout_strength > 0.4 and quality_score > 12
+            mapped['cup_depth_ok'] = True
+
+            # 60일 고점 돌파 매핑
+            gate1_stage2 = raw_data.get('gate1_stage2', 0) or 0
+            gate2_volume = raw_data.get('gate2_volume', 0) or 0
+            mapped['high_60d_breakout'] = gate1_stage2 > 0 and gate2_volume > 0
+
+            # Stage 2 지속 매핑
+            mapped['stage_2_active'] = (
+                current_stage == 2 and
+                recommendation in ['BUY', 'STRONG_BUY', 'HOLD']
+            )
+
+            # MA20 위 여부
+            price_vs_ma200 = raw_data.get('price_vs_ma200', 0) or 0
+            close_price = raw_data.get('close_price', 0) or 0
+            ma20 = raw_data.get('ma20', 0) or 0
+
+            if ma20 > 0 and close_price > 0:
+                mapped['price_above_ma20'] = close_price > ma20
+            else:
+                mapped['price_above_ma20'] = price_vs_ma200 > 1.0
+
+            # MA200 돌파 매핑
+            mapped['ma200_breakout'] = (
+                price_vs_ma200 > 1.0 and
+                ma200_slope > 0
+            )
+
+            logger.debug(f"🔧 직접 컬럼 기반 데이터 매핑 완료: {len(mapped)}개 필드 생성")
+            return mapped
+
+        except Exception as e:
+            logger.warning(f"⚠️ 직접 컬럼 매핑 실패: {e}, 빈 매핑 반환")
+            return {}
 
     def _is_stage_1_to_2_transition(self, result: Dict) -> bool:
         """스탠 와인스타인 Stage 1→2 전환 감지"""
@@ -324,13 +565,15 @@ class KellyCalculator:
             return False
 
     def _is_stage_2_continuation(self, result: Dict) -> bool:
-        """Stage 2 지속 감지"""
+        """Stage 2 지속 감지 (개선된 로직)"""
         try:
-            # 이미 Stage 2 + 추가 매수 신호
-            in_stage_2 = result.get('current_stage', 0) == 2
-            pullback_buy = result.get('pullback_opportunity', False)
+            # Stage 2 활성 상태 + MA20 위 + 적절한 트렌드 강도
+            stage_2_active = result.get('stage_2_active', False)
+            price_above_ma20 = result.get('price_above_ma20', False)
+            ma_trend_strength = result.get('ma_trend_strength', 0)
 
-            return in_stage_2 and pullback_buy
+            # 🔧 더 유연한 조건: Stage 2 상태이거나 강한 트렌드 + MA20 위
+            return (stage_2_active and price_above_ma20) or (ma_trend_strength > 0.5 and price_above_ma20)
 
         except Exception:
             return False

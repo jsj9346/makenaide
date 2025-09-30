@@ -24,6 +24,7 @@ import sqlite3
 import logging
 import pyupbit
 import json
+import struct
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
@@ -38,9 +39,13 @@ from utils import logger, setup_restricted_logger, retry
 from db_manager_sqlite import get_db_connection_context
 from kelly_calculator import KellyCalculator, PatternType
 from market_sentiment import MarketSentiment
+from pyramid_state_manager import PyramidStateManager
+from trade_status import TradeStatus, TradeResult
 
 # 환경 변수 로드
 load_dotenv()
+
+# 사용하지 않는 기존 피라미딩 타입 정의들은 PyramidStateManager로 대체됨
 
 # 로거 설정
 logger = setup_restricted_logger('trading_engine')
@@ -60,19 +65,7 @@ class OrderStatus(Enum):
     SKIPPED = "SKIPPED"
     API_ERROR = "API_ERROR"  # API 오류 (IP 인증 실패 등)
 
-@dataclass
-class TradeResult:
-    """거래 결과"""
-    status: OrderStatus
-    ticker: str
-    order_type: OrderType
-    order_id: Optional[str] = None
-    quantity: Optional[float] = None
-    price: Optional[float] = None
-    amount_krw: Optional[float] = None
-    fee: Optional[float] = None
-    error_message: Optional[str] = None
-    timestamp: Optional[datetime] = None
+# TradeResult는 trade_status.py에서 import됨
 
 @dataclass
 class PositionInfo:
@@ -93,155 +86,12 @@ class TradingConfig:
     min_order_amount_krw: float = 10000  # 최소 주문 금액
     max_positions: int = 8  # 최대 동시 보유 종목
     stop_loss_percent: float = -8.0  # 손절 비율 (%)
-    take_profit_percent: float = 0  # 익절 비율 (%)
+    take_profit_percent: float = 20.0  # 익절 비율 (%) - 윌리엄 오닐 20-25% 규칙
     taker_fee_rate: float = 0.00139  # Taker 수수료 (0.139%)
     maker_fee_rate: float = 0.0005  # Maker 수수료 (0.05%)
     api_rate_limit_delay: float = 0.5  # API 호출 간격 (초)
 
-class PyramidingManager:
-    """Stage 2 전고점 돌파 시 피라미딩 매수 관리자"""
-
-    def __init__(self, max_pyramids: int = 3, pyramid_multiplier: float = 0.5):
-        """
-        Args:
-            max_pyramids: 최대 피라미드 횟수
-            pyramid_multiplier: 추가 매수 시 포지션 사이즈 배수 (0.5 = 50% 크기)
-        """
-        self.max_pyramids = max_pyramids
-        self.pyramid_multiplier = pyramid_multiplier
-
-        # 티커별 피라미딩 상태 추적
-        self.initial_buy_price = {}      # 최초 매수가
-        self.pyramid_levels = {}         # 현재 피라미드 레벨
-        self.last_breakout_price = {}    # 마지막 돌파 가격
-        self.highest_after_buy = {}      # 마지막 매수 후 최고가
-
-    def register_initial_buy(self, ticker: str, buy_price: float):
-        """초기 매수 등록"""
-        self.initial_buy_price[ticker] = buy_price
-        self.pyramid_levels[ticker] = 1
-        self.last_breakout_price[ticker] = buy_price
-        self.highest_after_buy[ticker] = buy_price
-
-        logger.info(f"🏗️ {ticker} 피라미딩 초기화: 진입가={buy_price:.0f}원, 레벨=1")
-
-    def check_pyramid_opportunity(self, ticker: str, current_price: float,
-                                db_path: str = "./makenaide_local.db") -> Tuple[bool, float]:
-        """
-        피라미딩 기회 확인
-
-        Args:
-            ticker: 종목 코드
-            current_price: 현재가
-            db_path: SQLite DB 경로
-
-        Returns:
-            Tuple[bool, float]: (추가매수 여부, 추가매수 포지션 비율)
-        """
-        try:
-            # 기본 조건 확인
-            if ticker not in self.initial_buy_price:
-                return False, 0.0
-
-            if self.pyramid_levels[ticker] >= self.max_pyramids:
-                return False, 0.0
-
-            # 최고가 업데이트
-            if current_price > self.highest_after_buy[ticker]:
-                self.highest_after_buy[ticker] = current_price
-
-            # Stage 2 상태 확인
-            stage2_confirmed = self._check_stage2_status(ticker, db_path)
-            if not stage2_confirmed:
-                return False, 0.0
-
-            # 전고점 돌파 확인 (5% 이상 상승)
-            min_breakout_threshold = self.last_breakout_price[ticker] * 1.05
-
-            if current_price >= min_breakout_threshold:
-                # 추가 매수 조건 만족
-                additional_position = self._calculate_pyramid_size(ticker)
-
-                logger.info(f"🚀 {ticker} 피라미딩 기회 감지:")
-                logger.info(f"   현재가: {current_price:.0f}원")
-                logger.info(f"   돌파 기준: {min_breakout_threshold:.0f}원")
-                logger.info(f"   현재 레벨: {self.pyramid_levels[ticker]}")
-                logger.info(f"   추가 포지션: {additional_position:.1f}%")
-
-                return True, additional_position
-
-            return False, 0.0
-
-        except Exception as e:
-            logger.error(f"❌ {ticker} 피라미딩 기회 확인 실패: {e}")
-            return False, 0.0
-
-    def _check_stage2_status(self, ticker: str, db_path: str) -> bool:
-        """Stage 2 상태 확인"""
-        try:
-            with sqlite3.connect(db_path) as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT current_stage, ma200_trend, volume_surge, breakout_strength
-                    FROM technical_analysis
-                    WHERE ticker = ?
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                """, (ticker,))
-                result = cursor.fetchone()
-
-                if not result:
-                    return False
-
-                stage, ma200_trend, volume_surge, breakout_strength = result
-
-                # Stage 2 조건
-                is_stage2 = (stage == 2 and
-                           ma200_trend and ma200_trend > 0 and
-                           volume_surge and volume_surge >= 1.3)
-
-                return is_stage2
-
-        except Exception as e:
-            logger.warning(f"⚠️ {ticker} Stage 2 상태 확인 실패: {e}")
-            return False
-
-    def _calculate_pyramid_size(self, ticker: str) -> float:
-        """피라미드 추가 매수 크기 계산"""
-        current_level = self.pyramid_levels.get(ticker, 1)
-
-        # 첫 번째 추가매수: 2.0% (초기 포지션의 50%)
-        # 두 번째 추가매수: 1.0% (초기 포지션의 25%)
-        # 세 번째 추가매수: 0.5% (초기 포지션의 12.5%)
-        base_size = 2.0
-        return base_size * (self.pyramid_multiplier ** (current_level - 1))
-
-    def execute_pyramid_buy(self, ticker: str, current_price: float) -> bool:
-        """피라미딩 매수 실행 후 상태 업데이트"""
-        try:
-            self.pyramid_levels[ticker] += 1
-            self.last_breakout_price[ticker] = current_price
-            self.highest_after_buy[ticker] = current_price
-
-            logger.info(f"✅ {ticker} 피라미딩 매수 완료: 레벨={self.pyramid_levels[ticker]}")
-            return True
-
-        except Exception as e:
-            logger.error(f"❌ {ticker} 피라미딩 상태 업데이트 실패: {e}")
-            return False
-
-    def get_pyramid_info(self, ticker: str) -> Dict[str, Any]:
-        """피라미딩 정보 조회"""
-        if ticker not in self.initial_buy_price:
-            return {}
-
-        return {
-            'initial_buy_price': self.initial_buy_price[ticker],
-            'current_level': self.pyramid_levels[ticker],
-            'max_levels': self.max_pyramids,
-            'last_breakout_price': self.last_breakout_price[ticker],
-            'highest_after_buy': self.highest_after_buy[ticker]
-        }
+# PyramidingManager 클래스는 PyramidStateManager로 대체됨
 
 class TrailingStopManager:
     """ATR 기반 트레일링 스탑 관리자 (trade_executor.py에서 이식)"""
@@ -258,6 +108,61 @@ class TrailingStopManager:
         """티커별 ATR 배수 반환"""
         return self.per_ticker_config.get(ticker, self.atr_multiplier)
 
+    def get_atr_with_fallback(self, ticker: str, current_price: float, db_path: str = "./makenaide_local.db") -> float:
+        """
+        ATR 조회 with 이중화 백업 로직
+
+        Args:
+            ticker: 종목 코드
+            current_price: 현재가
+            db_path: SQLite DB 경로
+
+        Returns:
+            float: ATR 값
+        """
+        try:
+            with sqlite3.connect(db_path) as conn:
+                cursor = conn.cursor()
+
+                # 🎯 Primary: technical_analysis 테이블에서 ATR 조회
+                cursor.execute("""
+                    SELECT atr, 'technical_analysis' as source
+                    FROM technical_analysis
+                    WHERE ticker = ? AND atr IS NOT NULL
+                    ORDER BY created_at DESC LIMIT 1
+                """, (ticker,))
+                result = cursor.fetchone()
+
+                if result and result[0] is not None:
+                    atr_value = float(result[0])
+                    logger.info(f"📊 {ticker} ATR 조회 성공 ({result[1]}): {atr_value:.2f}")
+                    return atr_value
+
+                # 🔄 Fallback: ohlcv_data 테이블에서 직접 ATR 조회
+                cursor.execute("""
+                    SELECT atr, 'ohlcv_data' as source
+                    FROM ohlcv_data
+                    WHERE ticker = ? AND atr IS NOT NULL
+                    ORDER BY date DESC LIMIT 1
+                """, (ticker,))
+                backup_result = cursor.fetchone()
+
+                if backup_result and backup_result[0] is not None:
+                    atr_value = float(backup_result[0])
+                    logger.info(f"🔄 {ticker} 백업 ATR 조회 성공 ({backup_result[1]}): {atr_value:.2f}")
+                    return atr_value
+
+                # 🚨 최종 기본값: 현재가의 3%
+                default_atr = current_price * 0.03
+                logger.warning(f"⚠️ {ticker} ATR 데이터 없음, 기본값 3% 사용: {default_atr:.2f}")
+                return default_atr
+
+        except Exception as e:
+            # 🚨 예외 발생시 최종 기본값
+            default_atr = current_price * 0.03
+            logger.error(f"❌ {ticker} ATR 조회 실패, 기본값 3% 사용: {e}")
+            return default_atr
+
     def update(self, ticker: str, current_price: float, db_path: str = "./makenaide_local.db") -> bool:
         """
         트레일링 스탑 업데이트 및 청산 신호 확인
@@ -270,30 +175,9 @@ class TrailingStopManager:
         Returns:
             bool: True면 청산 신호, False면 보유 유지
         """
-        # 첫 업데이트 시 ATR 값을 SQLite에서 조회
+        # 첫 업데이트 시 ATR 값을 SQLite에서 조회 (이중화 백업 로직)
         if ticker not in self.highest_price:
-            atr_value = current_price * 0.01  # 기본값: 현재가의 1%
-
-            try:
-                with sqlite3.connect(db_path) as conn:
-                    cursor = conn.cursor()
-                    # technical_analysis 테이블에서 ATR 조회
-                    cursor.execute("""
-                        SELECT atr FROM technical_analysis
-                        WHERE ticker = ?
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """, (ticker,))
-                    result = cursor.fetchone()
-
-                    if result and result[0] is not None:
-                        atr_value = float(result[0])
-                        logger.info(f"📊 {ticker} SQLite에서 ATR 조회: {atr_value:.2f}")
-                    else:
-                        logger.warning(f"⚠️ {ticker} ATR 데이터 없음. 기본값(현재가의 1%) 사용: {atr_value:.0f}")
-
-            except Exception as e:
-                logger.warning(f"⚠️ {ticker} ATR 조회 실패, 기본값 사용: {e}")
+            atr_value = self.get_atr_with_fallback(ticker, current_price, db_path)
 
             # 초기 설정 (ATR 조회 성공/실패와 관계없이 실행)
             self.entry_price[ticker] = current_price
@@ -350,20 +234,83 @@ class LocalTradingEngine:
             per_ticker_config={}  # 티커별 설정 (필요시 확장)
         )
 
-        # 피라미딩 관리자 초기화
-        self.pyramiding_manager = PyramidingManager(
-            max_pyramids=3,  # 최대 3단계까지 피라미딩
-            pyramid_multiplier=0.5  # 추가 매수 시 50% 크기
+        # 피라미딩 상태 관리자 초기화 (pyramid_state 테이블 기반)
+        self.pyramid_state_manager = PyramidStateManager(
+            db_path=self.db_path
         )
 
-        # 거래 통계
+        # 거래 통계 (개선된 버전)
         self.trading_stats = {
             'session_start': datetime.now(),
             'orders_attempted': 0,
-            'orders_successful': 0,
+            'orders_successful': 0,  # 전량 체결만 카운팅
+            'orders_partial_filled': 0,  # 부분 체결 카운팅
+            'orders_partial_cancelled': 0,  # 부분 체결 후 취소 카운팅
             'total_volume_krw': 0.0,
             'total_fees_krw': 0.0
         }
+
+    def _safe_convert_to_int(self, value, default=0):
+        """바이너리 데이터를 포함한 다양한 타입을 안전하게 int로 변환"""
+        if value is None:
+            return default
+
+        if isinstance(value, int):
+            return value
+
+        if isinstance(value, (float, str)):
+            try:
+                return int(float(value))
+            except (ValueError, TypeError):
+                return default
+
+        # 바이너리 데이터 처리 (8바이트 little-endian)
+        if isinstance(value, bytes):
+            try:
+                if len(value) == 8:
+                    # 8바이트 little-endian 64비트 정수로 해석
+                    return struct.unpack('<Q', value)[0]
+                elif len(value) == 4:
+                    # 4바이트 little-endian 32비트 정수로 해석
+                    return struct.unpack('<I', value)[0]
+                else:
+                    return default
+            except struct.error:
+                return default
+
+        return default
+
+    def _safe_convert_to_float(self, value, default=0.0):
+        """바이너리 데이터를 포함한 다양한 타입을 안전하게 float로 변환"""
+        if value is None:
+            return default
+
+        if isinstance(value, (int, float)):
+            return float(value)
+
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+
+        # 바이너리 데이터 처리 (8바이트 little-endian double)
+        if isinstance(value, bytes):
+            try:
+                if len(value) == 8:
+                    # 8바이트를 64비트 정수로 변환한 후 float로
+                    int_val = struct.unpack('<Q', value)[0]
+                    return float(int_val)
+                elif len(value) == 4:
+                    # 4바이트를 32비트 정수로 변환한 후 float로
+                    int_val = struct.unpack('<I', value)[0]
+                    return float(int_val)
+                else:
+                    return default
+            except struct.error:
+                return default
+
+        return default
 
     def initialize_upbit_client(self) -> bool:
         """업비트 클라이언트 초기화"""
@@ -383,37 +330,305 @@ class LocalTradingEngine:
             logger.error(f"❌ 업비트 클라이언트 초기화 실패: {e}")
             return False
 
-    def save_trade_record(self, trade_result: TradeResult):
-        """거래 기록을 SQLite에 저장"""
+    def convert_to_new_trade_result(self, old_trade_result, ticker: str,
+                                   is_pyramid: bool = False,
+                                   requested_amount: float = 0) -> TradeResult:
+        """기존 TradeResult를 새로운 TradeResult로 변환"""
+
+        # OrderStatus를 TradeStatus로 변환
+        status_mapping = {
+            OrderStatus.SUCCESS: TradeStatus.FULL_FILLED,
+            OrderStatus.SUCCESS_NO_AVG_PRICE: TradeStatus.FULL_FILLED,
+            OrderStatus.SUCCESS_PARTIAL: TradeStatus.PARTIAL_FILLED,
+            OrderStatus.SUCCESS_PARTIAL_NO_AVG: TradeStatus.PARTIAL_FILLED,
+            OrderStatus.FAILURE: TradeStatus.FAILED,
+            OrderStatus.SKIPPED: TradeStatus.CANCELLED,
+            OrderStatus.API_ERROR: TradeStatus.FAILED
+        }
+
+        new_status = status_mapping.get(old_trade_result.status, TradeStatus.FAILED)
+
+        return TradeResult(
+            ticker=ticker,
+            order_id=old_trade_result.order_id or "unknown",
+            status=new_status,
+            requested_amount=requested_amount or (old_trade_result.amount_krw or 0),
+            requested_quantity=old_trade_result.quantity or 0,  # 기존 로직에서는 구분이 없음
+            filled_amount=old_trade_result.amount_krw or 0,
+            filled_quantity=old_trade_result.quantity or 0,
+            average_price=old_trade_result.price,
+            timestamp=old_trade_result.timestamp or datetime.now(),
+            fees=old_trade_result.fee or 0,  # fee → fees
+            error_message=old_trade_result.error_message,
+            is_pyramid=is_pyramid
+        )
+
+    def save_trade_record(self, trade_result, ticker: str = None, is_pyramid: bool = False, requested_amount: float = 0, trade_type: str = 'BUY'):
+        """거래 기록을 새로운 trades 테이블에 저장"""
+        try:
+            # 기존 TradeResult인지 새로운 TradeResult인지 판별
+            if hasattr(trade_result, 'filled_amount'):
+                # 이미 새로운 TradeResult
+                new_trade_result = trade_result
+            else:
+                # 기존 TradeResult를 새로운 형태로 변환
+                new_trade_result = self.convert_to_new_trade_result(
+                    trade_result, ticker or trade_result.ticker, is_pyramid, requested_amount
+                )
+
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+
+                # 새로운 trades 테이블 구조에 맞게 저장
+                cursor.execute("""
+                    INSERT INTO trades (
+                        ticker, order_type, status, order_id,
+                        requested_quantity, filled_quantity,
+                        requested_amount, filled_amount, average_price,
+                        is_pyramid, is_pyramid_eligible,
+                        fee, error_message, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    new_trade_result.ticker,
+                    trade_type,  # 매수/매도 구분
+                    new_trade_result.status.value,
+                    new_trade_result.order_id,
+                    new_trade_result.requested_quantity,
+                    new_trade_result.filled_quantity,
+                    new_trade_result.requested_amount,
+                    new_trade_result.filled_amount,
+                    new_trade_result.average_price,
+                    new_trade_result.is_pyramid,
+                    new_trade_result.is_pyramid_eligible,
+                    new_trade_result.fees,
+                    new_trade_result.error_message,
+                    new_trade_result.timestamp.isoformat() if hasattr(new_trade_result.timestamp, 'isoformat') else str(new_trade_result.timestamp)
+                ))
+
+                conn.commit()
+                logger.info(f"📝 {new_trade_result.ticker} 거래 기록 저장 완료 (상태: {new_trade_result.status.value}, 피라미딩: {new_trade_result.is_pyramid})")
+
+        except Exception as e:
+            logger.error(f"❌ 거래 기록 저장 실패: {e}")
+            logger.error(f"   TradeResult 내용: {trade_result}")
+            # 에러가 발생해도 거래는 계속 진행되어야 하므로 raise하지 않음
+
+    def process_trade_result(self, old_trade_result, ticker: str, is_pyramid: bool = False,
+                           requested_amount: float = 0) -> TradeResult:
+        """거래 결과를 처리하고 통합 워크플로우 실행"""
+        try:
+            # 1. 새로운 TradeResult 객체 생성
+            new_trade_result = self.convert_to_new_trade_result(
+                old_trade_result, ticker, is_pyramid, requested_amount
+            )
+
+            # 2. trades 테이블에 저장
+            self.save_trade_record(new_trade_result, ticker, is_pyramid=is_pyramid, requested_amount=requested_amount)
+
+            # 3. PyramidStateManager에 상태 업데이트
+            if new_trade_result.status.is_successful:
+                self.pyramid_state_manager.update_after_trade(new_trade_result)
+                logger.info(f"✅ {ticker} 거래 성공: PyramidStateManager 업데이트 완료 (피라미딩: {is_pyramid})")
+
+            # 4. 상세 결과 로깅
+            from trade_status import log_trade_result
+            log_trade_result(new_trade_result, is_pyramid)
+
+            return new_trade_result
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} 거래 결과 처리 실패: {e}")
+            # 기본적인 TradeResult라도 반환
+            return self.convert_to_new_trade_result(old_trade_result, ticker, is_pyramid, requested_amount)
+
+    def validate_portfolio_sync(self) -> bool:
+        """포트폴리오 동기화 상태 검증 (레거시 메서드 - 호환성 유지용)"""
+        sync_result = self.validate_and_sync_portfolio(auto_sync=False)
+        return sync_result[0]
+
+    def validate_and_sync_portfolio(self, auto_sync: bool = True, sync_policy: str = 'aggressive') -> Tuple[bool, Dict]:
+        """포트폴리오 검증 및 자동 동기화
+
+        Args:
+            auto_sync: 자동 동기화 활성화 여부
+            sync_policy: 동기화 정책 ('conservative', 'moderate', 'aggressive')
+
+        Returns:
+            Tuple[bool, Dict]: (동기화 성공 여부, 동기화 결과 상세)
+        """
+        try:
+            logger.info("🔍 포트폴리오 동기화 상태 검증 시작...")
+
+            # Phase 1: 포트폴리오 불일치 감지
+            missing_trades = self._detect_portfolio_mismatch()
+
+            if not missing_trades:
+                logger.info("✅ 포트폴리오 동기화 상태 정상")
+                return True, {'status': 'synced', 'missing_trades': []}
+
+            # Phase 2: 불일치 감지됨 - 로깅
+            total_missing_value = sum(trade['balance'] * trade['avg_buy_price'] for trade in missing_trades)
+            logger.warning(f"⚠️ 포트폴리오 동기화 불일치 감지: {len(missing_trades)}개 종목")
+            logger.warning(f"📊 누락된 총 투자금액: {total_missing_value:,.0f} KRW")
+
+            for trade in missing_trades:
+                logger.warning(f"  - {trade['ticker']}: {trade['balance']:.8f} @ {trade['avg_buy_price']:,.0f}")
+
+            # Phase 3: 자동 동기화 수행 여부 결정
+            if not auto_sync:
+                logger.warning("portfolio_sync_tool.py를 실행하여 동기화하세요.")
+                return False, {
+                    'status': 'mismatch_detected',
+                    'missing_trades': missing_trades,
+                    'auto_sync_disabled': True
+                }
+
+            # Phase 4: 동기화 위험도 평가 및 실행
+            sync_result = self._execute_safe_portfolio_sync(missing_trades, sync_policy)
+
+            if sync_result['success']:
+                logger.info("🎉 포트폴리오 자동 동기화 완료")
+                return True, sync_result
+            else:
+                logger.error("❌ 포트폴리오 자동 동기화 실패")
+                logger.warning("portfolio_sync_tool.py를 수동으로 실행하여 동기화하세요.")
+                return False, sync_result
+
+        except Exception as e:
+            logger.warning(f"⚠️ 포트폴리오 동기화 검증 실패: {e}")
+            return False, {'status': 'error', 'error': str(e)}
+
+    def _detect_portfolio_mismatch(self) -> List[Dict]:
+        """포트폴리오 불일치 감지"""
+        try:
+            # Upbit 잔고 조회
+            balances = self.upbit.get_balances()
+            upbit_balances = []
+
+            for balance in balances:
+                if balance['currency'] != 'KRW' and float(balance['balance']) > 0:
+                    upbit_balances.append({
+                        'ticker': f"KRW-{balance['currency']}",
+                        'balance': float(balance['balance']),
+                        'avg_buy_price': float(balance['avg_buy_price']) if balance['avg_buy_price'] else 0
+                    })
+
+            # 데이터베이스 거래 기록 조회
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT DISTINCT ticker FROM trades
+                    WHERE order_type = 'BUY' AND status = 'FULL_FILLED'
+                """)
+                db_tickers = {row[0] for row in cursor.fetchall()}
+
+            # 누락된 거래 찾기
+            missing_trades = []
+            for balance in upbit_balances:
+                if balance['ticker'] not in db_tickers:
+                    missing_trades.append(balance)
+
+            return missing_trades
+
+        except Exception as e:
+            logger.error(f"❌ 포트폴리오 불일치 감지 실패: {e}")
+            return []
+
+    def _execute_safe_portfolio_sync(self, missing_trades: List[Dict], sync_policy: str) -> Dict:
+        """안전한 포트폴리오 동기화 실행"""
+        try:
+            # 동기화 정책별 최대 금액 설정
+            policy_limits = {
+                'conservative': 500_000,    # 50만원
+                'moderate': 2_000_000,      # 200만원
+                'aggressive': float('inf')  # 무제한
+            }
+
+            max_sync_amount = policy_limits.get(sync_policy, 500_000)
+            logger.info(f"📋 동기화 정책: {sync_policy} (최대 {max_sync_amount:,.0f} KRW)")
+
+            # 동기화 대상 필터링
+            sync_targets = []
+            total_sync_value = 0
+
+            for trade in missing_trades:
+                trade_value = trade['balance'] * trade['avg_buy_price']
+
+                if trade_value <= max_sync_amount:
+                    sync_targets.append(trade)
+                    total_sync_value += trade_value
+                else:
+                    logger.warning(f"⚠️ {trade['ticker']} 제외: 금액 초과 ({trade_value:,.0f} > {max_sync_amount:,.0f})")
+
+            if not sync_targets:
+                return {
+                    'success': False,
+                    'reason': 'no_safe_targets',
+                    'message': f'동기화 정책 {sync_policy}에 맞는 안전한 대상이 없습니다.'
+                }
+
+            logger.info(f"🎯 동기화 대상: {len(sync_targets)}개 종목 (총 {total_sync_value:,.0f} KRW)")
+
+            # 실제 동기화 실행
+            success_count = 0
+            for trade in sync_targets:
+                if self._create_sync_trade_record(trade):
+                    success_count += 1
+
+            return {
+                'success': success_count == len(sync_targets),
+                'synced_count': success_count,
+                'total_targets': len(sync_targets),
+                'total_value': total_sync_value,
+                'policy': sync_policy,
+                'synced_trades': sync_targets[:success_count]
+            }
+
+        except Exception as e:
+            logger.error(f"❌ 포트폴리오 동기화 실행 실패: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def _create_sync_trade_record(self, trade: Dict) -> bool:
+        """동기화용 거래 기록 생성"""
         try:
             with get_db_connection_context() as conn:
                 cursor = conn.cursor()
 
-                # trades 테이블에 거래 기록 저장
+                # 추정 매수 시간 (현재 시간 - 1일)
+                estimated_buy_time = datetime.now() - timedelta(days=1)
+                estimated_buy_time = estimated_buy_time.replace(hour=9, minute=0, second=0, microsecond=0)
+
+                # 거래 기록 생성
                 cursor.execute("""
                     INSERT INTO trades (
                         ticker, order_type, status, order_id,
-                        quantity, price, amount_krw, fee,
-                        error_message, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        requested_quantity, filled_quantity,
+                        requested_amount, filled_amount, average_price,
+                        fill_rate, is_pyramid, is_pyramid_eligible,
+                        fee, timestamp, created_at, updated_at, error_message
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    trade_result.ticker,
-                    trade_result.order_type.value,
-                    trade_result.status.value,
-                    trade_result.order_id,
-                    trade_result.quantity,
-                    trade_result.price,
-                    trade_result.amount_krw,
-                    trade_result.fee,
-                    trade_result.error_message,
-                    trade_result.timestamp or datetime.now()
+                    trade['ticker'], 'BUY', 'FULL_FILLED',
+                    f'AUTO-SYNC-{trade["ticker"]}-{int(datetime.now().timestamp())}',
+                    trade['balance'], trade['balance'],
+                    trade['balance'] * trade['avg_buy_price'],
+                    trade['balance'] * trade['avg_buy_price'],
+                    trade['avg_buy_price'],
+                    1.0, False, True,
+                    trade['balance'] * trade['avg_buy_price'] * 0.0005,  # 0.05% 수수료 추정
+                    estimated_buy_time.isoformat(),
+                    datetime.now().isoformat(),
+                    datetime.now().isoformat(),
+                    'AUTO_SYNC'
                 ))
 
                 conn.commit()
-                logger.info(f"📝 {trade_result.ticker} 거래 기록 저장 완료")
+                logger.info(f"✅ {trade['ticker']} 동기화 완료: {trade['balance']:.8f} @ {trade['avg_buy_price']:,.0f}")
+                return True
 
         except Exception as e:
-            logger.error(f"❌ 거래 기록 저장 실패: {e}")
+            logger.error(f"❌ {trade['ticker']} 동기화 실패: {e}")
+            return False
 
     def get_current_positions(self) -> List[PositionInfo]:
         """현재 보유 포지션 조회 (블랙리스트 필터링 적용)"""
@@ -490,7 +705,13 @@ class LocalTradingEngine:
                     buy_timestamp = self.get_last_buy_timestamp(ticker)
                     hold_days = 0
                     if buy_timestamp:
-                        hold_days = (datetime.now() - buy_timestamp).days
+                        # 시간 차이 계산 (최소 1일로 설정)
+                        time_diff = datetime.now() - buy_timestamp
+                        hold_days = max(1, time_diff.days)
+
+                        # 같은 날 매수한 경우에도 시간이 충분히 지났으면 1일로 계산
+                        if time_diff.days == 0 and time_diff.total_seconds() > 3600:  # 1시간 이상
+                            hold_days = 1
 
                     position = PositionInfo(
                         ticker=ticker,
@@ -526,7 +747,7 @@ class LocalTradingEngine:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT created_at FROM trades
-                    WHERE ticker = ? AND order_type = 'BUY' AND status = 'SUCCESS'
+                    WHERE ticker = ? AND order_type = 'BUY' AND status IN ('FULL_FILLED', 'PARTIAL_FILLED')
                     ORDER BY created_at DESC
                     LIMIT 1
                 """, (ticker,))
@@ -540,49 +761,219 @@ class LocalTradingEngine:
             logger.warning(f"⚠️ {ticker} 매수 시점 조회 실패: {e}")
             return None
 
-    def get_total_balance_krw(self) -> float:
-        """총 보유 자산 KRW 환산"""
+    def detect_and_initialize_direct_purchases(self) -> List[str]:
+        """
+        직접 매수 종목 감지 및 자동 초기화 시스템
+
+        업비트 API에서 감지된 포지션 중 trades 테이블에 매수 기록이 없는 경우를
+        '직접 매수 종목'으로 분류하고 자동으로 데이터베이스에 초기화합니다.
+
+        Returns:
+            List[str]: 감지된 직접 매수 종목 티커 리스트
+        """
+        direct_purchases = []
+
         try:
             if self.dry_run:
+                logger.info("🧪 DRY RUN: 직접 매수 종목 감지 건너뜀")
+                return direct_purchases
+
+            # 블랙리스트 로드
+            blacklist = load_blacklist()
+            if not blacklist:
+                blacklist = {}
+
+            # 업비트에서 잔고 조회
+            balances = self.upbit.get_balances()
+
+            if not balances or not isinstance(balances, list):
+                return direct_purchases
+
+            logger.info("🔍 직접 매수 종목 감지 시작...")
+
+            for balance in balances:
+                currency = balance['currency']
+
+                # KRW는 제외
+                if currency == 'KRW':
+                    continue
+
+                quantity = float(balance['balance'])
+                if quantity <= 0:
+                    continue
+
+                ticker = f"KRW-{currency}"
+
+                # 블랙리스트 확인
+                if ticker in blacklist:
+                    continue
+
+                # trades 테이블에서 매수 기록 확인
+                last_buy_timestamp = self.get_last_buy_timestamp(ticker)
+
+                # 매수 기록이 없으면 직접 매수 종목으로 분류
+                if last_buy_timestamp is None:
+                    logger.warning(f"🔍 직접 매수 종목 감지: {ticker} (보유량: {quantity:.8f})")
+
+                    # 직접 매수 종목 데이터베이스 초기화
+                    success = self._initialize_direct_purchase_record(ticker, balance)
+
+                    if success:
+                        direct_purchases.append(ticker)
+                        logger.info(f"✅ {ticker} 직접 매수 종목 데이터베이스 초기화 완료")
+                    else:
+                        logger.error(f"❌ {ticker} 직접 매수 종목 초기화 실패")
+
+            if direct_purchases:
+                logger.info(f"🎯 총 {len(direct_purchases)}개 직접 매수 종목 감지 및 초기화: {', '.join(direct_purchases)}")
+            else:
+                logger.info("✅ 직접 매수 종목 없음 - 모든 포지션이 시스템을 통해 매수됨")
+
+            return direct_purchases
+
+        except Exception as e:
+            logger.error(f"❌ 직접 매수 종목 감지 실패: {e}")
+            return direct_purchases
+
+    def _initialize_direct_purchase_record(self, ticker: str, balance_info: dict) -> bool:
+        """
+        직접 매수 종목의 초기 데이터베이스 레코드 생성
+
+        Args:
+            ticker: 종목 코드 (예: KRW-NEAR)
+            balance_info: 업비트 잔고 정보
+
+        Returns:
+            bool: 초기화 성공 여부
+        """
+        try:
+            currency = ticker.replace("KRW-", "")
+            quantity = float(balance_info['balance'])
+            avg_buy_price = float(balance_info['avg_buy_price'])
+
+            if quantity <= 0 or avg_buy_price <= 0:
+                logger.error(f"❌ {ticker} 잘못된 잔고 정보: 수량={quantity}, 평균매수가={avg_buy_price}")
+                return False
+
+            # 총 매수 금액 계산
+            total_amount = quantity * avg_buy_price
+
+            # 현재 시간을 매수 시점으로 설정 (실제 매수 시점은 알 수 없음)
+            purchase_timestamp = datetime.now().isoformat()
+
+            # 가상의 거래 ID 생성 (직접 매수 종목 식별용)
+            virtual_order_id = f"DIRECT_PURCHASE_{ticker}_{int(datetime.now().timestamp())}"
+
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+
+                # trades 테이블에 직접 매수 기록 삽입 (새 스키마 적용)
+                cursor.execute("""
+                    INSERT INTO trades (
+                        ticker, order_type, status, order_id,
+                        requested_quantity, filled_quantity,
+                        requested_amount, filled_amount, average_price,
+                        is_pyramid, is_pyramid_eligible,
+                        fee, error_message, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    ticker,
+                    'BUY',
+                    'FULL_FILLED',  # 새 스키마의 상태값
+                    virtual_order_id,
+                    quantity,        # requested_quantity
+                    quantity,        # filled_quantity (직접 매수는 전량 체결)
+                    total_amount,    # requested_amount
+                    total_amount,    # filled_amount (직접 매수는 전량 체결)
+                    avg_buy_price,   # average_price
+                    False,          # is_pyramid (직접 매수는 피라미딩 아님)
+                    True,           # is_pyramid_eligible (향후 피라미딩 가능)
+                    0.0,            # fee (수수료 정보 없음)
+                    None,           # error_message
+                    purchase_timestamp
+                ))
+
+                conn.commit()
+
+            logger.info(f"📝 {ticker} 직접 매수 기록 생성: {quantity:.8f}개 @ {avg_buy_price:,.0f}원 (총 {total_amount:,.0f}원)")
+            return True
+
+        except Exception as e:
+            logger.error(f"❌ {ticker} 직접 매수 초기화 실패: {e}")
+            return False
+
+    def get_total_balance_krw(self) -> float:
+        """총 보유 자산 KRW 환산 (개선된 디버깅 버전)"""
+        try:
+            logger.debug("🔍 총 자산 조회 시작")
+
+            if self.dry_run:
+                logger.debug("🧪 DRY RUN 모드: 1,000,000원 반환")
                 return 1000000.0  # DRY RUN 시 100만원으로 가정
 
+            logger.debug("📡 업비트 API 잔고 조회 시작")
             balances = self.upbit.get_balances()
+
             if not balances:
+                logger.warning("⚠️ 업비트 잔고 조회 결과가 비어있음")
                 return 0.0
+
+            logger.debug(f"📊 조회된 잔고 수: {len(balances) if isinstance(balances, list) else 'N/A'}")
 
             # API 오류 응답 처리
             if isinstance(balances, dict) and 'error' in balances:
                 error_info = balances['error']
-                logger.warning(f"⚠️ 업비트 API 오류: {error_info.get('name', 'unknown')} - {error_info.get('message', 'no message')}")
+                logger.error(f"❌ 업비트 API 오류: {error_info.get('name', 'unknown')} - {error_info.get('message', 'no message')}")
                 return 0.0
 
             # balances가 리스트가 아닌 경우 처리
             if not isinstance(balances, list):
-                logger.warning(f"⚠️ 예상치 못한 balances 타입: {type(balances)}")
+                logger.error(f"❌ 예상치 못한 balances 타입: {type(balances)}, 값: {balances}")
                 return 0.0
 
             total_krw = 0.0
+            processed_currencies = []
 
             for balance in balances:
-                currency = balance['currency']
-                quantity = float(balance['balance'])
+                try:
+                    currency = balance.get('currency', 'UNKNOWN')
+                    quantity = float(balance.get('balance', 0))
 
-                if quantity <= 0:
+                    if quantity <= 0:
+                        continue
+
+                    if currency == 'KRW':
+                        total_krw += quantity
+                        processed_currencies.append(f"KRW: {quantity:,.0f}원")
+                        logger.debug(f"💰 KRW 잔고: {quantity:,.0f}원")
+                    else:
+                        # 암호화폐는 현재가로 환산
+                        ticker = f"KRW-{currency}"
+                        current_price = pyupbit.get_current_price(ticker)
+                        if current_price:
+                            crypto_value_krw = quantity * current_price
+                            total_krw += crypto_value_krw
+                            processed_currencies.append(f"{currency}: {quantity:.8f} @ {current_price:,.0f}원 = {crypto_value_krw:,.0f}원")
+                            logger.debug(f"🪙 {currency}: {quantity:.8f}개 × {current_price:,.0f}원 = {crypto_value_krw:,.0f}원")
+                        else:
+                            logger.warning(f"⚠️ {ticker} 현재가 조회 실패")
+                            continue
+
+                except Exception as balance_error:
+                    ticker = f"KRW-{currency}" if 'currency' in locals() and currency != 'KRW' else currency if 'currency' in locals() else 'UNKNOWN'
+                    logger.warning(f"❌ {ticker}: 잔고 처리 실패 - {balance_error}")
+                    logger.debug(f"🔍 {ticker}: balance 구조 - {balance if 'balance' in locals() else 'N/A'}")
                     continue
 
-                if currency == 'KRW':
-                    total_krw += quantity
-                else:
-                    # 암호화폐는 현재가로 환산
-                    ticker = f"KRW-{currency}"
-                    current_price = pyupbit.get_current_price(ticker)
-                    if current_price:
-                        total_krw += quantity * current_price
+            logger.info(f"💰 총 자산 조회 완료: {total_krw:,.0f}원 (처리된 자산: {len(processed_currencies)}개)")
+            logger.debug(f"📋 자산 상세: {', '.join(processed_currencies) if processed_currencies else '없음'}")
 
             return total_krw
 
         except Exception as e:
-            logger.error(f"❌ 총 자산 조회 실패: {e}")
+            logger.error(f"❌ 총 자산 조회 함수 전체 실패: {type(e).__name__}: {str(e)}")
+            import traceback
+            logger.debug(f"🔍 상세 스택 트레이스:\n{traceback.format_exc()}")
             return 0.0
 
     def calculate_position_size(self, ticker: str, kelly_percentage: float,
@@ -618,13 +1009,15 @@ class LocalTradingEngine:
             return 0.0
 
     @retry(max_attempts=3, initial_delay=1, backoff=2)
-    def execute_buy_order(self, ticker: str, amount_krw: float) -> TradeResult:
+    def execute_buy_order(self, ticker: str, amount_krw: float, is_pyramid: bool = False) -> TradeResult:
         """매수 주문 실행"""
         trade_result = TradeResult(
-            status=OrderStatus.FAILURE,
             ticker=ticker,
-            order_type=OrderType.BUY,
-            timestamp=datetime.now()
+            order_id="PENDING",  # 임시 order_id, 실제 주문 후 업데이트
+            status=TradeStatus.FAILED,
+            requested_amount=amount_krw,
+            requested_quantity=0.0,  # 현재가 조회 후 계산됨
+            is_pyramid=is_pyramid  # 피라미딩 상태 설정
         )
 
         try:
@@ -632,21 +1025,29 @@ class LocalTradingEngine:
 
             # DRY RUN 모드
             if self.dry_run:
-                logger.info(f"🧪 DRY RUN: {ticker} 매수 주문 ({amount_krw:,.0f}원)")
-                trade_result.status = OrderStatus.SUCCESS
-                trade_result.amount_krw = amount_krw
-                trade_result.quantity = amount_krw / pyupbit.get_current_price(ticker)
-                trade_result.price = pyupbit.get_current_price(ticker)
-                self.trading_stats['orders_successful'] += 1
-                self.save_trade_record(trade_result)
-                return trade_result
+                current_price = pyupbit.get_current_price(ticker)
+                if current_price:
+                    requested_quantity = amount_krw / current_price
+                    trade_result.requested_quantity = requested_quantity
+                    trade_result.order_id = f"DRY_RUN_{int(datetime.now().timestamp())}"
+                    trade_result.status = TradeStatus.FULL_FILLED
+                    trade_result.filled_amount = amount_krw
+                    trade_result.filled_quantity = requested_quantity
+                    trade_result.average_price = current_price
+                    logger.info(f"🧪 DRY RUN: {ticker} 매수 주문 ({amount_krw:,.0f}원)")
+                    self.trading_stats['orders_successful'] += 1
+                    self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
+                    return trade_result
+                else:
+                    trade_result.error_message = "DRY RUN 모드에서 현재가 조회 실패"
+                    return trade_result
 
             # 최소 주문 금액 확인
             if amount_krw < self.config.min_order_amount_krw:
                 trade_result.error_message = f"주문 금액 부족: {amount_krw:,.0f} < {self.config.min_order_amount_krw:,.0f}"
-                trade_result.status = OrderStatus.SKIPPED
+                trade_result.status = TradeStatus.CANCELLED
                 logger.warning(f"⚠️ {ticker}: {trade_result.error_message}")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
                 return trade_result
 
             # 현재가 조회
@@ -654,8 +1055,11 @@ class LocalTradingEngine:
             if not current_price:
                 trade_result.error_message = "현재가 조회 실패"
                 logger.error(f"❌ {ticker}: {trade_result.error_message}")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
                 return trade_result
+
+            # requested_quantity 계산
+            trade_result.requested_quantity = amount_krw / current_price
 
             # 수수료를 고려한 실제 주문 금액
             order_amount = amount_krw / (1 + self.config.taker_fee_rate)
@@ -665,13 +1069,46 @@ class LocalTradingEngine:
             # 업비트 매수 주문
             response = self.upbit.buy_market_order(ticker, order_amount)
 
-            if not response or not response.get('uuid'):
-                trade_result.error_message = f"주문 접수 실패: {response}"
-                logger.error(f"❌ {ticker} 매수 주문 접수 실패")
-                self.save_trade_record(trade_result)
-                return trade_result
+            # 강화된 API 응답 검증 (다중 필드 검증)
+            order_id = None
+            if response:
+                # 다양한 주문 ID 필드명 시도
+                order_id = response.get('uuid') or response.get('order_id') or response.get('id') or response.get('orderId')
 
-            order_id = response['uuid']
+            if not response:
+                trade_result.error_message = f"주문 접수 실패: API 응답 없음"
+                logger.error(f"❌ {ticker} 매수 주문 접수 실패 - 응답 없음")
+                self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
+                return trade_result
+            elif not order_id:
+                # 상세한 응답 로깅으로 디버깅 지원
+                logger.warning(f"⚠️ {ticker} 주문 응답에서 주문ID 필드를 찾을 수 없음. 응답 구조: {response}")
+                trade_result.error_message = f"주문 ID 추출 실패. 응답: {response}"
+                logger.error(f"❌ {ticker} 매수 주문 접수 실패 - 주문ID 없음")
+
+                # 재검증 시도: 3초 후 주문 목록에서 최근 주문 확인
+                logger.info(f"🔄 {ticker} 주문 재검증 시도...")
+                time.sleep(3)
+                try:
+                    # 최근 주문 목록에서 확인 시도
+                    recent_orders = self.upbit.get_orders(state='done', limit=5)
+                    if recent_orders:
+                        for order in recent_orders:
+                            if (order.get('market') == ticker and
+                                order.get('side') == 'bid' and
+                                abs(float(order.get('volume', 0)) * float(order.get('price', 0)) - order_amount) < 1000):
+                                order_id = order.get('uuid')
+                                logger.info(f"✅ {ticker} 주문ID 재검증 성공: {order_id}")
+                                break
+
+                    if not order_id:
+                        self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
+                        return trade_result
+
+                except Exception as retry_error:
+                    logger.error(f"❌ {ticker} 주문 재검증 실패: {retry_error}")
+                    self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
+                    return trade_result
             trade_result.order_id = order_id
 
             logger.info(f"✅ {ticker} 매수 주문 접수 성공 (주문ID: {order_id})")
@@ -693,18 +1130,28 @@ class LocalTradingEngine:
                         avg_price = total_value / total_volume
                         fee = total_value * self.config.taker_fee_rate
 
-                        trade_result.status = OrderStatus.SUCCESS
-                        trade_result.quantity = executed_quantity
-                        trade_result.price = avg_price
-                        trade_result.amount_krw = total_value
-                        trade_result.fee = fee
+                        # 전량 체결 또는 부분 체결 판단
+                        if executed_quantity >= trade_result.requested_quantity * 0.99:  # 99% 이상이면 전량 체결로 간주
+                            trade_result.status = TradeStatus.FULL_FILLED
+                            self.trading_stats['orders_successful'] += 1  # 전량 체결만 성공으로 카운팅
+                        else:
+                            trade_result.status = TradeStatus.PARTIAL_FILLED
+                            self.trading_stats['orders_partial_filled'] += 1  # 부분 체결로 분류
 
-                        self.trading_stats['orders_successful'] += 1
+                        trade_result.filled_quantity = executed_quantity
+                        trade_result.average_price = avg_price
+                        trade_result.filled_amount = total_value
+                        trade_result.fees = fee
                         self.trading_stats['total_volume_krw'] += total_value
                         self.trading_stats['total_fees_krw'] += fee
 
-                        # 피라미딩 초기화 (첫 매수 시)
-                        self.pyramiding_manager.register_initial_buy(ticker, avg_price)
+                        # 통합된 거래 결과 처리 (새로운 TradeResult 활용)
+                        self.process_trade_result(
+                            trade_result,
+                            ticker,
+                            is_pyramid=is_pyramid,  # 매개변수로 전달받은 값 사용
+                            requested_amount=amount_krw
+                        )
 
                         logger.info(f"💰 {ticker} 매수 체결 완료: {executed_quantity:.8f}개, 평균가 {avg_price:,.0f}원")
                     else:
@@ -713,17 +1160,23 @@ class LocalTradingEngine:
 
                 elif executed_quantity > 0:
                     # trades 정보 없지만 executed_volume은 있는 경우 (업비트에서 가끔 발생)
-                    fee = (executed_quantity * current_price) * self.config.taker_fee_rate
+                    filled_amount = executed_quantity * current_price
+                    fee = filled_amount * self.config.taker_fee_rate
 
-                    trade_result.status = OrderStatus.SUCCESS_NO_AVG_PRICE
-                    trade_result.quantity = executed_quantity
-                    trade_result.price = current_price  # 현재가로 대체
-                    trade_result.amount_krw = executed_quantity * current_price
-                    trade_result.fee = fee
+                    # 전량 체결 또는 부분 체결 판단
+                    if executed_quantity >= trade_result.requested_quantity * 0.99:
+                        trade_result.status = TradeStatus.FULL_FILLED
+                        self.trading_stats['orders_successful'] += 1  # 전량 체결만 성공으로 카운팅
+                    else:
+                        trade_result.status = TradeStatus.PARTIAL_FILLED
+                        self.trading_stats['orders_partial_filled'] += 1  # 부분 체결로 분류
+
+                    trade_result.filled_quantity = executed_quantity
+                    trade_result.average_price = current_price  # 현재가로 대체
+                    trade_result.filled_amount = filled_amount
+                    trade_result.fees = fee
                     trade_result.error_message = "Trades 정보 없음 - 현재가로 평균단가 대체"
-
-                    self.trading_stats['orders_successful'] += 1
-                    self.trading_stats['total_volume_krw'] += trade_result.amount_krw
+                    self.trading_stats['total_volume_krw'] += filled_amount
                     self.trading_stats['total_fees_krw'] += fee
 
                     logger.warning(f"⚠️ {ticker} 매수 체결 완료 (trades 정보 없음): {executed_quantity:.8f}개, 현재가 {current_price:,.0f}원으로 기록")
@@ -747,50 +1200,74 @@ class LocalTradingEngine:
                             avg_price = total_value / total_volume
                             fee = total_value * self.config.taker_fee_rate
 
-                            trade_result.status = OrderStatus.SUCCESS_PARTIAL
-                            trade_result.quantity = executed_quantity
-                            trade_result.price = avg_price
-                            trade_result.amount_krw = total_value
-                            trade_result.fee = fee
+                            trade_result.status = TradeStatus.PARTIAL_FILLED
+                            trade_result.filled_quantity = executed_quantity
+                            trade_result.average_price = avg_price
+                            trade_result.filled_amount = total_value
+                            trade_result.fees = fee
                             trade_result.error_message = "부분 체결 후 취소"
 
-                            self.trading_stats['orders_successful'] += 1
+                            self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                             self.trading_stats['total_volume_krw'] += total_value
                             self.trading_stats['total_fees_krw'] += fee
 
                             logger.info(f"💰 {ticker} 매수 부분 체결 완료 (cancel): {executed_quantity:.8f}개, 평균가 {avg_price:,.0f}원")
+
+                            # 부분 체결도 성공이므로 PyramidStateManager에 반영
+                            self.process_trade_result(
+                                trade_result,
+                                ticker,
+                                is_pyramid=is_pyramid,
+                                requested_amount=amount_krw
+                            )
                         else:
                             # trades 있지만 volume 합계가 0인 경우
                             fee = (executed_quantity * current_price) * self.config.taker_fee_rate
 
-                            trade_result.status = OrderStatus.SUCCESS_PARTIAL_NO_AVG
-                            trade_result.quantity = executed_quantity
-                            trade_result.price = current_price
-                            trade_result.amount_krw = executed_quantity * current_price
-                            trade_result.fee = fee
+                            trade_result.status = TradeStatus.PARTIAL_FILLED_NO_AVG
+                            trade_result.filled_quantity = executed_quantity
+                            trade_result.average_price = current_price
+                            trade_result.filled_amount = executed_quantity * current_price
+                            trade_result.fees = fee
                             trade_result.error_message = "부분 체결 후 취소, trades 정보 불완전"
 
-                            self.trading_stats['orders_successful'] += 1
+                            self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                             self.trading_stats['total_volume_krw'] += trade_result.amount_krw
                             self.trading_stats['total_fees_krw'] += fee
 
                             logger.warning(f"⚠️ {ticker} 매수 부분 체결 (trades 정보 불완전): {executed_quantity:.8f}개, 현재가로 기록")
+
+                            # 부분 체결도 성공이므로 PyramidStateManager에 반영
+                            self.process_trade_result(
+                                trade_result,
+                                ticker,
+                                is_pyramid=is_pyramid,
+                                requested_amount=amount_krw
+                            )
                     else:
                         # trades 없지만 executed_quantity는 있는 경우
                         fee = (executed_quantity * current_price) * self.config.taker_fee_rate
 
-                        trade_result.status = OrderStatus.SUCCESS_PARTIAL_NO_AVG
-                        trade_result.quantity = executed_quantity
-                        trade_result.price = current_price
-                        trade_result.amount_krw = executed_quantity * current_price
-                        trade_result.fee = fee
+                        trade_result.status = TradeStatus.PARTIAL_FILLED
+                        trade_result.filled_quantity = executed_quantity
+                        trade_result.average_price = current_price
+                        trade_result.filled_amount = executed_quantity * current_price
+                        trade_result.fees = fee
                         trade_result.error_message = "부분 체결 후 취소, trades 정보 없음"
 
-                        self.trading_stats['orders_successful'] += 1
+                        self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                         self.trading_stats['total_volume_krw'] += trade_result.amount_krw
                         self.trading_stats['total_fees_krw'] += fee
 
                         logger.warning(f"⚠️ {ticker} 매수 부분 체결 (trades 정보 없음): {executed_quantity:.8f}개, 현재가로 기록")
+
+                        # 부분 체결도 성공이므로 PyramidStateManager에 반영
+                        self.process_trade_result(
+                            trade_result,
+                            ticker,
+                            is_pyramid=is_pyramid,
+                            requested_amount=amount_krw
+                        )
                 else:
                     # 실제로 실패한 경우
                     trade_result.error_message = f"주문 미체결: state={order_state}, executed_volume={executed_quantity}, OrderID: {order_id}"
@@ -812,9 +1289,17 @@ class LocalTradingEngine:
         except Exception as e:
             trade_result.error_message = f"매수 실행 중 예상치 못한 오류: {e}"
             logger.error(f"❌ {ticker} 매수 실행 중 예상치 못한 오류: {e}")
+            # Exception 케이스는 저장 후 return 필요
+            self.save_trade_record(trade_result, ticker, is_pyramid=is_pyramid, requested_amount=amount_krw)
+            return trade_result
 
         finally:
-            self.save_trade_record(trade_result)
+            # 중복 저장 방지:
+            # 1. 성공 케이스는 process_trade_result에서 이미 저장됨
+            # 2. 실패 케이스는 각각의 early return에서 이미 저장됨
+            # 3. Exception 케이스도 이제 저장 후 return됨
+            # finally에서는 저장하지 않음 (중복 방지)
+            pass
 
         return trade_result
 
@@ -822,9 +1307,11 @@ class LocalTradingEngine:
     def execute_sell_order(self, ticker: str, quantity: Optional[float] = None) -> TradeResult:
         """매도 주문 실행"""
         trade_result = TradeResult(
-            status=OrderStatus.FAILURE,
             ticker=ticker,
-            order_type=OrderType.SELL,
+            order_id="PENDING",  # 임시 order_id, 실제 주문 후 업데이트
+            status=TradeStatus.FAILED,
+            requested_amount=0.0,  # 매도는 금액이 아닌 수량 기준이므로 0으로 초기화
+            requested_quantity=quantity or 0.0,
             timestamp=datetime.now()
         )
 
@@ -840,11 +1327,13 @@ class LocalTradingEngine:
             # DRY RUN 모드
             if self.dry_run:
                 logger.info(f"🧪 DRY RUN: {ticker} 매도 주문")
-                trade_result.status = OrderStatus.SUCCESS
-                trade_result.quantity = quantity or 1.0
-                trade_result.price = pyupbit.get_current_price(ticker)
+                trade_result.status = TradeStatus.FULL_FILLED
+                dry_run_quantity = quantity or 1.0
+                trade_result.requested_quantity = dry_run_quantity
+                trade_result.filled_quantity = dry_run_quantity
+                trade_result.average_price = pyupbit.get_current_price(ticker)
                 self.trading_stats['orders_successful'] += 1
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, ticker, is_pyramid=False, requested_amount=0, trade_type='SELL')
                 return trade_result
 
             # 보유 수량 확인
@@ -854,27 +1343,30 @@ class LocalTradingEngine:
             if isinstance(balance, dict) and 'error' in balance:
                 error_info = balance['error']
                 trade_result.error_message = f"API 오류: {error_info.get('name', 'unknown')}"
-                trade_result.status = OrderStatus.API_ERROR
+                trade_result.status = TradeStatus.FAILED
                 logger.warning(f"⚠️ {ticker}: 업비트 API 오류 - {error_info.get('message', 'no message')}")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, trade_type='SELL')
                 return trade_result
 
             if not balance or balance <= 0:
                 trade_result.error_message = "보유 수량 없음"
-                trade_result.status = OrderStatus.SKIPPED
+                trade_result.status = TradeStatus.CANCELLED
                 logger.warning(f"⚠️ {ticker}: 보유 수량 없음")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, trade_type='SELL')
                 return trade_result
 
             # 매도 수량 결정
             sell_quantity = quantity if quantity and quantity <= balance else balance
+
+            # TradeResult에 실제 요청 수량 반영 (DB 제약 조건 충족용)
+            trade_result.requested_quantity = sell_quantity
 
             # 현재가 조회
             current_price = pyupbit.get_current_price(ticker)
             if not current_price:
                 trade_result.error_message = "현재가 조회 실패"
                 logger.error(f"❌ {ticker}: {trade_result.error_message}")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, trade_type='SELL')
                 return trade_result
 
             # 최소 매도 금액 확인
@@ -883,9 +1375,9 @@ class LocalTradingEngine:
 
             if net_value < 5000:  # 업비트 최소 매도 금액
                 trade_result.error_message = f"매도 금액 부족: {net_value:,.0f} < 5,000원"
-                trade_result.status = OrderStatus.SKIPPED
+                trade_result.status = TradeStatus.CANCELLED
                 logger.warning(f"⚠️ {ticker}: {trade_result.error_message}")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, trade_type='SELL')
                 return trade_result
 
             logger.info(f"🚀 {ticker} 시장가 매도 주문: {sell_quantity:.8f}개 (현재가: {current_price:,.0f})")
@@ -896,7 +1388,7 @@ class LocalTradingEngine:
             if not response or not response.get('uuid'):
                 trade_result.error_message = f"주문 접수 실패: {response}"
                 logger.error(f"❌ {ticker} 매도 주문 접수 실패")
-                self.save_trade_record(trade_result)
+                self.save_trade_record(trade_result, trade_type='SELL')
                 return trade_result
 
             order_id = response['uuid']
@@ -921,11 +1413,11 @@ class LocalTradingEngine:
                         avg_price = total_value / total_volume
                         fee = total_value * self.config.taker_fee_rate
 
-                        trade_result.status = OrderStatus.SUCCESS
-                        trade_result.quantity = executed_quantity
-                        trade_result.price = avg_price
-                        trade_result.amount_krw = total_value
-                        trade_result.fee = fee
+                        trade_result.status = TradeStatus.FULL_FILLED
+                        trade_result.filled_quantity = executed_quantity
+                        trade_result.average_price = avg_price
+                        trade_result.filled_amount = total_value
+                        trade_result.fees = fee
 
                         self.trading_stats['orders_successful'] += 1
                         self.trading_stats['total_volume_krw'] += total_value
@@ -940,15 +1432,15 @@ class LocalTradingEngine:
                     # trades 정보 없지만 executed_volume은 있는 경우
                     fee = (executed_quantity * current_price) * self.config.taker_fee_rate
 
-                    trade_result.status = OrderStatus.SUCCESS_NO_AVG_PRICE
-                    trade_result.quantity = executed_quantity
-                    trade_result.price = current_price
-                    trade_result.amount_krw = executed_quantity * current_price
-                    trade_result.fee = fee
+                    trade_result.status = TradeStatus.FULL_FILLED
+                    trade_result.filled_quantity = executed_quantity
+                    trade_result.average_price = current_price
+                    trade_result.filled_amount = executed_quantity * current_price
+                    trade_result.fees = fee
                     trade_result.error_message = "Trades 정보 없음 - 현재가로 평균단가 대체"
 
                     self.trading_stats['orders_successful'] += 1
-                    self.trading_stats['total_volume_krw'] += trade_result.amount_krw
+                    self.trading_stats['total_volume_krw'] += trade_result.filled_amount
                     self.trading_stats['total_fees_krw'] += fee
 
                     logger.warning(f"⚠️ {ticker} 매도 체결 완료 (trades 정보 없음): {executed_quantity:.8f}개, 현재가로 기록")
@@ -972,14 +1464,14 @@ class LocalTradingEngine:
                             avg_price = total_value / total_volume
                             fee = total_value * self.config.taker_fee_rate
 
-                            trade_result.status = OrderStatus.SUCCESS_PARTIAL
-                            trade_result.quantity = executed_quantity
-                            trade_result.price = avg_price
-                            trade_result.amount_krw = total_value
-                            trade_result.fee = fee
+                            trade_result.status = TradeStatus.PARTIAL_FILLED
+                            trade_result.filled_quantity = executed_quantity
+                            trade_result.average_price = avg_price
+                            trade_result.filled_amount = total_value
+                            trade_result.fees = fee
                             trade_result.error_message = "부분 체결 후 취소"
 
-                            self.trading_stats['orders_successful'] += 1
+                            self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                             self.trading_stats['total_volume_krw'] += total_value
                             self.trading_stats['total_fees_krw'] += fee
 
@@ -987,14 +1479,14 @@ class LocalTradingEngine:
                         else:
                             fee = (executed_quantity * current_price) * self.config.taker_fee_rate
 
-                            trade_result.status = OrderStatus.SUCCESS_PARTIAL_NO_AVG
-                            trade_result.quantity = executed_quantity
-                            trade_result.price = current_price
-                            trade_result.amount_krw = executed_quantity * current_price
-                            trade_result.fee = fee
+                            trade_result.status = TradeStatus.PARTIAL_FILLED_NO_AVG
+                            trade_result.filled_quantity = executed_quantity
+                            trade_result.average_price = current_price
+                            trade_result.filled_amount = executed_quantity * current_price
+                            trade_result.fees = fee
                             trade_result.error_message = "부분 체결 후 취소, trades 정보 불완전"
 
-                            self.trading_stats['orders_successful'] += 1
+                            self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                             self.trading_stats['total_volume_krw'] += trade_result.amount_krw
                             self.trading_stats['total_fees_krw'] += fee
 
@@ -1002,14 +1494,14 @@ class LocalTradingEngine:
                     else:
                         fee = (executed_quantity * current_price) * self.config.taker_fee_rate
 
-                        trade_result.status = OrderStatus.SUCCESS_PARTIAL_NO_AVG
-                        trade_result.quantity = executed_quantity
-                        trade_result.price = current_price
-                        trade_result.amount_krw = executed_quantity * current_price
-                        trade_result.fee = fee
+                        trade_result.status = TradeStatus.PARTIAL_FILLED
+                        trade_result.filled_quantity = executed_quantity
+                        trade_result.average_price = current_price
+                        trade_result.filled_amount = executed_quantity * current_price
+                        trade_result.fees = fee
                         trade_result.error_message = "부분 체결 후 취소, trades 정보 없음"
 
-                        self.trading_stats['orders_successful'] += 1
+                        self.trading_stats['orders_partial_cancelled'] += 1  # 부분 체결 후 취소로 분류
                         self.trading_stats['total_volume_krw'] += trade_result.amount_krw
                         self.trading_stats['total_fees_krw'] += fee
 
@@ -1091,6 +1583,11 @@ class LocalTradingEngine:
             Tuple[bool, str]: (매도 여부, 사유)
         """
         try:
+            # 현재가 유효성 검증
+            if current_price is None:
+                logger.warning(f"⚠️ {ticker} 현재가가 None입니다. 매도 조건 확인을 건너뜁니다.")
+                return False, "현재가 정보 없음"
+
             # 1. 트레일링 스탑 확인 (최우선)
             trailing_exit = self.trailing_stop_manager.update(ticker, current_price, self.db_path)
             if trailing_exit:
@@ -1112,14 +1609,15 @@ class LocalTradingEngine:
                 if result:
                     market_data = {
                         'price': current_price,
-                        'supertrend': result[0],
-                        'macd_histogram': result[1],
-                        'support': result[2],
-                        'adx': result[3]
+                        'supertrend': self._safe_convert_to_float(result[0], None),
+                        'macd_histogram': self._safe_convert_to_float(result[1], 0.0),
+                        'support': self._safe_convert_to_float(result[2], None),
+                        'adx': self._safe_convert_to_float(result[3], 0.0)
                     }
 
             # 3. 지지선 하회 조건 (최우선 매도 신호)
             if (market_data.get("support") is not None and
+                current_price is not None and
                 current_price < market_data.get("support")):
                 return True, f"지지선 하회 (현재가: {current_price:.0f} < 지지선: {market_data.get('support'):.0f})"
 
@@ -1129,6 +1627,7 @@ class LocalTradingEngine:
 
             # Supertrend 하향 돌파
             if (market_data.get("supertrend") is not None and
+                current_price is not None and
                 current_price < market_data.get("supertrend")):
                 tech_exit = True
                 tech_reason = f"Supertrend 하향 돌파 (현재가: {current_price:.0f} < ST: {market_data.get('supertrend'):.0f})"
@@ -1219,6 +1718,10 @@ class LocalTradingEngine:
         try:
             logger.info("📊 포트폴리오 관리 시작")
 
+            # 포트폴리오 동기화 상태 검증
+            if not self.validate_portfolio_sync():
+                logger.warning("⚠️ 포트폴리오 동기화 불일치로 인해 일부 기능이 제한될 수 있습니다.")
+
             positions = self.get_current_positions()
 
             if not positions:
@@ -1289,16 +1792,23 @@ class LocalTradingEngine:
             stats = {
                 'session_duration_minutes': session_duration.total_seconds() / 60,
                 'orders_attempted': self.trading_stats['orders_attempted'],
-                'orders_successful': self.trading_stats['orders_successful'],
-                'success_rate': (
+                'orders_successful': self.trading_stats['orders_successful'],  # 전량 체결만
+                'orders_partial_filled': self.trading_stats['orders_partial_filled'],  # 부분 체결
+                'orders_partial_cancelled': self.trading_stats['orders_partial_cancelled'],  # 부분 체결 후 취소
+                'success_rate': (  # 전량 체결률
                     self.trading_stats['orders_successful'] / self.trading_stats['orders_attempted'] * 100
+                    if self.trading_stats['orders_attempted'] > 0 else 0
+                ),
+                'completion_rate': (  # 전량+부분 체결률 (어떤 형태든 체결됨)
+                    (self.trading_stats['orders_successful'] + self.trading_stats['orders_partial_filled'] + self.trading_stats['orders_partial_cancelled'])
+                    / self.trading_stats['orders_attempted'] * 100
                     if self.trading_stats['orders_attempted'] > 0 else 0
                 ),
                 'total_volume_krw': self.trading_stats['total_volume_krw'],
                 'total_fees_krw': self.trading_stats['total_fees_krw'],
                 'average_order_size': (
-                    self.trading_stats['total_volume_krw'] / self.trading_stats['orders_successful']
-                    if self.trading_stats['orders_successful'] > 0 else 0
+                    self.trading_stats['total_volume_krw'] / (self.trading_stats['orders_successful'] + self.trading_stats['orders_partial_filled'] + self.trading_stats['orders_partial_cancelled'])
+                    if (self.trading_stats['orders_successful'] + self.trading_stats['orders_partial_filled'] + self.trading_stats['orders_partial_cancelled']) > 0 else 0
                 )
             }
 
@@ -1330,7 +1840,7 @@ class LocalTradingEngine:
                 amount_krw = self.calculate_position_size(ticker, kelly_percentage, market_sentiment_adjustment)
 
                 if amount_krw > 0:
-                    buy_result = self.execute_buy_order(ticker, amount_krw)
+                    buy_result = self.execute_buy_order(ticker, amount_krw, is_pyramid=False)
                     session_result['buy_orders'].append({
                         'ticker': ticker,
                         'result': buy_result,
@@ -1370,30 +1880,10 @@ class LocalTradingEngine:
         return session_result
 
     def check_pyramid_opportunities(self) -> Dict[str, Dict]:
-        """모든 보유 포지션에서 피라미딩 기회 확인"""
-        pyramid_opportunities = {}
-
+        """PyramidStateManager를 통한 피라미딩 기회 확인"""
         try:
-            positions = self.get_current_positions()
-
-            for position in positions:
-                try:
-                    # 피라미딩 기회 확인
-                    should_pyramid, additional_position = self.pyramiding_manager.check_pyramid_opportunity(
-                        position.ticker, position.current_price, self.db_path
-                    )
-
-                    if should_pyramid and additional_position > 0:
-                        pyramid_opportunities[position.ticker] = {
-                            'current_price': position.current_price,
-                            'additional_position_pct': additional_position,
-                            'pyramid_info': self.pyramiding_manager.get_pyramid_info(position.ticker)
-                        }
-
-                        logger.info(f"🔺 {position.ticker} 피라미딩 기회 발견: 추가 {additional_position:.1f}% 포지션")
-
-                except Exception as e:
-                    logger.error(f"❌ {position.ticker} 피라미딩 기회 확인 실패: {e}")
+            # PyramidStateManager의 get_pyramid_opportunities() 메서드 사용
+            pyramid_opportunities = self.pyramid_state_manager.get_pyramid_opportunities()
 
             if pyramid_opportunities:
                 logger.info(f"📈 총 {len(pyramid_opportunities)}개 종목에서 피라미딩 기회 발견")
@@ -1436,7 +1926,7 @@ class LocalTradingEngine:
                     logger.info(f"🔺 {ticker} 피라미딩 매수 실행: {additional_position_pct:.1f}% ({additional_amount:,.0f}원)")
 
                     # 피라미딩 매수 실행
-                    trade_result = self.execute_buy_order(ticker, additional_amount)
+                    trade_result = self.execute_buy_order(ticker, additional_amount, is_pyramid=True)
 
                     if trade_result.status in [
                         OrderStatus.SUCCESS,
@@ -1444,8 +1934,13 @@ class LocalTradingEngine:
                         OrderStatus.SUCCESS_PARTIAL,
                         OrderStatus.SUCCESS_PARTIAL_NO_AVG
                     ]:
-                        # 피라미딩 상태 업데이트
-                        self.pyramiding_manager.execute_pyramid_buy(ticker, opportunity['current_price'])
+                        # 통합된 피라미딩 거래 결과 처리 (새로운 TradeResult 활용)
+                        pyramid_trade_result = self.process_trade_result(
+                            trade_result,
+                            ticker,
+                            is_pyramid=True,  # 이것은 피라미딩 거래
+                            requested_amount=additional_amount
+                        )
 
                         pyramid_results['successful'] += 1
                         pyramid_results['details'].append({

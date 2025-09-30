@@ -61,7 +61,7 @@ class TechnicalGateResult:
     gate4_quality: bool  # 품질 점수
     total_gates_passed: int  # 통과한 게이트 수 (0-4)
     quality_score: float  # 종합 품질 점수
-    recommendation: str  # 'STRONG_BUY', 'BUY', 'HOLD', 'AVOID'
+    recommendation: str  # 'STRONG_BUY', 'BUY', 'BUY_LITE', 'HOLD', 'WATCH', 'AVOID'
 
 class HybridTechnicalFilter:
     """
@@ -71,8 +71,8 @@ class HybridTechnicalFilter:
     def __init__(self, db_path: str = "./makenaide_local.db"):
         self.db_path = db_path
         self.min_data_points = 200  # 최소 200일 데이터 필요
-        self.volume_surge_threshold = 1.5  # 거래량 급증 임계값 (1.5배)
-        self.quality_threshold = 12.0  # 최소 품질 점수
+        self.volume_surge_threshold = 1.3  # 거래량 급증 임계값 (1.5 → 1.3 완화)
+        self.quality_threshold = 8.0  # 최소 품질 점수 (12 → 8 완화)
 
         # Stage 패턴별 승률 매핑 (Kelly Calculator용)
         self.pattern_win_rates = {
@@ -304,7 +304,7 @@ class HybridTechnicalFilter:
         # Gate 1: Stage 2 진입 조건 (NULL 체크 추가)
         gate1_stage2 = (
             stage_result.current_stage == 2 and
-            stage_result.stage_confidence >= 0.6 and
+            stage_result.stage_confidence >= 0.55 and  # 0.6 → 0.55 완화
             pd.notna(stage_result.price_vs_ma200) and stage_result.price_vs_ma200 > 0  # MA200 위에 있어야 함
         )
 
@@ -433,14 +433,18 @@ class HybridTechnicalFilter:
         return min(5.0, bonus)
 
     def _determine_recommendation(self, gates_passed: int, quality_score: float) -> str:
-        """매수 권고 등급 결정"""
+        """매수 권고 등급 결정 (완화된 기준)"""
 
-        if gates_passed >= 4 and quality_score >= 18:
+        if gates_passed >= 4 and quality_score >= 16:  # 18 → 16 완화
             return "STRONG_BUY"
-        elif gates_passed >= 3 and quality_score >= 15:
+        elif gates_passed >= 3 and quality_score >= 12:  # 15 → 12 완화
             return "BUY"
-        elif gates_passed >= 2 and quality_score >= 12:
+        elif gates_passed >= 3 and quality_score >= 10:  # 신규 등급
+            return "BUY_LITE"
+        elif gates_passed >= 2 and quality_score >= 8:   # 12 → 8 완화
             return "HOLD"
+        elif gates_passed >= 2 and quality_score >= 6:   # 신규 등급
+            return "WATCH"
         else:
             return "AVOID"
 
@@ -620,7 +624,9 @@ class HybridTechnicalFilter:
             'stage2_candidates': [],
             'strong_buy': [],
             'buy': [],
+            'buy_lite': [],  # 신규 등급
             'hold': [],
+            'watch': [],    # 신규 등급
             'avoid': [],
             'analysis_summary': {}
         }
@@ -648,8 +654,12 @@ class HybridTechnicalFilter:
                         results['strong_buy'].append(ticker)
                     elif gate_result.recommendation == 'BUY':
                         results['buy'].append(ticker)
+                    elif gate_result.recommendation == 'BUY_LITE':
+                        results['buy_lite'].append(ticker)
                     elif gate_result.recommendation == 'HOLD':
                         results['hold'].append(ticker)
+                    elif gate_result.recommendation == 'WATCH':
+                        results['watch'].append(ticker)
                     else:
                         results['avoid'].append(ticker)
 
@@ -666,7 +676,9 @@ class HybridTechnicalFilter:
             'stage2_candidates': stage2_count,
             'strong_buy_count': len(results['strong_buy']),
             'buy_count': len(results['buy']),
+            'buy_lite_count': len(results['buy_lite']),  # 신규 등급
             'hold_count': len(results['hold']),
+            'watch_count': len(results['watch']),        # 신규 등급
             'avoid_count': len(results['avoid']),
             'analysis_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         }
@@ -679,7 +691,9 @@ class HybridTechnicalFilter:
         logger.info(f"Stage 2 후보: {stage2_count}개")
         logger.info(f"STRONG_BUY: {len(results['strong_buy'])}개")
         logger.info(f"BUY: {len(results['buy'])}개")
+        logger.info(f"BUY_LITE: {len(results['buy_lite'])}개")   # 신규 등급
         logger.info(f"HOLD: {len(results['hold'])}개")
+        logger.info(f"WATCH: {len(results['watch'])}개")         # 신규 등급
         logger.info(f"AVOID: {len(results['avoid'])}개")
 
         if results['stage2_candidates']:
