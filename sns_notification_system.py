@@ -596,10 +596,19 @@ class MakenaideSNSNotifier:
 
             # 🎯 기술적 분석 통과 종목
             if technical_candidates:
+                # 중복 종목 제거 (종목별 최고 점수만 유지)
+                seen_tickers = set()
+                unique_technical = []
+                for candidate in technical_candidates:
+                    ticker = candidate.get('ticker', 'Unknown')
+                    if ticker not in seen_tickers:
+                        seen_tickers.add(ticker)
+                        unique_technical.append(candidate)
+
                 message_parts.append("🎯 기술적 분석 통과 종목:")
 
                 # 상위 10개만 표시 (너무 길어지지 않도록)
-                top_technical = technical_candidates[:10]
+                top_technical = unique_technical[:10]
 
                 for i, candidate in enumerate(top_technical, 1):
                     ticker = candidate.get('ticker', 'Unknown')
@@ -614,16 +623,25 @@ class MakenaideSNSNotifier:
                         f"  {i}. {stage_emoji} {ticker}: {quality_score:.1f}점 ({gates_passed}/4 게이트) - {recommendation}"
                     )
 
-                if len(technical_candidates) > 10:
-                    message_parts.append(f"  ... 외 {len(technical_candidates) - 10}개 종목")
+                if len(unique_technical) > 10:
+                    message_parts.append(f"  ... 외 {len(unique_technical) - 10}개 종목")
 
                 message_parts.append("")
 
             # 🤖 GPT 분석 승인 종목
             if gpt_candidates:
+                # 중복 종목 제거 (종목별 최고 신뢰도만 유지)
+                seen_gpt_tickers = set()
+                unique_gpt = []
+                for candidate in gpt_candidates:
+                    ticker = candidate.get('ticker', 'Unknown')
+                    if ticker not in seen_gpt_tickers:
+                        seen_gpt_tickers.add(ticker)
+                        unique_gpt.append(candidate)
+
                 message_parts.append("🤖 GPT 분석 승인 종목:")
 
-                for i, candidate in enumerate(gpt_candidates, 1):
+                for i, candidate in enumerate(unique_gpt, 1):
                     ticker = candidate.get('ticker', 'Unknown')
                     confidence = candidate.get('confidence', 0)
                     pattern = candidate.get('pattern', 'Unknown')
@@ -650,9 +668,9 @@ class MakenaideSNSNotifier:
                     "⚠️ 시장 감정 분석 후 최종 거래 결정"
                 ])
 
-            # 종합 요약
-            total_technical = len(technical_candidates)
-            total_gpt = len(gpt_candidates)
+            # 종합 요약 (중복 제거 후 실제 고유 종목 수)
+            total_technical = len(unique_technical) if technical_candidates else 0
+            total_gpt = len(unique_gpt) if gpt_candidates else 0
 
             title = f"발굴 종목 리스트 (기술적: {total_technical}개, GPT: {total_gpt}개)"
 

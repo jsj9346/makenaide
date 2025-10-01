@@ -531,6 +531,9 @@ class MakenaideLocalOrchestrator:
                     if result:
                         analysis_results.append(result)
 
+                        # ✅ 기술적 분석 결과를 DB에 저장 (Kelly Calculator가 조회할 수 있도록)
+                        self._save_technical_analysis_to_db(result)
+
                         # 매수 권고 종목만 후보로 선정
                         if result.final_recommendation.value in ['STRONG_BUY', 'BUY', 'BUY_LITE']:
                             technical_candidates_data.append({
@@ -772,10 +775,31 @@ class MakenaideLocalOrchestrator:
     def run_kelly_calculation(self, candidates: List[str]) -> Dict[str, float]:
         """Kelly 공식 기반 포지션 사이징 계산"""
         if not candidates:
+            logger.info("⏭️ Kelly 계산 스킵: 거래 후보 없음 (BUY 추천 종목 0개)")
             return {}
 
         try:
             logger.info(f"🧮 Kelly 포지션 사이징 계산 ({len(candidates)}개 후보)")
+
+            # 🔍 디버깅: DB에 저장된 최근 기술적 분석 데이터 확인
+            try:
+                with get_db_connection_context() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT ticker, created_at, recommendation, quality_score
+                        FROM technical_analysis
+                        WHERE created_at >= datetime('now', '-1 hour')
+                        ORDER BY created_at DESC
+                    """)
+                    recent_analyses = cursor.fetchall()
+                    if recent_analyses:
+                        logger.info(f"📊 최근 1시간 DB 저장 분석: {len(recent_analyses)}건")
+                        for row in recent_analyses[:3]:  # 최근 3건만 표시
+                            logger.debug(f"   - {row[0]}: {row[2]} (품질: {row[3]}, 시각: {row[1]})")
+                    else:
+                        logger.warning("⚠️ 최근 1시간 내 DB 저장 분석 없음 - Phase 2 DB 저장 확인 필요")
+            except Exception as debug_error:
+                logger.debug(f"디버깅 쿼리 실패 (무시): {debug_error}")
 
             position_sizes = {}
 
@@ -1990,6 +2014,73 @@ class MakenaideLocalOrchestrator:
         # 기타 타입인 경우
         logger.warning(f"⚠️ 알 수 없는 타입을 부동소수점으로 변환: {type(value)} {value} → 기본값 {default} 사용")
         return default
+
+    def _save_technical_analysis_to_db(self, result) -> bool:
+        """
+        기술적 분석 결과를 technical_analysis 테이블에 저장
+
+        Args:
+            result: UnifiedFilterResult 객체 (technical_filter.py의 analyze_ticker() 반환값)
+
+        Returns:
+            bool: 저장 성공 여부
+        """
+        try:
+            with get_db_connection_context() as conn:
+                cursor = conn.cursor()
+
+                # UnifiedFilterResult에서 필요한 데이터 추출
+                ticker = result.ticker
+                analysis_date = result.analysis_date
+
+                # Weinstein Stage 분석 결과
+                weinstein = result.weinstein_result
+                current_stage = weinstein.current_stage if weinstein else None
+                stage_confidence = weinstein.stage_confidence if weinstein else None
+                ma200_trend = weinstein.ma200_trend if weinstein else None
+                price_vs_ma200 = weinstein.price_vs_ma200 if weinstein else None
+                breakout_strength = weinstein.breakout_strength if weinstein else None
+
+                # 4-Gate 필터링 결과
+                basic = result.basic_result
+                total_gates_passed = basic.total_gates_passed if basic else None
+                quality_score = result.final_quality_score
+
+                # 최종 권고 및 신뢰도
+                recommendation = result.final_recommendation.value
+                final_confidence = result.final_confidence
+
+                # volume_surge 계산 (basic_result에서 추출)
+                volume_surge = None
+                if basic and hasattr(basic, 'volume_surge_ratio'):
+                    volume_surge = basic.volume_surge_ratio
+                elif weinstein and hasattr(weinstein, 'volume_surge'):
+                    volume_surge = weinstein.volume_surge
+
+                # INSERT OR REPLACE로 중복 방지
+                cursor.execute("""
+                    INSERT OR REPLACE INTO technical_analysis (
+                        ticker, analysis_date,
+                        current_stage, stage_confidence, ma200_trend, price_vs_ma200, breakout_strength,
+                        total_gates_passed, quality_score, recommendation,
+                        volume_surge,
+                        source_table, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+                """, (
+                    ticker, analysis_date,
+                    current_stage, stage_confidence, ma200_trend, price_vs_ma200, breakout_strength,
+                    total_gates_passed, quality_score, recommendation,
+                    volume_surge,
+                    'UnifiedTechnicalFilter'  # 데이터 출처 표시
+                ))
+
+                conn.commit()
+                logger.debug(f"✅ {ticker} 기술적 분석 결과 DB 저장 완료")
+                return True
+
+        except Exception as e:
+            logger.warning(f"⚠️ {result.ticker if hasattr(result, 'ticker') else 'Unknown'} DB 저장 실패 (파이프라인 계속 진행): {e}")
+            return False
 
 async def main():
     """메인 실행 함수"""
